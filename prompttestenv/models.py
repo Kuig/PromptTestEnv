@@ -77,7 +77,7 @@ class TestCaseResult:
     criteria: str
     group: str = DEFAULT_GROUP
     file_used: str | None = None
-    _media_file_path: str | None = None
+    media_file_path: str | None = None
     candidates_perf: dict[str, CandidatePerformance] = field(default_factory=dict)
     judge_type: str = JUDGE_TYPE_LLM
 

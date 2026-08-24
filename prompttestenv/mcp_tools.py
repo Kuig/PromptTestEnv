@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 
-def register_tools(mcp) -> None:
+if TYPE_CHECKING:
+    from mcp.server.fastmcp import FastMCP
+
+
+def register_tools(mcp: "FastMCP") -> None:
     """Register all PromptTestEnv MCP tools with the given FastMCP instance.
 
     Args:

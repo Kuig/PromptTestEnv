@@ -58,7 +58,7 @@ def run_evaluation_phase(
             current_test = test_result.test_id
 
         prefix = f"[Rep {rep + 1}/{repetitions}] " if repetitions > 1 else ""
-        m_path = test_result._media_file_path if pass_media else None
+        m_path = test_result.media_file_path if pass_media else None
 
         # Resume logic
         key = (cand_id, test_result.test_id, rep)

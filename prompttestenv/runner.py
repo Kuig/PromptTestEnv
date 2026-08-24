@@ -40,7 +40,7 @@ def _initialize_test_results(test_cases: list[TestCase], project_dir: str) -> li
         if test.file:
             media_file_path = os.path.join(project_dir, test.file)
             test_result.file_used = test.file
-            test_result._media_file_path = media_file_path
+            test_result.media_file_path = media_file_path
         results.append(test_result)
     return results
 

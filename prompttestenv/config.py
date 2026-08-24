@@ -9,9 +9,6 @@ from unified_ai_client import load_secrets
 
 _PROJECT_ROOT = Path(__file__).parent.parent
 
-# CONFIG_FILE kept for backwards compatibility — still points to secrets.json
-CONFIG_FILE = str(_PROJECT_ROOT / "secrets.json")
-
 
 def _load_template(filename: str) -> str:
     """Read a default-content resource file bundled under prompttestenv/templates/.

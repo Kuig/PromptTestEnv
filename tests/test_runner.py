@@ -35,7 +35,7 @@ class TestInitializeTestResults(unittest.TestCase):
         self.assertEqual(len(results), 2)
         self.assertIsNone(results[0].file_used)
         self.assertEqual(results[1].file_used, "test_files/sample.txt")
-        self.assertIn("test_files", results[1]._media_file_path)
+        self.assertIn("test_files", results[1].media_file_path)
 
 
 class TestGenerateOutput(LoggerResetTestCase):
