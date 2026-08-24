@@ -18,16 +18,11 @@ if sys.stderr.encoding and sys.stderr.encoding.lower() != "utf-8":
 # dependencies (unified_ai_client, jinja2) are only imported when one of these
 # names is actually accessed — CLI subcommands that don't need them (e.g. init,
 # mcp) keep their current fast startup.
-_CONFIG_EXPORTS = (
-    "init_project",
-    "load_candidates",
-    "load_judge_config",
-    "load_test_cases",
-    "load_global_criteria",
-)
+_CONFIG_EXPORTS = ("init_project",)
 _RUNNER_EXPORTS = ("run_project", "render_from_progress")
+_MODELS_EXPORTS = ("Candidate", "TestCase", "JudgeConfig", "GlobalCriteria")
 
-__all__ = [*_CONFIG_EXPORTS, *_RUNNER_EXPORTS]
+__all__ = [*_CONFIG_EXPORTS, *_RUNNER_EXPORTS, *_MODELS_EXPORTS]
 
 
 def __getattr__(name: str):
@@ -37,7 +32,7 @@ def __getattr__(name: str):
         name: Attribute name being accessed on the ``prompttestenv`` package.
 
     Returns:
-        The resolved function object.
+        The resolved function or class object.
 
     Raises:
         AttributeError: If ``name`` is not a recognized public API export.
@@ -48,6 +43,9 @@ def __getattr__(name: str):
     if name in _RUNNER_EXPORTS:
         from prompttestenv import runner
         return getattr(runner, name)
+    if name in _MODELS_EXPORTS:
+        from prompttestenv import models
+        return getattr(models, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 

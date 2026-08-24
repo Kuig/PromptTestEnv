@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import statistics
 from dataclasses import dataclass, field, asdict
+from pathlib import Path
 
 def calculate_stats(scores_list: list[float], default_val: float = 0.0) -> tuple[float, float]:
     valid_scores = [s for s in scores_list if s >= 0]
@@ -82,6 +84,57 @@ class Candidate:
     system_prompt_file: str | None = None
     resolved_system_instruction: str | None = None
 
+    @classmethod
+    def load_all(cls, project_dir: str | Path) -> list[Candidate]:
+        """Load and resolve all candidate configurations from a project directory.
+
+        Reads ``<project_dir>/candidates.json`` and, for each candidate that
+        references a ``system_prompt_file``, resolves its text content from
+        ``<project_dir>/system_prompts/``.
+
+        Args:
+            project_dir: Path to the benchmark project directory.
+
+        Returns:
+            List of Candidate instances.
+
+        Raises:
+            FileNotFoundError: If candidates.json does not exist in project_dir.
+        """
+        import prompttestenv.logger as logger
+
+        project_dir = Path(project_dir)
+        cand_file = project_dir / "candidates.json"
+        if not cand_file.exists():
+            raise FileNotFoundError(f"candidates.json not found in {project_dir}")
+
+        sys_dir = project_dir / "system_prompts"
+        with open(cand_file, "r", encoding="utf-8") as f:
+            raw_candidates = json.load(f)
+
+        candidates = []
+        for cand in raw_candidates:
+            system_instruction = None
+            if cand.get("system_prompt_file"):
+                file_path = sys_dir / cand["system_prompt_file"]
+                if file_path.exists():
+                    system_instruction = file_path.read_text(encoding="utf-8").strip()
+                else:
+                    logger.log_warning(
+                        f"System prompt file '{file_path}' not found for candidate '{cand['name']}'."
+                    )
+            candidates.append(cls(
+                name=cand.get("name"),
+                provider=cand.get("provider", "google"),
+                model=cand.get("model"),
+                temperature=cand.get("temperature", 0.7),
+                disable_safety=cand.get("disable_safety", False),
+                thinking=cand.get("thinking", "default"),
+                system_prompt_file=cand.get("system_prompt_file"),
+                resolved_system_instruction=system_instruction,
+            ))
+        return candidates
+
 
 @dataclass
 class TestCase:
@@ -91,6 +144,37 @@ class TestCase:
     file: str | None = None
     group: str = "Default group"
     judge_type: str = "llm-judge"
+
+    @classmethod
+    def load_all(cls, project_dir: str | Path) -> list[TestCase]:
+        """Load all test cases from a project directory.
+
+        Args:
+            project_dir: Path to the benchmark project directory.
+
+        Returns:
+            List of TestCase instances.
+
+        Raises:
+            FileNotFoundError: If test_cases.json does not exist in project_dir.
+        """
+        test_file = Path(project_dir) / "test_cases.json"
+        if not test_file.exists():
+            raise FileNotFoundError(f"test_cases.json not found in {project_dir}")
+
+        with open(test_file, "r", encoding="utf-8") as f:
+            raw_cases = json.load(f)
+        return [
+            cls(
+                id=tc.get("id", "N/A"),
+                prompt=tc.get("prompt", ""),
+                criteria=tc.get("criteria", ""),
+                file=tc.get("file"),
+                group=tc.get("group", "Default group"),
+                judge_type=tc.get("judge_type", "llm-judge"),
+            )
+            for tc in raw_cases
+        ]
 
 
 @dataclass
@@ -196,6 +280,42 @@ class GlobalCriteria:
         else:
             return "Global evaluation disabled."
 
+    @classmethod
+    def load(cls, project_dir: str | Path) -> GlobalCriteria:
+        """Load global evaluation criteria from a project directory.
+
+        Unlike the other project config files, a missing or unreadable
+        global_criteria.json gracefully degrades to mode="none" (global
+        criteria scoring disabled) instead of raising — mode="none" is
+        itself a legitimate, explicit way to opt out of global scoring, so
+        treating "file absent" the same way is intentional, not an error.
+
+        Args:
+            project_dir: Path to the benchmark project directory.
+
+        Returns:
+            GlobalCriteria instance.
+        """
+        import prompttestenv.logger as logger
+
+        path = Path(project_dir) / "global_criteria.json"
+        if not path.exists():
+            logger.log_error(f"{path} not found. Using default 'none' mode.")
+            return cls(mode="none")
+
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return cls(
+                mode=data.get("mode", "llm-judge"),
+                llm_judge_criteria=data.get("llm_judge_criteria", ""),
+                similarity_criteria=data.get("similarity_criteria", ""),
+                assert_criteria=data.get("assert_criteria", ""),
+            )
+        except Exception as exc:
+            logger.log_error(f"Error reading {path}: {exc}")
+            return cls(mode="none")
+
 
 @dataclass
 class JudgeConfig:
@@ -299,3 +419,23 @@ class JudgeConfig:
             verdict_judge=verdict_judge,
             reasoning_judge=reasoning_judge,
         )
+
+    @classmethod
+    def load(cls, project_dir: str | Path) -> JudgeConfig:
+        """Load judge configuration from a project directory.
+
+        Args:
+            project_dir: Path to the benchmark project directory.
+
+        Returns:
+            Populated JudgeConfig instance.
+
+        Raises:
+            FileNotFoundError: If judge_config.json does not exist in project_dir.
+        """
+        path = Path(project_dir) / "judge_config.json"
+        if not path.exists():
+            raise FileNotFoundError(f"judge_config.json not found in {project_dir}")
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return cls.from_dict(data)

@@ -4,7 +4,6 @@ import os
 import datetime
 
 import prompttestenv.logger as logger
-from prompttestenv.config import CONFIG_FILE, load_candidates, load_judge_config, load_global_criteria, load_test_cases
 from prompttestenv.api import teardown
 from prompttestenv.evaluator import run_evaluation_phase
 from prompttestenv.verdict import generate_verdict, evaluate_best_candidate_fast
@@ -131,21 +130,21 @@ def run_project(
     if not os.path.exists(project_dir):
         return f"ERROR: Project folder '{project_dir}' does not exist. Use 'init' first."
 
-    candidates = load_candidates(project_dir)
-    judge_config = load_judge_config(project_dir)
+    try:
+        candidates = Candidate.load_all(project_dir)
+        judge_config = JudgeConfig.load(project_dir)
+        test_cases = TestCase.load_all(project_dir)
+    except (FileNotFoundError, ValueError) as exc:
+        return f"Error: {exc}"
 
     if not candidates:
         return f"Error: No candidates configured in {project_dir}"
 
-    if not judge_config:
-        return f"Error: Missing judge_config.json in {project_dir}"
-
-    global_criteria = load_global_criteria(project_dir)
-    judge_config.global_criteria = global_criteria
-
-    test_cases = load_test_cases(project_dir)
     if not test_cases:
-        return f"Error: No test cases found or test_cases.json is missing/empty in {project_dir}"
+        return f"Error: No test cases found in {project_dir}"
+
+    global_criteria = GlobalCriteria.load(project_dir)
+    judge_config.global_criteria = global_criteria
 
     logger.log_separator()
     logger.log_info(
@@ -199,16 +198,18 @@ def render_from_progress(project_dir: str) -> str:
             "Best-effort render will be performed."
         )
 
-    candidates = load_candidates(project_dir)
-    judge_config = load_judge_config(project_dir)
-    if not judge_config:
-        return f"Error: Missing judge_config.json in {project_dir}"
-    global_criteria = load_global_criteria(project_dir)
-    judge_config.global_criteria = global_criteria
+    try:
+        candidates = Candidate.load_all(project_dir)
+        judge_config = JudgeConfig.load(project_dir)
+        test_cases = TestCase.load_all(project_dir)
+    except (FileNotFoundError, ValueError) as exc:
+        return f"Error: {exc}"
 
-    test_cases = load_test_cases(project_dir)
     if not test_cases:
-        return f"Error: No test cases found or test_cases.json is missing/empty in {project_dir}"
+        return f"Error: No test cases found in {project_dir}"
+
+    global_criteria = GlobalCriteria.load(project_dir)
+    judge_config.global_criteria = global_criteria
     results = _initialize_test_results(test_cases, project_dir)
 
     best_scores: dict = {}

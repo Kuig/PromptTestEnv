@@ -61,10 +61,10 @@ prompttestenv gui
 ### As a Library
 
 ```python
-from prompttestenv.config import init_project, load_candidates
-from prompttestenv.runner import run_project
+from prompttestenv import init_project, run_project, Candidate
 
 init_project("Projects/MyBenchmark")
+candidates = Candidate.load_all("Projects/MyBenchmark")
 result = run_project("Projects/MyBenchmark", output_mode="html")
 print(result)
 ```
@@ -152,9 +152,11 @@ Projects/<benchmark>/
 
 > **Note:** PromptTestEnv intentionally has no root-level `config.json`. Unlike other `_UnifyTools` projects, every benchmark under `Projects/<name>/` is fully self-contained (`candidates.json`, `judge_config.json`, `test_cases.json`, `global_criteria.json`) — there is no cross-project provider/connection setting that would belong in a shared root config.
 
+`candidates.json`, `judge_config.json`, and `test_cases.json` are mandatory — a `run`/`render` fails with a clear error if any is missing. `global_criteria.json` is the one exception: if it's missing (or unreadable), PromptTestEnv logs a warning and silently falls back to `mode: "none"` (global criteria scoring disabled) instead of failing, since `"none"` is itself a valid, explicit way to opt out of global scoring — a missing file is treated the same as that explicit choice.
+
 ### Resume Policy
 
-Each run writes an append-only `progress.jsonl` inside the project directory. On the next `run`, PromptTestEnv computes an MD5 hash of `candidates.json`, `judge_config.json`, and `test_cases.json` and compares it against the hash stored in the first line of `progress.jsonl`:
+Each run writes an append-only `progress.jsonl` inside the project directory. On the next `run`, PromptTestEnv computes an MD5 hash of `candidates.json`, `judge_config.json`, `test_cases.json`, and `global_criteria.json`, and compares it against the hash stored in the first line of `progress.jsonl`:
 
 - **Hash matches**: already-completed generation/evaluation steps (keyed by `candidate × test × repetition`) are skipped and restored from the log.
 - **Hash mismatch**: the existing `progress.jsonl` is renamed to `progress.jsonl.bak` and the run refuses to resume silently — pass `--force-restart` to discard it and start clean, or restore the original config files to resume as before.

@@ -12,6 +12,7 @@ dependencies = [
     "mcp",
     "streamlit",
     "jinja2",
+    "unified-ai-client",
 ]
 
 [project.scripts]
