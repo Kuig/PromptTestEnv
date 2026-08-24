@@ -30,6 +30,31 @@ Configure your API key in `secrets.json` at the project root (copy `secrets.json
 }
 ```
 
+Run the test suite (no API key or network access required, nothing under `unified_ai_client` is called for real):
+
+```powershell
+python -m unittest discover -s tests -v
+```
+
+---
+
+## Configuration
+
+| File | Purpose |
+|---|---|
+| `secrets.json` | `google_api_key` for Google AI. Copy `secrets.json.example` to get started. |
+
+> **Note:** PromptTestEnv intentionally has no root-level `config.json`. Unlike other sibling projects, every benchmark under `Projects/<name>/` is fully self-contained (`candidates.json`, `judge_config.json`, `test_cases.json`, `global_criteria.json`): there is no cross-project provider/connection setting that would belong in a shared root config.
+
+`candidates.json`, `judge_config.json`, and `test_cases.json` are mandatory: a `run`/`render` fails with a clear error if any is missing. `global_criteria.json` is the one exception: if it's missing (or unreadable), PromptTestEnv logs a warning and silently falls back to `mode: "none"` (global criteria scoring disabled) instead of failing, since `"none"` is itself a valid, explicit way to opt out of global scoring; a missing file is treated the same as that explicit choice.
+
+### Resume Policy
+
+Each run writes an append-only `progress.jsonl` inside the project directory. On the next `run`, PromptTestEnv computes an MD5 hash of `candidates.json`, `judge_config.json`, `test_cases.json`, and `global_criteria.json`, and compares it against the hash stored in the first line of `progress.jsonl`:
+
+- **Hash matches**: already-completed generation/evaluation steps (keyed by `candidate × test × repetition`) are skipped and restored from the log.
+- **Hash mismatch**: the existing `progress.jsonl` is renamed to `progress.jsonl.bak` and the run refuses to resume silently: pass `--force-restart` to discard it and start clean, or restore the original config files to resume as before.
+
 ---
 
 ## Usage
@@ -77,7 +102,21 @@ result = run_project("Projects/MyBenchmark", output_mode="html")
 print(result)
 ```
 
-See [API Reference](#api-reference) below for the full public surface.
+#### API Reference
+
+Public surface exposed by `from prompttestenv import ...` (see `prompttestenv/__init__.py`):
+
+| Name | Kind | Signature | Description |
+|---|---|---|---|
+| `init_project` | function | `init_project(project_dir: str) -> None` | Scaffold a new benchmark project directory with default config files. |
+| `run_project` | function | `run_project(project_dir: str, output_mode: str = "html", force_restart: bool = False) -> str` | Run the full benchmark and return the report path (or an error string, never raises). |
+| `render_from_progress` | function | `render_from_progress(project_dir: str) -> str` | Regenerate the report from an existing `progress.jsonl`, with no LLM calls. |
+| `Candidate` | dataclass | `Candidate.load_all(project_dir) -> list[Candidate]` | Loads and resolves `candidates.json` (including `system_prompt_file` content). Raises `FileNotFoundError` if the file is missing. |
+| `TestCase` | dataclass | `TestCase.load_all(project_dir) -> list[TestCase]` | Loads `test_cases.json`. Raises `FileNotFoundError` if the file is missing. |
+| `JudgeConfig` | dataclass | `JudgeConfig.load(project_dir) -> JudgeConfig` | Loads `judge_config.json`. Raises `FileNotFoundError` if the file is missing. |
+| `GlobalCriteria` | dataclass | `GlobalCriteria.load(project_dir) -> GlobalCriteria` | Loads `global_criteria.json`. Falls back to `mode="none"` if the file is missing or unreadable, does not raise. |
+
+All names are re-exported lazily (only imported on first access), so `import prompttestenv` alone stays lightweight even when the underlying modules pull in `unified_ai_client` or `jinja2`.
 
 ### Streamlit GUI
 
@@ -96,7 +135,7 @@ Projects/<benchmark>/
 ├── test_cases.json         ← Prompts, evaluation criteria and evaluation modes
 ├── global_criteria.json    ← Structured global criteria JSON (with mode selector)
 ├── system_prompts/         ← Optional system prompt files
-├── test_files/             ← Attachments (images, text files)
+├── test_files/              ← Attachments (images, text files)
 └── progress.jsonl          ← Resume-safe run log
 ```
 
@@ -147,43 +186,6 @@ Projects/<benchmark>/
     }
 ]
 ```
-
----
-
-## Configuration
-
-| File | Purpose |
-|---|---|
-| `secrets.json` | `google_api_key` for Google AI. Copy `secrets.json.example` to get started. |
-
-> **Note:** PromptTestEnv intentionally has no root-level `config.json`. Unlike other sibling projects, every benchmark under `Projects/<name>/` is fully self-contained (`candidates.json`, `judge_config.json`, `test_cases.json`, `global_criteria.json`): there is no cross-project provider/connection setting that would belong in a shared root config.
-
-`candidates.json`, `judge_config.json`, and `test_cases.json` are mandatory: a `run`/`render` fails with a clear error if any is missing. `global_criteria.json` is the one exception: if it's missing (or unreadable), PromptTestEnv logs a warning and silently falls back to `mode: "none"` (global criteria scoring disabled) instead of failing, since `"none"` is itself a valid, explicit way to opt out of global scoring; a missing file is treated the same as that explicit choice.
-
-### Resume Policy
-
-Each run writes an append-only `progress.jsonl` inside the project directory. On the next `run`, PromptTestEnv computes an MD5 hash of `candidates.json`, `judge_config.json`, `test_cases.json`, and `global_criteria.json`, and compares it against the hash stored in the first line of `progress.jsonl`:
-
-- **Hash matches**: already-completed generation/evaluation steps (keyed by `candidate × test × repetition`) are skipped and restored from the log.
-- **Hash mismatch**: the existing `progress.jsonl` is renamed to `progress.jsonl.bak` and the run refuses to resume silently: pass `--force-restart` to discard it and start clean, or restore the original config files to resume as before.
-
----
-
-## API Reference
-
-Public surface exposed by `from prompttestenv import ...` (see `prompttestenv/__init__.py`):
-
-| Name | Kind | Signature | Description |
-|---|---|---|---|
-| `init_project` | function | `init_project(project_dir: str) -> None` | Scaffold a new benchmark project directory with default config files. |
-| `run_project` | function | `run_project(project_dir: str, output_mode: str = "html", force_restart: bool = False) -> str` | Run the full benchmark and return the report path (or an error string, never raises). |
-| `render_from_progress` | function | `render_from_progress(project_dir: str) -> str` | Regenerate the report from an existing `progress.jsonl`, with no LLM calls. |
-| `Candidate` | dataclass | `Candidate.load_all(project_dir) -> list[Candidate]` | Loads and resolves `candidates.json` (including `system_prompt_file` content). Raises `FileNotFoundError` if the file is missing. |
-| `TestCase` | dataclass | `TestCase.load_all(project_dir) -> list[TestCase]` | Loads `test_cases.json`. Raises `FileNotFoundError` if the file is missing. |
-| `JudgeConfig` | dataclass | `JudgeConfig.load(project_dir) -> JudgeConfig` | Loads `judge_config.json`. Raises `FileNotFoundError` if the file is missing. |
-| `GlobalCriteria` | dataclass | `GlobalCriteria.load(project_dir) -> GlobalCriteria` | Loads `global_criteria.json`. Falls back to `mode="none"` if the file is missing or unreadable, does not raise. |
-
-All names are re-exported lazily (only imported on first access), so `import prompttestenv` alone stays lightweight even when the underlying modules pull in `unified_ai_client` or `jinja2`.
 
 ---
 
