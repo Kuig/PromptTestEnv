@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>LLM Benchmark Report - {{ project_name }}</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, sans-serif; margin: 20px; color: #333; background: #f4f6f8; }
+        .verdict-box { background: #fff; border-left: 5px solid #007bff; padding: 20px; margin-bottom: 30px; border-radius: 4px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
+        table { border-collapse: collapse; width: 100%; table-layout: fixed; background: white; box-shadow: 0 1px 3px rgba(0,0,0,0.1); border-radius: 8px; margin-bottom: 40px; }
+        th, td { border: 1px solid #dfe6ed; padding: 15px; vertical-align: top; word-wrap: break-word; }
+        th { background-color: #e9ecef; position: sticky; top: 0; z-index: 10; text-align: left; }
+        .meta-col { width: 20%; background-color: #f8f9fa; font-size: 0.9em; }
+        .sys-col { width: 40%; }
+        .score-container { display: flex; gap: 10px; margin-bottom: 10px; }
+        .score-box { flex: 1; padding: 10px; border-radius: 6px; border: 1px solid #eee; background: #fff; display: flex; flex-direction: column; }
+        .score-val { font-weight: 800; font-size: 1.2em; }
+        .high-score { color: #155724; background-color: #d4edda; padding: 2px 8px; border-radius: 4px; align-self: flex-start; }
+        .mid-score { color: #856404; background-color: #fff3cd; padding: 2px 8px; border-radius: 4px; align-self: flex-start; }
+        .low-score { color: #721c24; background-color: #f8d7da; padding: 2px 8px; border-radius: 4px; align-self: flex-start; }
+        .file-badge { background: #e3f2fd; color: #0d47a1; padding: 4px 8px; border-radius: 4px; display: inline-block; margin-top: 5px; font-weight: bold; font-size: 0.85em; }
+        pre { white-space: pre-wrap; background: #fcfcfc; padding: 12px; border: 1px solid #edf2f7; font-size: 0.85em; max-height: 350px; overflow-y: auto; }
+        .stats-row { background-color: #e2e6ea; font-weight: bold; border-bottom: 2px solid #adb5bd; }
+        .stats-cell { text-align: center; font-family: monospace; font-size: 0.9em; color: #495057; }
+        .header-badge { background-color: #6c757d; color: white; border-radius: 12px; padding: 2px 8px; font-size: 0.8em; vertical-align: middle; margin-left: 8px; font-weight: normal; border: 1px solid #5a6268; }
+        .candidates-footer { padding: 20px; background-color: #e9ecef; border-radius: 8px; color: #495057; border: 1px solid #ced4da; font-size: 0.9em; }
+        .cand-card { background: #fff; padding: 10px; margin-bottom: 10px; border-radius: 4px; border: 1px solid #ddd; }
+        .cand-name { font-weight: bold; color: #007bff; }
+        /* Reasoning analysis */
+        .reasoning-bar-wrap { width: 100%; height: 18px; border-radius: 4px; overflow: hidden; display: flex; margin: 6px 0 2px; }
+        .reasoning-bar-segment { height: 100%; display: flex; align-items: center; justify-content: center; font-size: 0.65em; color: #fff; overflow: hidden; white-space: nowrap; }
+        .rb-interpretation { background: #4FC3F7; }
+        .rb-planning { background: #FFB74D; }
+        .rb-pure-reasoning { background: #81C784; }
+        .rb-output-formulation { background: #BA68C8; }
+        .reasoning-legend { display: flex; gap: 12px; flex-wrap: wrap; font-size: 0.72em; color: #555; margin-top: 3px; }
+        .reasoning-legend span::before { content: '\25A0 '; }
+        .reasoning-seg-text { font-size: 0.78em; color: #444; background: #f8f9fa; border: 1px solid #e0e0e0; border-radius: 4px; padding: 8px; margin-top: 4px; max-height: 200px; overflow-y: auto; white-space: pre-wrap; }
+    </style>
+</head>
+<body>
+    <h1>Benchmark Report: {{ project_name }}</h1>
+    <div class="verdict-box"><b>⚖️ Verdict:</b><br>{{ verdict_html | safe }}</div>
+    <table>
+        <thead>
+            <tr>
+                <th class="meta-col">Test Case</th>
+                {% for cand in candidates %}
+                    {% set s = stats[cand.name] %}
+                    <th class="sys-col">
+                        {{ cand.name }}
+                        <span class="header-badge" title="Average of Task & Global Means">
+                            {{ "{:.1f}".format(s.combined_avg) }}
+                        </span>
+                    </th>
+                {% endfor %}
+            </tr>
+        </thead>
+        <tbody>
+            <!-- --- STATS ROW --- -->
+            <tr class="stats-row">
+                <td class="meta-col" style="text-align:right; padding-right:20px;">STATS (Mean &plusmn; SD)</td>
+                {% for cand in candidates %}
+                    {% set s = stats[cand.name] %}
+                    <td class="stats-cell">
+                        Task: {{ "{:.2f}".format(s.task_mean) }} &plusmn; {{ "{:.2f}".format(s.task_std) }}<br>
+                        Global: {% if s.global_mean >= 0 %}{{ "{:.2f}".format(s.global_mean) }} &plusmn; {{ "{:.2f}".format(s.global_std) }}{% else %}N/A{% endif %}<br>
+                        <span style="font-size:0.85em; color:#666; margin-top:4px; display:inline-block;">
+                            Tokens: {{ "{:.0f}".format(s.token_mean) }} &plusmn; {{ "{:.0f}".format(s.token_std) }} (💭 {{ "{:.0f}".format(s.reasoning_mean) }} &plusmn; {{ "{:.0f}".format(s.reasoning_std) }}) | ⏱️ {{ "{:.2f}".format(s.time_mean) }}s &plusmn; {{ "{:.2f}".format(s.time_std) }}s
+                        </span>
+                        {% if reasoning_analysis_enabled %}
+                            {% set rs = reasoning_stats.get(cand.name, {}) %}
+                            {% if rs %}
+                            <div style="margin-top:6px;">
+                                <span style="font-size:0.8em;color:#555;">🧠 Pure Reasoning: <b>{{ "{:.1f}".format(rs.avg_pure_reasoning_pct) }}% &plusmn; {{ "{:.1f}".format(rs.std_pure_reasoning_pct) }}%</b></span><br>
+                                <div class="reasoning-bar-wrap" title="Cognitive resource allocation">
+                                    <div class="reasoning-bar-segment rb-interpretation" style="width:{{ rs.avg_interpretation_pct }}%" title="Interpretation: {{ rs.avg_interpretation_pct }}%">{% if rs.avg_interpretation_pct > 8 %}I{% endif %}</div>
+                                    <div class="reasoning-bar-segment rb-planning" style="width:{{ rs.avg_planning_pct }}%" title="Planning: {{ rs.avg_planning_pct }}%">{% if rs.avg_planning_pct > 8 %}P{% endif %}</div>
+                                    <div class="reasoning-bar-segment rb-pure-reasoning" style="width:{{ rs.avg_pure_reasoning_pct }}%" title="Pure Reasoning: {{ rs.avg_pure_reasoning_pct }}%">{% if rs.avg_pure_reasoning_pct > 8 %}R{% endif %}</div>
+                                    <div class="reasoning-bar-segment rb-output-formulation" style="width:{{ rs.avg_output_formulation_pct }}%" title="Output Formulation: {{ rs.avg_output_formulation_pct }}%">{% if rs.avg_output_formulation_pct > 8 %}O{% endif %}</div>
+                                </div>
+                                <div class="reasoning-legend">
+                                    <span style="color:#4FC3F7;">Interpretation</span>
+                                    <span style="color:#FFB74D;">Planning</span>
+                                    <span style="color:#81C784;">Pure Reasoning</span>
+                                    <span style="color:#BA68C8;">Output Formulation</span>
+                                </div>
+                            </div>
+                            {% endif %}
+                        {% endif %}
+                    </td>
+                {% endfor %}
+            </tr>
+            
+            {% for row in results %}
+                <tr>
+                    <td class="meta-col">
+                        <strong>ID:</strong> {{ row.test_id }}<br>
+                        <strong>Group:</strong> {{ row.group }}<br>
+                        <strong>Type:</strong> <span style="font-family: monospace; font-size: 0.9em; background: #e9ecef; padding: 2px 4px; border-radius: 4px;">{{ row.judge_type }}</span>
+                        {% if row.file_used %}
+                            <br><a href="../{{ row.file_used }}" target="_blank"><span class="file-badge">📎 {{ row.file_used }}</span></a>
+                        {% endif %}
+                        <br><br>
+                        <details>
+                            <summary><strong>Prompt & Criteria</strong></summary>
+                            <div style="margin-top:10px;">
+                                <strong>Prompt:</strong><br> {{ row.prompt }}
+                                <br><br>
+                                <strong>Criteria:</strong><br> <i>{{ row.criteria }}</i>
+                            </div>
+                        </details>
+                    </td>
+                    {% for cand in candidates %}
+                        {% set perf = row.candidates_perf.get(cand.name) %}
+                        <td>
+                            {% if perf %}
+                                <div style="font-size:0.75em;color:#888;margin-bottom:5px">🪙 {{ "{:.0f}".format(perf.tokens_mean) }} &plusmn; {{ "{:.0f}".format(perf.tokens_std) }} tokens (💭 {{ "{:.0f}".format(perf.reasoning_tokens_mean) }} &plusmn; {{ "{:.0f}".format(perf.reasoning_tokens_std) }}) | ⏱️ {{ "{:.2f}".format(perf.time_mean) }}s &plusmn; {{ "{:.2f}".format(perf.time_std) }}s</div>
+                                <div class="score-container" style="margin-top:10px;">
+                                    <div class="score-box">
+                                        <span class="score-val {{ get_badge_class(perf.score_mean) }}">
+                                            {{ "{:.2f}".format(perf.score_mean) }} &plusmn; {{ "{:.2f}".format(perf.score_std) }}
+                                        </span>
+                                        <span style="font-size:0.8em">Task</span>
+                                    </div>
+                                    <div class="score-box" style="background:#fafafa">
+                                        {% if perf.global_score_mean >= 0 %}
+                                            <span class="score-val {{ get_badge_class(perf.global_score_mean) }}">
+                                                {{ "{:.2f}".format(perf.global_score_mean) }} &plusmn; {{ "{:.2f}".format(perf.global_score_std) }}
+                                            </span>
+                                        {% else %}
+                                            <span class="score-val" style="color: #6c757d; background-color: #e9ecef; padding: 2px 8px; border-radius: 4px; align-self: flex-start;">
+                                                N/A
+                                            </span>
+                                        {% endif %}
+                                        <span style="font-size:0.8em">Global</span>
+                                    </div>
+                                </div>
+                                <details>
+                                    <summary><strong>Evaluation Reasons</strong></summary>
+                                    <div style="font-size:0.8em;color:#666; margin-top:5px;">
+                                        <b>Task:</b> <i>{{ perf.best_reason }}</i><br><br>
+                                        <b>Global:</b> <i>{{ perf.best_global_reason }}</i>
+                                    </div>
+                                </details>
+                                <details style="margin-top:5px;">
+                                    <summary><strong>Best Model Response</strong></summary>
+                                    <pre style="margin-top:10px;">{{ perf.best_output }}</pre>
+                                </details>
+                                {% if reasoning_analysis_enabled and perf.reasoning_analyses %}
+                                    {% set last_ra = perf.reasoning_analyses[-1] %}
+                                    <details style="margin-top:5px;">
+                                        <summary><strong>🧠 Reasoning Analysis</strong></summary>
+                                        <div style="font-size:0.8em; margin-top:8px; color:#444;">
+                                            <b>Metrics (last rep):</b>
+                                            Alt Paths: <b>{{ last_ra.alt_path }}</b> &nbsp;|
+                                            Self-corrections: <b>{{ last_ra.autocorrect }}</b> &nbsp;|
+                                            Alignment: <b>{{ last_ra.alignment_score }}/10</b><br><br>
+                                            <b>Cognitive distribution (last rep):</b>
+                                            <div class="reasoning-bar-wrap">
+                                                <div class="reasoning-bar-segment rb-interpretation" style="width:{{ last_ra.interpretation_pct }}%" title="Interpretation: {{ last_ra.interpretation_pct }}%">{% if last_ra.interpretation_pct > 8 %}I{% endif %}</div>
+                                                <div class="reasoning-bar-segment rb-planning" style="width:{{ last_ra.planning_pct }}%" title="Planning: {{ last_ra.planning_pct }}%">{% if last_ra.planning_pct > 8 %}P{% endif %}</div>
+                                                <div class="reasoning-bar-segment rb-pure-reasoning" style="width:{{ last_ra.pure_reasoning_pct }}%" title="Pure Reasoning: {{ last_ra.pure_reasoning_pct }}%">{% if last_ra.pure_reasoning_pct > 8 %}R{% endif %}</div>
+                                                <div class="reasoning-bar-segment rb-output-formulation" style="width:{{ last_ra.output_formulation_pct }}%" title="Output Formulation: {{ last_ra.output_formulation_pct }}%">{% if last_ra.output_formulation_pct > 8 %}O{% endif %}</div>
+                                            </div>
+                                            <div class="reasoning-legend" style="margin-bottom:10px;">
+                                                <span style="color:#4FC3F7;">Interpretation</span>
+                                                <span style="color:#FFB74D;">Planning</span>
+                                                <span style="color:#81C784;">Pure Reasoning</span>
+                                                <span style="color:#BA68C8;">Output Formulation</span>
+                                            </div>
+                                            <details>
+                                                <summary style="cursor:pointer;">Interpretation</summary>
+                                                <div class="reasoning-seg-text">{{ last_ra.interpretation }}</div>
+                                            </details>
+                                            <details>
+                                                <summary style="cursor:pointer;">Planning</summary>
+                                                <div class="reasoning-seg-text">{{ last_ra.planning }}</div>
+                                            </details>
+                                            <details>
+                                                <summary style="cursor:pointer;">Pure Reasoning</summary>
+                                                <div class="reasoning-seg-text">{{ last_ra.pure_reasoning }}</div>
+                                            </details>
+                                            <details>
+                                                <summary style="cursor:pointer;">Output Formulation</summary>
+                                                <div class="reasoning-seg-text">{{ last_ra.output_formulation }}</div>
+                                            </details>
+                                        </div>
+                                    </details>
+                                {% endif %}
+                            {% else %}
+                                <div style="font-size:0.75em;color:#888;margin-bottom:5px">🪙 0 &plusmn; 0 tokens (💭 0 &plusmn; 0) | ⏱️ 0.00s &plusmn; 0.00s</div>
+                                <div class="score-container" style="margin-top:10px;">
+                                    <div class="score-box">
+                                        <span class="score-val {{ get_badge_class(0) }}">0.00 &plusmn; 0.00</span>
+                                        <span style="font-size:0.8em">Task</span>
+                                    </div>
+                                    <div class="score-box" style="background:#fafafa">
+                                        {% if stats[cand.name].global_mean >= 0 %}
+                                            <span class="score-val {{ get_badge_class(0) }}">0.00 &plusmn; 0.00</span>
+                                        {% else %}
+                                            <span class="score-val" style="color: #6c757d; background-color: #e9ecef; padding: 2px 8px; border-radius: 4px; align-self: flex-start;">
+                                                N/A
+                                            </span>
+                                        {% endif %}
+                                        <span style="font-size:0.8em">Global</span>
+                                    </div>
+                                </div>
+                                <details>
+                                    <summary><strong>Evaluation Reasons</strong></summary>
+                                    <div style="font-size:0.8em;color:#666; margin-top:5px;">
+                                        <b>Task:</b> <i></i><br><br>
+                                        <b>Global:</b> <i></i>
+                                    </div>
+                                </details>
+                                <details style="margin-top:5px;">
+                                    <summary><strong>Best Model Response</strong></summary>
+                                    <pre style="margin-top:10px;"></pre>
+                                </details>
+                            {% endif %}
+                        </td>
+                    {% endfor %}
+                </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    
+    <div class="candidates-footer">
+        <h3 style="margin-top:0;">Candidates Configuration</h3>
+        {% for cand in candidates %}
+            {% set safe_str = "🔴 Disabled" if cand.disable_safety else "🟢 Default" %}
+            {% set c_thinking = format_thinking_value(cand.thinking) %}
+            <div class="cand-card">
+                <span class="cand-name">{{ cand.name }}</span> | 
+                <b>Model:</b> {{ cand.model }} | 
+                <b>Temp:</b> {{ cand.temperature }} | 
+                <b>Safety:</b> {{ safe_str }} |
+                <b>💡 Thinking: {{ c_thinking }}</b> |
+                <b>Prompt File:</b> 
+                {% if cand.system_prompt_file %}
+                    <a href="../system_prompts/{{ cand.system_prompt_file }}" target="_blank">{{ cand.system_prompt_file }}</a>
+                {% else %}
+                    None (Direct/Baseline)
+                {% endif %}
+            </div>
+        {% endfor %}
+        <div style="margin-top:15px; border-top:1px solid #ccc; padding-top:10px;">
+            <b>Global Criteria Mode:</b> <span class="header-badge" style="font-weight: bold; margin-left: 0; background-color: #17a2b8;">{{ global_criteria.mode }}</span><br>
+            {% if global_criteria.mode == 'llm-judge' %}
+                <span style="font-family:monospace; white-space: pre-wrap;">{{ global_criteria.llm_judge_criteria }}</span>
+            {% elif global_criteria.mode == 'similarity' %}
+                <b>Target Response for Similarity:</b><br>
+                <span style="font-family:monospace; white-space: pre-wrap;">{{ global_criteria.similarity_criteria }}</span>
+            {% elif global_criteria.mode == 'assert' %}
+                <b>Assertion Lambda:</b><br>
+                <span style="font-family:monospace; white-space: pre-wrap;">{{ global_criteria.assert_criteria }}</span>
+            {% else %}
+                <span style="color: #6c757d; font-style: italic;">Global evaluation disabled.</span>
+            {% endif %}
+        </div>
+        <div style="margin-top:15px; border-top:1px solid #ccc; padding-top:10px;">
+            <b>Test Judge Configuration:</b><br>
+            Model: <b>{{ judge_config.test_judge.model }}</b> | 
+            Temp: <b>{{ judge_config.test_judge.temperature }}</b> | 
+            Safety: <b>{{ "🔴 Disabled" if judge_config.test_judge.disable_safety else "🟢 Default" }}</b> | 
+            Thinking: <b>{{ format_thinking_value(judge_config.test_judge.thinking) }}</b>
+        </div>
+        <div style="margin-top:10px; border-top:1px dashed #ccc; padding-top:10px;">
+            <b>Verdict Judge Configuration:</b><br>
+            Model: <b>{{ judge_config.verdict_judge.model }}</b> | 
+            Temp: <b>{{ judge_config.verdict_judge.temperature }}</b> | 
+            Safety: <b>{{ "🔴 Disabled" if judge_config.verdict_judge.disable_safety else "🟢 Default" }}</b> | 
+            Thinking: <b>{{ format_thinking_value(judge_config.verdict_judge.thinking) }}</b>
+        </div>
+    </div>
+</body>
+</html>
