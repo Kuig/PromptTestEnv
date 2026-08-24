@@ -7,7 +7,7 @@ import subprocess
 import prompttestenv.logger as logger
 from prompttestenv.api import get_llm_response, preload_model_for_run
 from prompttestenv.progress import append_event
-from prompttestenv.models import Candidate, TestCaseResult, CandidatePerformance, JudgeConfig
+from prompttestenv.models import Candidate, TestCaseResult, CandidatePerformance, JudgeConfig, ProgressState
 
 
 def run_generation_phase(
@@ -15,7 +15,7 @@ def run_generation_phase(
     results: list[TestCaseResult],
     judge_config: JudgeConfig,
     project_dir: str,
-    progress_state: dict,
+    progress_state: ProgressState,
 ) -> list[dict]:
     """Execute Phase 1: generate LLM responses for all candidates x test cases.
 
@@ -64,9 +64,9 @@ def run_generation_phase(
 
                 # Resume logic
                 key = (cand_id, test_result.test_id, rep)
-                if key in progress_state["completed_gen"]:
+                if key in progress_state.completed_gen:
                     event = next(
-                        e for e in progress_state["events"]
+                        e for e in progress_state.events
                         if e["type"] == "gen"
                         and e["cand_id"] == cand_id
                         and e["test_id"] == test_result.test_id

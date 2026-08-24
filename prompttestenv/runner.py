@@ -9,8 +9,8 @@ from prompttestenv.evaluator import run_evaluation_phase
 from prompttestenv.verdict import generate_verdict, evaluate_best_candidate_fast
 from prompttestenv.generation import run_generation_phase
 from prompttestenv.reporting import generate_html_report
-from prompttestenv.models import TestCaseResult, CandidatePerformance, Candidate, TestCase, JudgeConfig, GlobalCriteria
-from prompttestenv.progress import init_progress, append_event
+from prompttestenv.models import TestCaseResult, CandidatePerformance, Candidate, TestCase, JudgeConfig, GlobalCriteria, ProgressState
+from prompttestenv.progress import append_event
 
 
 def _initialize_test_results(test_cases: list[TestCase], project_dir: str) -> list[TestCaseResult]:
@@ -52,7 +52,7 @@ def _generate_output(
     project_dir: str,
     judge_config: JudgeConfig,
     global_criteria: GlobalCriteria,
-    progress_state: dict,
+    progress_state: ProgressState,
 ) -> str:
     """Generate the final benchmark report.
 
@@ -71,8 +71,8 @@ def _generate_output(
     if output_mode == "winner_only":
         return evaluate_best_candidate_fast(candidates, results)
 
-    if progress_state and progress_state.get("verdict"):
-        verdict = progress_state["verdict"]
+    if progress_state.verdict:
+        verdict = progress_state.verdict
         logger.log_info("Verdict resumed from log.")
     else:
         verdict = generate_verdict(candidates, results, project_dir, judge_config)
@@ -153,9 +153,9 @@ def run_project(
     )
 
     results = _initialize_test_results(test_cases, project_dir)
-    progress_state = init_progress(project_dir, force_restart)
+    progress_state = ProgressState.load(project_dir, force_restart)
 
-    if not progress_state["hash_match"]:
+    if not progress_state.hash_match:
         return (
             "ERROR: Project configuration has changed since last execution. "
             "Use --force-restart to discard past progress and restart."
@@ -188,11 +188,11 @@ def render_from_progress(project_dir: str) -> str:
     Returns:
         Report path string or partial progress summary.
     """
-    progress_state = init_progress(project_dir, force_restart=False)
-    if not progress_state["events"]:
+    progress_state = ProgressState.load(project_dir, force_restart=False)
+    if not progress_state.events:
         return f"No progress found in {project_dir}"
 
-    if not progress_state["hash_match"]:
+    if not progress_state.hash_match:
         logger.log_warning(
             "Current configuration does not match the progress. "
             "Best-effort render will be performed."
@@ -213,7 +213,7 @@ def render_from_progress(project_dir: str) -> str:
     results = _initialize_test_results(test_cases, project_dir)
 
     best_scores: dict = {}
-    for event in progress_state["events"]:
+    for event in progress_state.events:
         if event["type"] == "gen":
             cand_id = event["cand_id"]
             test_result = next(
@@ -244,7 +244,7 @@ def render_from_progress(project_dir: str) -> str:
                     best_scores[score_key] = event["score"]
                     gen_event = next(
                         (
-                            e for e in progress_state["events"]
+                            e for e in progress_state.events
                             if e["type"] == "gen"
                             and e["cand_id"] == cand_id
                             and e["test_id"] == event["test_id"]
@@ -257,13 +257,13 @@ def render_from_progress(project_dir: str) -> str:
                     cand_perf.best_reason = event["reason"]
                     cand_perf.best_global_reason = event["g_reason"]
 
-    if progress_state.get("verdict"):
+    if progress_state.verdict:
         return _generate_output(
             "html", candidates, results, project_dir, judge_config, global_criteria, progress_state
         )
 
     return (
         f"Partial progress: "
-        f"{len(progress_state['completed_gen'])} generation(s) and "
-        f"{len(progress_state['completed_eval'])} evaluation(s) found."
+        f"{len(progress_state.completed_gen)} generation(s) and "
+        f"{len(progress_state.completed_eval)} evaluation(s) found."
     )

@@ -7,7 +7,7 @@ import subprocess
 import prompttestenv.logger as logger
 from prompttestenv.api import preload_model_for_run
 from prompttestenv.progress import append_event
-from prompttestenv.models import JudgeConfig
+from prompttestenv.models import JudgeConfig, ProgressState
 from prompttestenv.test_judge import evaluate_with_judge
 from prompttestenv.reasoning import analyze_reasoning
 
@@ -16,7 +16,7 @@ def run_evaluation_phase(
     pending_evals: list[dict],
     judge_config: JudgeConfig,
     project_dir: str,
-    progress_state: dict,
+    progress_state: ProgressState,
 ) -> None:
     """Execute Phase 2: judge evaluation of all generated responses.
 
@@ -64,9 +64,9 @@ def run_evaluation_phase(
 
         # Resume logic
         key = (cand_id, test_result.test_id, rep)
-        if key in progress_state["completed_eval"]:
+        if key in progress_state.completed_eval:
             event = next(
-                e for e in progress_state["events"]
+                e for e in progress_state.events
                 if e["type"] == "eval"
                 and e["cand_id"] == cand_id
                 and e["test_id"] == test_result.test_id

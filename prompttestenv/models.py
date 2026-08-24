@@ -439,3 +439,113 @@ class JudgeConfig:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
         return cls.from_dict(data)
+
+
+@dataclass(frozen=True)
+class ProgressState:
+    """Read-only snapshot of a project's resume state, built once from progress.jsonl.
+
+    ``events`` intentionally stays a list of raw dicts rather than typed event
+    dataclasses: it is a direct in-memory mirror of heterogeneous JSONL log
+    lines (differently shaped per ``type``), which is exactly the "dynamic/opaque
+    data" case dict is meant for.
+    """
+
+    hash_match: bool = True
+    completed_gen: set[tuple[str, str, int]] = field(default_factory=set)
+    completed_eval: set[tuple[str, str, int]] = field(default_factory=set)
+    events: list[dict] = field(default_factory=list)
+    verdict: str | None = None
+    last_hash: str | None = None
+
+    @classmethod
+    def load(cls, project_dir: str | Path, force_restart: bool = False) -> ProgressState:
+        """Initialize or read a project's progress.jsonl resume log.
+
+        If force_restart is True, or the stored config hash no longer matches
+        the current config files, the existing progress.jsonl is renamed to
+        progress.jsonl.bak (or, if force_restart, simply removed) instead of
+        being read.
+
+        Args:
+            project_dir: Path to the benchmark project directory.
+            force_restart: If True, discard any existing progress.jsonl.
+
+        Returns:
+            A ProgressState snapshot. When the stored config hash does not
+            match the current one, ``hash_match`` is False and all other
+            fields keep their defaults (empty/None) — callers must check
+            ``hash_match`` before trusting the rest of the snapshot.
+        """
+        import os
+
+        import prompttestenv.logger as logger
+        from prompttestenv.progress import calculate_config_hash
+
+        project_dir = str(project_dir)
+        progress_file = os.path.join(project_dir, "progress.jsonl")
+        current_hash = calculate_config_hash(project_dir)
+
+        if force_restart and os.path.exists(progress_file):
+            os.remove(progress_file)
+
+        hash_match = True
+        completed_gen: set[tuple[str, str, int]] = set()
+        completed_eval: set[tuple[str, str, int]] = set()
+        events: list[dict] = []
+        verdict: str | None = None
+        last_hash: str | None = None
+
+        if os.path.exists(progress_file):
+            with open(progress_file, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+
+            if lines:
+                try:
+                    meta = json.loads(lines[0])
+                    if meta.get("type") == "meta":
+                        last_hash = meta.get("config_hash")
+                        if last_hash != current_hash:
+                            logger.log_warning(
+                                "Configuration hash mismatch! "
+                                "Renaming invalid progress file to: progress.jsonl.bak"
+                            )
+                            os.replace(progress_file, progress_file + ".bak")
+                            return cls(hash_match=False, last_hash=last_hash)
+                except json.JSONDecodeError:
+                    logger.log_warning(
+                        "Corrupted progress file detected! Renaming to: progress.jsonl.bak"
+                    )
+                    os.replace(progress_file, progress_file + ".bak")
+                    return cls(hash_match=False)
+
+                for line in lines[1:]:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        event = json.loads(line)
+                        events.append(event)
+                        if event["type"] == "gen":
+                            key = (event["cand_id"], event["test_id"], event["rep"])
+                            completed_gen.add(key)
+                        elif event["type"] == "eval":
+                            key = (event["cand_id"], event["test_id"], event["rep"])
+                            completed_eval.add(key)
+                        elif event["type"] == "verdict":
+                            verdict = event["content"]
+                    except json.JSONDecodeError:
+                        pass  # ignore broken lines at the end of file (crash mid-write)
+
+        if not os.path.exists(progress_file):
+            with open(progress_file, "w", encoding="utf-8") as f:
+                f.write(json.dumps({"type": "meta", "config_hash": current_hash}) + "\n")
+
+        return cls(
+            hash_match=hash_match,
+            completed_gen=completed_gen,
+            completed_eval=completed_eval,
+            events=events,
+            verdict=verdict,
+            last_hash=last_hash,
+        )
