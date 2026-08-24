@@ -4,6 +4,7 @@ __pycache__/
 *.egg-info/
 .vs/
 .cora/
+.claude/
 secrets.json
 CLAUDE.md
 Projects/

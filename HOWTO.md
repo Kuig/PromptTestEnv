@@ -100,8 +100,8 @@ The feature is silently skipped for candidates that do not produce reasoning out
 *Configures the LLM that analyses the reasoning trace.*
 - `provider`, `model`, `temperature`, `thinking`: Standard LLM parameters. Recommended: fast model with `thinking: false` (e.g. `gemini-2.5-flash`).
 - `reasoning_system_prompt` *(string)*: The system persona for the reasoning judge (e.g., "You are a cognitive process analyst...").
-- `segmentation_template`: Prompt template for the **first call** — the LLM must segment the reasoning trace verbatim into 4 JSON fields (see below). **Must include the variable:** `{reasoning_text}`.
-- `metrics_template`: Prompt template for the **second call** — the LLM must extract 3 numeric metrics. **Must include the variables:** `{reasoning_text}` and `{candidate_response}` (the final response is passed here so that `alignment_score` can be evaluated against the actual output).
+- `segmentation_template`: Prompt template for the **first call**: the LLM must segment the reasoning trace verbatim into 4 JSON fields (see below). **Must include the variable:** `{reasoning_text}`.
+- `metrics_template`: Prompt template for the **second call**: the LLM must extract 3 numeric metrics. **Must include the variables:** `{reasoning_text}` and `{candidate_response}` (the final response is passed here so that `alignment_score` can be evaluated against the actual output).
 
 **The 4 Cognitive Categories:**
 | Category | Description |
