@@ -5,7 +5,7 @@ import os
 
 import prompttestenv.logger as logger
 from prompttestenv.api import get_llm_response
-from prompttestenv.models import TestCaseResult, Candidate, JudgeConfig, calculate_stats
+from prompttestenv.models import TestCaseResult, Candidate, JudgeConfig, calculate_stats, DEFAULT_GROUP
 from prompttestenv.reasoning import aggregate_reasoning_stats
 
 
@@ -169,7 +169,7 @@ def generate_verdict(
         if judge_config.group_verdicts:
             groups = {}
             for row in results:
-                g = row.group or "Default group"
+                g = row.group or DEFAULT_GROUP
                 groups.setdefault(g, []).append(row)
                 
             group_verdicts_list = []

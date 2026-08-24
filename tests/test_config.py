@@ -36,6 +36,12 @@ class TestInitProject(LoggerResetTestCase):
         self.assertTrue((p / "test_files" / "sample.txt").exists())
         self.assertTrue((self.fake_repo_root / "secrets.json").exists())
 
+        # Regression guard for the templates/default_*.json resource-file
+        # loading path: confirm actual prompt content was written, not just
+        # that the file exists.
+        judge_data = json.loads((p / "judge_config.json").read_text(encoding="utf-8"))
+        self.assertTrue(judge_data["test_judge"]["evaluation_template"].strip())
+
     def test_default_candidates_have_expected_shape(self):
         config.init_project(self.project_dir)
         data = json.loads((Path(self.project_dir) / "candidates.json").read_text(encoding="utf-8"))

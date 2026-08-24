@@ -2,10 +2,17 @@ from __future__ import annotations
 
 import json
 import statistics
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field, fields, asdict
 from pathlib import Path
 
 import prompttestenv.logger as logger
+
+DEFAULT_GROUP = "Default group"
+JUDGE_TYPE_LLM = "llm-judge"
+JUDGE_TYPE_SIMILARITY = "similarity"
+JUDGE_TYPE_ASSERT = "assert"
+GLOBAL_MODE_NONE = "none"
+
 
 def calculate_stats(scores_list: list[float], default_val: float = 0.0) -> tuple[float, float]:
     valid_scores = [s for s in scores_list if s >= 0]
@@ -68,11 +75,11 @@ class TestCaseResult:
     test_id: str
     prompt: str
     criteria: str
-    group: str = "Default group"
+    group: str = DEFAULT_GROUP
     file_used: str | None = None
     _media_file_path: str | None = None
     candidates_perf: dict[str, CandidatePerformance] = field(default_factory=dict)
-    judge_type: str = "llm-judge"
+    judge_type: str = JUDGE_TYPE_LLM
 
 
 @dataclass
@@ -142,8 +149,8 @@ class TestCase:
     prompt: str
     criteria: str
     file: str | None = None
-    group: str = "Default group"
-    judge_type: str = "llm-judge"
+    group: str = DEFAULT_GROUP
+    judge_type: str = JUDGE_TYPE_LLM
 
     @classmethod
     def load_all(cls, project_dir: str | Path) -> list[TestCase]:
@@ -170,8 +177,8 @@ class TestCase:
                 prompt=tc.get("prompt", ""),
                 criteria=tc.get("criteria", ""),
                 file=tc.get("file"),
-                group=tc.get("group", "Default group"),
-                judge_type=tc.get("judge_type", "llm-judge"),
+                group=tc.get("group", DEFAULT_GROUP),
+                judge_type=tc.get("judge_type", JUDGE_TYPE_LLM),
             )
             for tc in raw_cases
         ]
@@ -265,17 +272,17 @@ class VerdictJudgeSettings:
 
 @dataclass
 class GlobalCriteria:
-    mode: str = "llm-judge"  # "llm-judge", "similarity", "assert", "none"
+    mode: str = JUDGE_TYPE_LLM  # "llm-judge", "similarity", "assert", "none"
     llm_judge_criteria: str = ""
     similarity_criteria: str = ""
     assert_criteria: str = ""
 
     def to_verdict_string(self) -> str:
-        if self.mode == "llm-judge":
+        if self.mode == JUDGE_TYPE_LLM:
             return self.llm_judge_criteria
-        elif self.mode == "similarity":
+        elif self.mode == JUDGE_TYPE_SIMILARITY:
             return f"Cosine similarity (scale 1-10) between candidate response and target response: {self.similarity_criteria}"
-        elif self.mode == "assert":
+        elif self.mode == JUDGE_TYPE_ASSERT:
             return f"Global evaluation via programmatic assertion: {self.assert_criteria}"
         else:
             return "Global evaluation disabled."
@@ -299,20 +306,37 @@ class GlobalCriteria:
         path = Path(project_dir) / "global_criteria.json"
         if not path.exists():
             logger.log_error(f"{path} not found. Using default 'none' mode.")
-            return cls(mode="none")
+            return cls(mode=GLOBAL_MODE_NONE)
 
         try:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             return cls(
-                mode=data.get("mode", "llm-judge"),
+                mode=data.get("mode", JUDGE_TYPE_LLM),
                 llm_judge_criteria=data.get("llm_judge_criteria", ""),
                 similarity_criteria=data.get("similarity_criteria", ""),
                 assert_criteria=data.get("assert_criteria", ""),
             )
         except Exception as exc:
             logger.log_error(f"Error reading {path}: {exc}")
-            return cls(mode="none")
+            return cls(mode=GLOBAL_MODE_NONE)
+
+
+def _settings_from_dict(cls: type, data: dict):
+    """Populate a settings dataclass from a dict, using its own field defaults for missing keys.
+
+    Assumes every field of `cls` has a plain literal default (no default_factory) —
+    true for all 4 current call sites (TestJudgeSettings, SimilarityJudgeSettings,
+    VerdictJudgeSettings, ReasoningJudgeSettings).
+
+    Args:
+        cls: The settings dataclass to construct.
+        data: Raw dict (e.g. one sub-section of judge_config.json).
+
+    Returns:
+        A populated instance of cls.
+    """
+    return cls(**{f.name: data.get(f.name, f.default) for f in fields(cls)})
 
 
 @dataclass
@@ -347,50 +371,21 @@ class JudgeConfig:
         vj_data = data.get("verdict_judge", {})
         rj_data = data.get("reasoning_judge", {})
 
-        test_judge = TestJudgeSettings(
-            provider=tj_data.get("provider", "google"),
-            model=tj_data.get("model", "gemini-3-flash-preview"),
-            temperature=tj_data.get("temperature", 0.2),
-            disable_safety=tj_data.get("disable_safety", True),
-            thinking=tj_data.get("thinking", "default"),
-            evaluation_system_prompt=tj_data.get("evaluation_system_prompt", ""),
-            evaluation_template=tj_data.get("evaluation_template", ""),
-        )
+        test_judge = _settings_from_dict(TestJudgeSettings, tj_data)
+        similarity_judge = _settings_from_dict(SimilarityJudgeSettings, sj_data)
+        verdict_judge = _settings_from_dict(VerdictJudgeSettings, vj_data)
 
-        similarity_judge = SimilarityJudgeSettings(
-            provider=sj_data.get("provider", "ollama"),
-            model=sj_data.get("model", "bge-m3"),
-        )
-
-        verdict_judge = VerdictJudgeSettings(
-            provider=vj_data.get("provider", "google"),
-            model=vj_data.get("model", "gemini-3-flash-preview"),
-            temperature=vj_data.get("temperature", 0.2),
-            disable_safety=vj_data.get("disable_safety", True),
-            thinking=vj_data.get("thinking", "default"),
-            verdict_system_prompt=vj_data.get("verdict_system_prompt", ""),
-            verdict_template=vj_data.get("verdict_template", ""),
-            global_verdict_template=vj_data.get("global_verdict_template", ""),
-        )
-
+        # Legacy fallback: reasoning_judge used to be keyed "system_prompt".
         reasoning_system_prompt = rj_data.get("reasoning_system_prompt")
         if reasoning_system_prompt is None:
             reasoning_system_prompt = rj_data.get("system_prompt", "")
-
-        reasoning_judge = ReasoningJudgeSettings(
-            provider=rj_data.get("provider", "google"),
-            model=rj_data.get("model", "gemini-2.5-flash"),
-            temperature=rj_data.get("temperature", 0.2),
-            thinking=rj_data.get("thinking", False),
-            reasoning_system_prompt=reasoning_system_prompt,
-            segmentation_template=rj_data.get("segmentation_template", ""),
-            metrics_template=rj_data.get("metrics_template", ""),
-        )
+        rj_data = {**rj_data, "reasoning_system_prompt": reasoning_system_prompt}
+        reasoning_judge = _settings_from_dict(ReasoningJudgeSettings, rj_data)
 
         gc_data = data.get("global_criteria", {})
         if isinstance(gc_data, dict):
             global_criteria = GlobalCriteria(
-                mode=gc_data.get("mode", "llm-judge"),
+                mode=gc_data.get("mode", JUDGE_TYPE_LLM),
                 llm_judge_criteria=gc_data.get("llm_judge_criteria", ""),
                 similarity_criteria=gc_data.get("similarity_criteria", ""),
                 assert_criteria=gc_data.get("assert_criteria", ""),
@@ -399,7 +394,7 @@ class JudgeConfig:
             global_criteria = gc_data
         else:
             global_criteria = GlobalCriteria(
-                mode="llm-judge" if gc_data else "none",
+                mode=JUDGE_TYPE_LLM if gc_data else GLOBAL_MODE_NONE,
                 llm_judge_criteria=str(gc_data),
             )
 

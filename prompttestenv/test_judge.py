@@ -6,7 +6,14 @@ from dataclasses import dataclass
 
 import prompttestenv.logger as logger
 from prompttestenv.api import get_llm_response, get_text_embedding, cosine_similarity
-from prompttestenv.models import TestCaseResult, JudgeConfig
+from prompttestenv.models import (
+    TestCaseResult,
+    JudgeConfig,
+    JUDGE_TYPE_LLM,
+    JUDGE_TYPE_SIMILARITY,
+    JUDGE_TYPE_ASSERT,
+    GLOBAL_MODE_NONE,
+)
 
 
 def _evaluate_llm_judge(
@@ -176,27 +183,27 @@ def evaluate_with_judge(
         Dict with keys: score, reasoning, global_score, global_reasoning.
     """
     def run_task_eval():
-        judge_type = getattr(prompt, "judge_type", "llm-judge")
-        if judge_type == "llm-judge":
+        judge_type = getattr(prompt, "judge_type", JUDGE_TYPE_LLM)
+        if judge_type == JUDGE_TYPE_LLM:
             return _evaluate_llm_judge(prompt, candidate_response, judge_config, local_media_path)
-        elif judge_type == "similarity":
+        elif judge_type == JUDGE_TYPE_SIMILARITY:
             return _evaluate_similarity(prompt.criteria, candidate_response, judge_config)
-        elif judge_type == "assert":
+        elif judge_type == JUDGE_TYPE_ASSERT:
             return _evaluate_assert(prompt.criteria, candidate_response)
         else:
             return 0, f"Error: Unknown judge_type '{judge_type}'."
 
     def run_global_eval():
         g_criteria = judge_config.global_criteria
-        g_mode = getattr(g_criteria, "mode", "none")
-        if g_mode == "none":
+        g_mode = getattr(g_criteria, "mode", GLOBAL_MODE_NONE)
+        if g_mode == GLOBAL_MODE_NONE:
             return -1, "N/A"
-        elif g_mode == "llm-judge":
+        elif g_mode == JUDGE_TYPE_LLM:
             mock_prompt = TempPrompt(prompt=prompt.prompt, criteria=g_criteria.llm_judge_criteria)
             return _evaluate_llm_judge(mock_prompt, candidate_response, judge_config, local_media_path)
-        elif g_mode == "similarity":
+        elif g_mode == JUDGE_TYPE_SIMILARITY:
             return _evaluate_similarity(g_criteria.similarity_criteria, candidate_response, judge_config)
-        elif g_mode == "assert":
+        elif g_mode == JUDGE_TYPE_ASSERT:
             return _evaluate_assert(g_criteria.assert_criteria, candidate_response)
         else:
             return 0, f"Error: Unknown global evaluation mode '{g_mode}'."

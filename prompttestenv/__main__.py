@@ -16,12 +16,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-# Ensure emoji and Unicode output work on Windows consoles
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-if hasattr(sys.stderr, "reconfigure"):
-    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-
+# UTF-8 console setup is handled once by prompttestenv/__init__.py, which
+# always runs first when this module is imported as part of the package.
 sys.path.insert(0, str(Path(__file__).parent))
 
 from unified_ai_client import silence_sdks

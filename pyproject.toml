@@ -22,5 +22,5 @@ prompttestenv = "prompttestenv.__main__:main"
 include = ["prompttestenv*"]
 
 [tool.setuptools.package-data]
-prompttestenv = ["templates/*.html"]
+prompttestenv = ["templates/*"]
 

@@ -1,0 +1,41 @@
+{
+    "repetitions": 5,
+    "repetition_delay_seconds": 2,
+    "evaluation_delay_seconds": 2,
+    "max_response_timeout_seconds": 240,
+    "pass_media_to_judge": false,
+    "group_verdicts": false,
+    "reasoning_analysis": true,
+    "test_judge": {
+        "provider": "google",
+        "model": "gemini-3-flash-preview",
+        "temperature": 0.2,
+        "disable_safety": true,
+        "thinking": "default",
+        "evaluation_system_prompt": "You are an impartial AI judge. Evaluate the candidate's response against the specified criteria. Output MUST be JSON with fields: score (1-10), reasoning.",
+        "evaluation_template": "[USER INPUT]\n{user_prompt}\n\n[CANDIDATE RESPONSE]\n{candidate_response}\n\n[CRITERIA]\n{criteria}\n\n---\n\nAnalyze the response and provide the JSON output. Score: 1-10."
+    },
+    "similarity_judge": {
+        "provider": "ollama",
+        "model": "bge-m3"
+    },
+    "reasoning_judge": {
+        "provider": "google",
+        "model": "gemini-2.5-flash",
+        "temperature": 0.2,
+        "thinking": false,
+        "reasoning_system_prompt": "You are a cognitive process analyst. Your task is to analyze the internal reasoning traces of AI models and extract structured information from them. Always respond with valid JSON only \u2014 no prose, no markdown code blocks.",
+        "segmentation_template": "You will receive the internal reasoning trace of an AI model. Segment this trace verbatim into exactly 4 categories. Every single word of the reasoning MUST appear in exactly one category \u2014 do not omit, paraphrase, or summarize anything.\n\nCategories:\n- interpretation: The part where the model analyzes and rephrases the user's request to ensure it understood the problem correctly.\n- planning: The part where the model evaluates its approach, tools, or strategy before solving the problem.\n- pure_reasoning: The actual problem-solving: recall of facts, logical deduction, alternative options, self-correction, and computation.\n- output_formulation: The part dedicated exclusively to deciding how to present the final answer (format, markdown, structure, tone).\n\nOutput MUST be a JSON object with exactly these 4 string fields: interpretation, planning, pure_reasoning, output_formulation.\n\nREASONING TRACE:\n{reasoning_text}",
+        "metrics_template": "Analyze the following AI reasoning trace and the final response it produced, then extract exactly 3 numeric metrics.\n\nMetrics to extract:\n- alt_path (integer): The number of distinct alternative solution paths or approaches the model explicitly considered before choosing one.\n- autocorrect (integer): The number of times the model explicitly corrected itself (e.g., 'Wait, that\\'s wrong', 'Let me reconsider', 'Actually...').\n- alignment_score (integer 1-10): How well the FINAL RESPONSE reflects and builds upon the reasoning process. 10 = the response directly implements the conclusions of the reasoning; 1 = the response ignores or contradicts the reasoning.\n\nOutput MUST be a JSON object with exactly these 3 fields: alt_path, autocorrect, alignment_score.\n\nREASONING TRACE:\n{reasoning_text}\n\nFINAL RESPONSE:\n{candidate_response}"
+    },
+    "verdict_judge": {
+        "provider": "google",
+        "model": "gemini-3-flash-preview",
+        "temperature": 0.2,
+        "disable_safety": true,
+        "thinking": "default",
+        "verdict_system_prompt": "You are a Senior AI Analyst. Your task is to analyze the results of a comparative benchmark across different models given a set of criteria, metrics and test results. Be direct and concise. Do not use pleasantries, only provide the requested report.",
+        "verdict_template": "# GLOBAL EVALUATION CRITERIA:\n{global_criteria}\n\n# TESTS RESULTS:\n[Note: For each test case, 'Notes' are evaluations from the single best execution (repetition) of the candidate. Scores, execution time and token counts are averaged across all repetitions.]\n\n{summary_data}\n\n---\n\n# ANALYSIS INSTRUCTIONS:\nAnalyze the results and create a Markdown report:\n1. Identify the winning model.\n2. Briefly describe each model's behavior.\n3. Highlight strengths and weaknesses vs the Baseline.\n4. Suggest use cases for each model.\n5. Note any trends or special cases.\n6. Write a concluding verdict.",
+        "global_verdict_template": "# GROUP VERDICTS:\n{group_verdicts_data}\n\n---\n\n# ANALYSIS INSTRUCTIONS:\nAnalyze the verdicts from all groups and provide a final overall conclusion.\n1. Identify the winning model.\n2. Briefly describe each model's behavior.\n3. Highlight strengths and weaknesses vs the Baseline.\n4. Suggest use cases for each model.\n5. Note any trends or special cases.\n6. Write a concluding verdict."
+    }
+}

@@ -18,7 +18,7 @@ def get_badge_class(score):
         if val >= 8.0: return "high-score"
         if val >= 5.0: return "mid-score"
         return "low-score"
-    except:
+    except Exception:
         return "low-score"
 
 
