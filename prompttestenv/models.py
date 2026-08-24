@@ -5,6 +5,8 @@ import statistics
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 
+import prompttestenv.logger as logger
+
 def calculate_stats(scores_list: list[float], default_val: float = 0.0) -> tuple[float, float]:
     valid_scores = [s for s in scores_list if s >= 0]
     if not valid_scores:
@@ -101,8 +103,6 @@ class Candidate:
         Raises:
             FileNotFoundError: If candidates.json does not exist in project_dir.
         """
-        import prompttestenv.logger as logger
-
         project_dir = Path(project_dir)
         cand_file = project_dir / "candidates.json"
         if not cand_file.exists():
@@ -296,8 +296,6 @@ class GlobalCriteria:
         Returns:
             GlobalCriteria instance.
         """
-        import prompttestenv.logger as logger
-
         path = Path(project_dir) / "global_criteria.json"
         if not path.exists():
             logger.log_error(f"{path} not found. Using default 'none' mode.")
@@ -449,6 +447,11 @@ class ProgressState:
     dataclasses: it is a direct in-memory mirror of heterogeneous JSONL log
     lines (differently shaped per ``type``), which is exactly the "dynamic/opaque
     data" case dict is meant for.
+
+    ``gen_events``/``eval_events`` index the same "gen"/"eval" event dicts
+    already in ``events`` by their ``(cand_id, test_id, rep)`` key — built in
+    the same pass as ``completed_gen``/``completed_eval`` — so a resumed key
+    can be looked up in O(1) instead of scanning ``events`` linearly.
     """
 
     hash_match: bool = True
@@ -457,6 +460,8 @@ class ProgressState:
     events: list[dict] = field(default_factory=list)
     verdict: str | None = None
     last_hash: str | None = None
+    gen_events: dict[tuple[str, str, int], dict] = field(default_factory=dict)
+    eval_events: dict[tuple[str, str, int], dict] = field(default_factory=dict)
 
     @classmethod
     def load(cls, project_dir: str | Path, force_restart: bool = False) -> ProgressState:
@@ -479,7 +484,6 @@ class ProgressState:
         """
         import os
 
-        import prompttestenv.logger as logger
         from prompttestenv.progress import calculate_config_hash
 
         project_dir = str(project_dir)
@@ -495,6 +499,8 @@ class ProgressState:
         events: list[dict] = []
         verdict: str | None = None
         last_hash: str | None = None
+        gen_events: dict[tuple[str, str, int], dict] = {}
+        eval_events: dict[tuple[str, str, int], dict] = {}
 
         if os.path.exists(progress_file):
             with open(progress_file, "r", encoding="utf-8") as f:
@@ -529,9 +535,11 @@ class ProgressState:
                         if event["type"] == "gen":
                             key = (event["cand_id"], event["test_id"], event["rep"])
                             completed_gen.add(key)
+                            gen_events[key] = event
                         elif event["type"] == "eval":
                             key = (event["cand_id"], event["test_id"], event["rep"])
                             completed_eval.add(key)
+                            eval_events[key] = event
                         elif event["type"] == "verdict":
                             verdict = event["content"]
                     except json.JSONDecodeError:
@@ -548,4 +556,6 @@ class ProgressState:
             events=events,
             verdict=verdict,
             last_hash=last_hash,
+            gen_events=gen_events,
+            eval_events=eval_events,
         )

@@ -6,7 +6,7 @@ import datetime
 import prompttestenv.logger as logger
 from prompttestenv.api import teardown
 from prompttestenv.evaluator import run_evaluation_phase
-from prompttestenv.verdict import generate_verdict, evaluate_best_candidate_fast
+from prompttestenv.verdict import generate_verdict, evaluate_best_candidate_fast, parse_grouped_verdict
 from prompttestenv.generation import run_generation_phase
 from prompttestenv.reporting import generate_html_report
 from prompttestenv.models import TestCaseResult, CandidatePerformance, Candidate, TestCase, JudgeConfig, GlobalCriteria, ProgressState
@@ -82,18 +82,13 @@ def _generate_output(
     base_filename = f"{now_str}_{len(candidates)}C_{len(results)}T"
 
     verdict_for_md = verdict
-    if verdict.strip().startswith("{"):
-        try:
-            import json
-            verdict_data = json.loads(verdict)
-            if verdict_data.get("is_grouped"):
-                md_text = ""
-                for g in verdict_data["groups"]:
-                    md_text += f"# VERDICT FOR GROUP: {g['group_name']}\n{g['verdict']}\n\n"
-                md_text += f"# GLOBAL VERDICT\n{verdict_data['global_verdict']}\n"
-                verdict_for_md = md_text
-        except Exception:
-            pass
+    grouped = parse_grouped_verdict(verdict)
+    if grouped is not None:
+        md_text = ""
+        for g in grouped["groups"]:
+            md_text += f"# VERDICT FOR GROUP: {g['group_name']}\n{g['verdict']}\n\n"
+        md_text += f"# GLOBAL VERDICT\n{grouped['global_verdict']}\n"
+        verdict_for_md = md_text
 
     if output_mode == "md":
         report_dir = os.path.join(project_dir, "Report")
@@ -212,13 +207,12 @@ def render_from_progress(project_dir: str) -> str:
     judge_config.global_criteria = global_criteria
     results = _initialize_test_results(test_cases, project_dir)
 
+    results_by_id = {r.test_id: r for r in results}
     best_scores: dict = {}
     for event in progress_state.events:
         if event["type"] == "gen":
             cand_id = event["cand_id"]
-            test_result = next(
-                (r for r in results if r.test_id == event["test_id"]), None
-            )
+            test_result = results_by_id.get(event["test_id"])
             if test_result:
                 if cand_id not in test_result.candidates_perf:
                     test_result.candidates_perf[cand_id] = CandidatePerformance()
@@ -228,9 +222,7 @@ def render_from_progress(project_dir: str) -> str:
                 cand_perf.times.append(event["elapsed"])
         elif event["type"] == "eval":
             cand_id = event["cand_id"]
-            test_result = next(
-                (r for r in results if r.test_id == event["test_id"]), None
-            )
+            test_result = results_by_id.get(event["test_id"])
             if test_result:
                 cand_perf = test_result.candidates_perf[cand_id]
                 cand_perf.scores.append(event["score"])
@@ -242,15 +234,8 @@ def render_from_progress(project_dir: str) -> str:
                 score_key = (cand_id, test_result.test_id)
                 if event["score"] > best_scores.get(score_key, -1):
                     best_scores[score_key] = event["score"]
-                    gen_event = next(
-                        (
-                            e for e in progress_state.events
-                            if e["type"] == "gen"
-                            and e["cand_id"] == cand_id
-                            and e["test_id"] == event["test_id"]
-                            and e["rep"] == event["rep"]
-                        ),
-                        None,
+                    gen_event = progress_state.gen_events.get(
+                        (cand_id, event["test_id"], event["rep"])
                     )
                     if gen_event:
                         cand_perf.best_output = gen_event["output"]

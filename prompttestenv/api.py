@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import concurrent.futures
 import math
+import subprocess
+from typing import Any, Callable
+
 from unified_ai_client import call_ai, preload_model, cleanup, get_embedding
 
 
@@ -134,3 +138,39 @@ def teardown() -> None:
     UnifiedAiClient also registers this automatically via atexit.
     """
     cleanup()
+
+
+def call_with_timeout(
+    fn: Callable[..., Any],
+    *args: Any,
+    fn_kwargs: dict | None = None,
+    timeout: float,
+    provider: str,
+    model: str,
+) -> tuple[Any, bool]:
+    """Run fn in a single-worker executor with a timeout.
+
+    On timeout, best-effort stops the Ollama model via `ollama stop` (only
+    when provider is Ollama) so a hung process doesn't keep hogging resources.
+
+    Args:
+        fn: Callable to execute.
+        *args: Positional arguments passed to fn.
+        fn_kwargs: Keyword arguments passed to fn.
+        timeout: Timeout in seconds.
+        provider: LLM provider name (decides whether to run `ollama stop`).
+        model: Model identifier passed to `ollama stop` on timeout.
+
+    Returns:
+        Tuple of (result, timed_out). When timed_out is True, result is None
+        and the caller builds its own fallback value.
+    """
+    fn_kwargs = fn_kwargs or {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(fn, *args, **fn_kwargs)
+        try:
+            return future.result(timeout=timeout), False
+        except concurrent.futures.TimeoutError:
+            if provider.lower() == "ollama":
+                subprocess.run(["ollama", "stop", model], capture_output=True)
+            return None, True

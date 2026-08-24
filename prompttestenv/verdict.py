@@ -41,6 +41,93 @@ def save_verdict_debug_file(
         logger.log_warning(f"Failed to write verdict debug file: {exc}")
 
 
+def parse_grouped_verdict(verdict_text: str) -> dict | None:
+    """Parse verdict_text as grouped-verdict JSON, if it is one.
+
+    Args:
+        verdict_text: Raw verdict text — either the JSON object produced by
+            generate_verdict()'s grouped-verdict path, or plain/Markdown text.
+
+    Returns:
+        The parsed dict when verdict_text is valid JSON with "is_grouped": true,
+        otherwise None.
+    """
+    stripped = verdict_text.strip()
+    if not stripped.startswith("{"):
+        return None
+    try:
+        data = json.loads(stripped)
+    except Exception:
+        return None
+    return data if data.get("is_grouped") else None
+
+
+def _strip_code_fence(text: str) -> str:
+    """Strip a wrapping Markdown code fence from LLM output, if present.
+
+    Args:
+        text: Response text, already .strip()-ed.
+
+    Returns:
+        text with the first/last fence lines removed if text starts with
+        ``` and ends with a lone ``` line; otherwise text unchanged.
+    """
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if len(lines) >= 2 and lines[-1].strip() == "```":
+            return "\n".join(lines[1:-1]).strip()
+    return text
+
+
+def _build_summary_data(
+    rows: list[TestCaseResult],
+    candidates: list[Candidate],
+    judge_config: JudgeConfig,
+) -> str:
+    """Build the per-test-case candidate performance summary for a verdict prompt.
+
+    Args:
+        rows: Test case results to summarize (one group's rows, or all rows).
+        candidates: Resolved candidate configurations.
+        judge_config: JudgeConfig instance (used for the reasoning_analysis flag).
+
+    Returns:
+        Formatted summary text ready to interpolate into a verdict template.
+    """
+    summary_data = ""
+    for row in rows:
+        summary_data += f"## TEST ID: {row.test_id}\n"
+        for cand in candidates:
+            cand_id = cand.name
+            perf = row.candidates_perf.get(cand_id)
+            if perf:
+                g_score_str = f"{perf.global_score_mean:.2f} ± {perf.global_score_std:.2f}/10" if perf.global_score_mean >= 0 else "N/A"
+                summary_data += (
+                    f"  > SYSTEM: {cand_id} | "
+                    f"Task Score: {perf.score_mean:.2f} ± {perf.score_std:.2f}/10 | "
+                    f"Global Score: {g_score_str} | "
+                    f"Time: {perf.time_mean:.2f}s ± {perf.time_std:.2f}s | "
+                    f"Tokens: {perf.tokens_mean:.0f} ± {perf.tokens_std:.0f} (Reasoning: {perf.reasoning_tokens_mean:.0f} ± {perf.reasoning_tokens_std:.0f}) | "
+                    f"Notes: {perf.best_reason}\n"
+                )
+                if judge_config.reasoning_analysis and perf.reasoning_analyses:
+                    r_agg = aggregate_reasoning_stats(perf.reasoning_analyses)
+                    summary_data += (
+                        f"    Cognitive Resource Analysis: On average, the candidate utilized "
+                        f"{r_agg.get('avg_pure_reasoning_pct', 0):.1f}% ± {r_agg.get('std_pure_reasoning_pct', 0):.1f}% "
+                        f"of their cognitive resources to solve the problem, with the remainder "
+                        f"dedicated to interacting with the user. "
+                        f"The model explored {r_agg.get('avg_alt_path', 0):.1f} ± {r_agg.get('std_alt_path', 0):.1f} alternatives "
+                        f"and self-corrected {r_agg.get('avg_autocorrect', 0):.1f} ± {r_agg.get('std_autocorrect', 0):.1f} times. "
+                        f"The alignment between the response and the reasoning process scored "
+                        f"{r_agg.get('avg_alignment_score', 0):.1f} ± {r_agg.get('std_alignment_score', 0):.1f} out of 10.\n"
+                    )
+            else:
+                summary_data += f"  > SYSTEM: {cand_id} | N/A\n"
+        summary_data += "\n"
+    return summary_data
+
+
 def generate_verdict(
     candidates: list[Candidate],
     results: list[TestCaseResult],
@@ -89,38 +176,8 @@ def generate_verdict(
             
             for group_name, group_results in groups.items():
                 logger.log_ai(f"Generating verdict for group: {group_name}...")
-                summary_data = ""
-                for row in group_results:
-                    summary_data += f"## TEST ID: {row.test_id}\n"
-                    for cand in candidates:
-                        cand_id = cand.name
-                        perf = row.candidates_perf.get(cand_id)
-                        if perf:
-                            g_score_str = f"{perf.global_score_mean:.2f} ± {perf.global_score_std:.2f}/10" if perf.global_score_mean >= 0 else "N/A"
-                            summary_data += (
-                                f"  > SYSTEM: {cand_id} | "
-                                f"Task Score: {perf.score_mean:.2f} ± {perf.score_std:.2f}/10 | "
-                                f"Global Score: {g_score_str} | "
-                                f"Time: {perf.time_mean:.2f}s ± {perf.time_std:.2f}s | "
-                                f"Tokens: {perf.tokens_mean:.0f} ± {perf.tokens_std:.0f} (Reasoning: {perf.reasoning_tokens_mean:.0f} ± {perf.reasoning_tokens_std:.0f}) | "
-                                f"Notes: {perf.best_reason}\n"
-                            )
-                            if judge_config.reasoning_analysis and perf.reasoning_analyses:
-                                r_agg = aggregate_reasoning_stats(perf.reasoning_analyses)
-                                summary_data += (
-                                    f"    Cognitive Resource Analysis: On average, the candidate utilized "
-                                    f"{r_agg.get('avg_pure_reasoning_pct', 0):.1f}% ± {r_agg.get('std_pure_reasoning_pct', 0):.1f}% "
-                                    f"of their cognitive resources to solve the problem, with the remainder "
-                                    f"dedicated to interacting with the user. "
-                                    f"The model explored {r_agg.get('avg_alt_path', 0):.1f} ± {r_agg.get('std_alt_path', 0):.1f} alternatives "
-                                    f"and self-corrected {r_agg.get('avg_autocorrect', 0):.1f} ± {r_agg.get('std_autocorrect', 0):.1f} times. "
-                                    f"The alignment between the response and the reasoning process scored "
-                                    f"{r_agg.get('avg_alignment_score', 0):.1f} ± {r_agg.get('std_alignment_score', 0):.1f} out of 10.\n"
-                                )
-                        else:
-                            summary_data += f"  > SYSTEM: {cand_id} | N/A\n"
-                    summary_data += "\n"
-                
+                summary_data = _build_summary_data(group_results, candidates, judge_config)
+
                 prompt = verdict_template.format(
                     summary_data=summary_data,
                     global_criteria=global_criteria
@@ -137,12 +194,8 @@ def generate_verdict(
                     thinking=thinking,
                     disable_safety=disable_safety,
                 )
-                response_text = response_text.strip()
-                if response_text.startswith("```"):
-                    lines = response_text.splitlines()
-                    if len(lines) >= 2 and lines[-1].strip() == "```":
-                        response_text = "\n".join(lines[1:-1]).strip()
-                        
+                response_text = _strip_code_fence(response_text.strip())
+
                 group_verdicts_list.append({"group_name": group_name, "verdict": response_text})
                 
             logger.log_ai("Generating global verdict...")
@@ -170,12 +223,8 @@ def generate_verdict(
                 thinking=thinking,
                 disable_safety=disable_safety,
             )
-            global_response_text = global_response_text.strip()
-            if global_response_text.startswith("```"):
-                lines = global_response_text.splitlines()
-                if len(lines) >= 2 and lines[-1].strip() == "```":
-                    global_response_text = "\n".join(lines[1:-1]).strip()
-                    
+            global_response_text = _strip_code_fence(global_response_text.strip())
+
             final_json = {
                 "is_grouped": True,
                 "groups": group_verdicts_list,
@@ -184,37 +233,7 @@ def generate_verdict(
             return json.dumps(final_json)
 
         else:
-            summary_data = ""
-            for row in results:
-                summary_data += f"## TEST ID: {row.test_id}\n"
-                for cand in candidates:
-                    cand_id = cand.name
-                    perf = row.candidates_perf.get(cand_id)
-                    if perf:
-                        g_score_str = f"{perf.global_score_mean:.2f} ± {perf.global_score_std:.2f}/10" if perf.global_score_mean >= 0 else "N/A"
-                        summary_data += (
-                            f"  > SYSTEM: {cand_id} | "
-                            f"Task Score: {perf.score_mean:.2f} ± {perf.score_std:.2f}/10 | "
-                            f"Global Score: {g_score_str} | "
-                            f"Time: {perf.time_mean:.2f}s ± {perf.time_std:.2f}s | "
-                            f"Tokens: {perf.tokens_mean:.0f} ± {perf.tokens_std:.0f} (Reasoning: {perf.reasoning_tokens_mean:.0f} ± {perf.reasoning_tokens_std:.0f}) | "
-                            f"Notes: {perf.best_reason}\n"
-                        )
-                        if judge_config.reasoning_analysis and perf.reasoning_analyses:
-                            r_agg = aggregate_reasoning_stats(perf.reasoning_analyses)
-                            summary_data += (
-                                f"    Cognitive Resource Analysis: On average, the candidate utilized "
-                                f"{r_agg.get('avg_pure_reasoning_pct', 0):.1f}% ± {r_agg.get('std_pure_reasoning_pct', 0):.1f}% "
-                                f"of their cognitive resources to solve the problem, with the remainder "
-                                f"dedicated to interacting with the user. "
-                                f"The model explored {r_agg.get('avg_alt_path', 0):.1f} ± {r_agg.get('std_alt_path', 0):.1f} alternatives "
-                                f"and self-corrected {r_agg.get('avg_autocorrect', 0):.1f} ± {r_agg.get('std_autocorrect', 0):.1f} times. "
-                                f"The alignment between the response and the reasoning process scored "
-                                f"{r_agg.get('avg_alignment_score', 0):.1f} ± {r_agg.get('std_alignment_score', 0):.1f} out of 10.\n"
-                            )
-                    else:
-                        summary_data += f"  > SYSTEM: {cand_id} | N/A\n"
-                summary_data += "\n"
+            summary_data = _build_summary_data(results, candidates, judge_config)
 
             prompt = verdict_template.format(
                 summary_data=summary_data,
@@ -231,11 +250,7 @@ def generate_verdict(
                 thinking=thinking,
                 disable_safety=disable_safety,
             )
-            response_text = response_text.strip()
-            if response_text.startswith("```"):
-                lines = response_text.splitlines()
-                if len(lines) >= 2 and lines[-1].strip() == "```":
-                    response_text = "\n".join(lines[1:-1]).strip()
+            response_text = _strip_code_fence(response_text.strip())
             return response_text
     except Exception as exc:
         return f"Error generating verdict: {str(exc)}"

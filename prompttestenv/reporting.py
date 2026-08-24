@@ -9,6 +9,7 @@ import jinja2
 
 from prompttestenv.models import calculate_stats, Candidate, JudgeConfig, TestCaseResult, GlobalCriteria
 from prompttestenv.reasoning import aggregate_reasoning_stats
+from prompttestenv.verdict import parse_grouped_verdict
 
 
 def get_badge_class(score):
@@ -77,16 +78,8 @@ def md_to_html(md_text):
 
 
 def generate_html_report(project_dir: str, results: list[TestCaseResult], candidates: list[Candidate], verdict_text: str, global_criteria: GlobalCriteria, judge_config: JudgeConfig, filename: str = "report_benchmark.html"):
-    is_grouped = False
-    verdict_data = None
-    if verdict_text.strip().startswith("{"):
-        try:
-            import json
-            verdict_data = json.loads(verdict_text)
-            if verdict_data.get("is_grouped"):
-                is_grouped = True
-        except Exception:
-            pass
+    verdict_data = parse_grouped_verdict(verdict_text)
+    is_grouped = verdict_data is not None
 
     if is_grouped:
         verdict_html = ""

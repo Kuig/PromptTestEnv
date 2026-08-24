@@ -53,12 +53,14 @@ class TestRunEvaluationPhaseResume(unittest.TestCase):
     def test_resumed_entry_skips_judge_call(self):
         jc = _judge_config()
         task, cand_perf = _pending_eval()
+        eval_event = {
+            "type": "eval", "cand_id": "A", "test_id": "t1", "rep": 0,
+            "score": 6, "global_score": -1, "reason": "resumed reason", "g_reason": "N/A",
+        }
         progress = ProgressState(
             completed_eval={("A", "t1", 0)},
-            events=[{
-                "type": "eval", "cand_id": "A", "test_id": "t1", "rep": 0,
-                "score": 6, "global_score": -1, "reason": "resumed reason", "g_reason": "N/A",
-            }],
+            events=[eval_event],
+            eval_events={("A", "t1", 0): eval_event},
         )
         with patch("prompttestenv.evaluator.evaluate_with_judge") as mock_eval, \
              patch("prompttestenv.evaluator.preload_model_for_run"), \
@@ -85,7 +87,7 @@ class TestRunEvaluationPhaseTimeout(unittest.TestCase):
         with patch("prompttestenv.evaluator.evaluate_with_judge", side_effect=slow_eval), \
              patch("prompttestenv.evaluator.preload_model_for_run"), \
              patch("prompttestenv.evaluator.append_event"), \
-             patch("prompttestenv.evaluator.subprocess.run") as mock_subprocess:
+             patch("prompttestenv.api.subprocess.run") as mock_subprocess:
             run_evaluation_phase([task], jc, "/fake/project", ProgressState())
 
         self.assertEqual(cand_perf.scores, [0])

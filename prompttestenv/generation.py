@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 import time
-import concurrent.futures
-import subprocess
 
 import prompttestenv.logger as logger
-from prompttestenv.api import get_llm_response, preload_model_for_run
+from prompttestenv.api import call_with_timeout, get_llm_response, preload_model_for_run
 from prompttestenv.progress import append_event
 from prompttestenv.models import Candidate, TestCaseResult, CandidatePerformance, JudgeConfig, ProgressState
 
@@ -65,13 +63,7 @@ def run_generation_phase(
                 # Resume logic
                 key = (cand_id, test_result.test_id, rep)
                 if key in progress_state.completed_gen:
-                    event = next(
-                        e for e in progress_state.events
-                        if e["type"] == "gen"
-                        and e["cand_id"] == cand_id
-                        and e["test_id"] == test_result.test_id
-                        and e["rep"] == rep
-                    )
+                    event = progress_state.gen_events[key]
                     cand_perf.tokens.append(event["tokens"])
                     cand_perf.reasoning_tokens.append(event["reasoning_tokens"])
                     cand_perf.times.append(event["elapsed"])
@@ -90,9 +82,9 @@ def run_generation_phase(
                     continue
 
                 t_start = time.time()
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                    future = executor.submit(
-                        get_llm_response,
+                result, timed_out = call_with_timeout(
+                    get_llm_response,
+                    fn_kwargs=dict(
                         provider=provider,
                         model_name=cand.model,
                         system_instruction=sys_instr,
@@ -101,19 +93,18 @@ def run_generation_phase(
                         temp=cand.temperature,
                         thinking=thinking,
                         disable_safety=cand.disable_safety,
-                    )
-                    try:
-                        output, tokens, reasoning_tokens, reasoning_text = future.result(timeout=timeout_val)
-                        elapsed = time.time() - t_start
-                    except concurrent.futures.TimeoutError:
-                        output, tokens, reasoning_tokens, reasoning_text = "⛔ [TIMEOUT EXCEEDED]", 0, 0, ""
-                        elapsed = timeout_val
-                        logger.log_warning(f"{prefix}Timeout hit ({timeout_val}s).")
-                        # Best-effort: kill the hung Ollama model via subprocess
-                        if provider.lower() == "ollama":
-                            subprocess.run(
-                                ["ollama", "stop", cand.model], capture_output=True
-                            )
+                    ),
+                    timeout=timeout_val,
+                    provider=provider,
+                    model=cand.model,
+                )
+                if timed_out:
+                    output, tokens, reasoning_tokens, reasoning_text = "⛔ [TIMEOUT EXCEEDED]", 0, 0, ""
+                    elapsed = timeout_val
+                    logger.log_warning(f"{prefix}Timeout hit ({timeout_val}s).")
+                else:
+                    output, tokens, reasoning_tokens, reasoning_text = result
+                    elapsed = time.time() - t_start
 
                 logger.log_metric(f"{prefix}Generated ({elapsed:.2f}s) — tokens: {tokens}")
                 cand_perf.tokens.append(tokens)

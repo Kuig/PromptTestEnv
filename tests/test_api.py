@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import time
 import unittest
 from unittest.mock import MagicMock, patch
 
 from prompttestenv.api import (
+    call_with_timeout,
     cosine_similarity,
     get_llm_response,
     get_text_embedding,
@@ -119,6 +121,46 @@ class TestTeardown(unittest.TestCase):
     def test_calls_cleanup(self, mock_cleanup):
         teardown()
         mock_cleanup.assert_called_once()
+
+
+class TestCallWithTimeout(unittest.TestCase):
+    def test_success_path_returns_result_and_false(self):
+        result, timed_out = call_with_timeout(
+            lambda x: x * 2, 3, timeout=5.0, provider="google", model="gemini",
+        )
+        self.assertEqual(result, 6)
+        self.assertFalse(timed_out)
+
+    @patch("prompttestenv.api.subprocess.run")
+    def test_timeout_with_ollama_provider_kills_the_model(self, mock_subprocess):
+        def slow(*args, **kwargs):
+            time.sleep(0.3)
+            return "too slow"
+
+        result, timed_out = call_with_timeout(
+            slow, timeout=0.05, provider="ollama", model="gemma4",
+        )
+        self.assertIsNone(result)
+        self.assertTrue(timed_out)
+        mock_subprocess.assert_called_once_with(["ollama", "stop", "gemma4"], capture_output=True)
+
+    @patch("prompttestenv.api.subprocess.run")
+    def test_timeout_with_non_ollama_provider_does_not_kill_anything(self, mock_subprocess):
+        def slow(*args, **kwargs):
+            time.sleep(0.3)
+            return "too slow"
+
+        result, timed_out = call_with_timeout(
+            slow, timeout=0.05, provider="google", model="gemini",
+        )
+        self.assertTrue(timed_out)
+        mock_subprocess.assert_not_called()
+
+    def test_fn_kwargs_are_passed_through(self):
+        result, _timed_out = call_with_timeout(
+            lambda a, b: a + b, 2, fn_kwargs={"b": 4}, timeout=5.0, provider="google", model="gemini",
+        )
+        self.assertEqual(result, 6)
 
 
 if __name__ == "__main__":

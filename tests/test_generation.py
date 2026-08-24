@@ -46,13 +46,15 @@ class TestRunGenerationPhaseResume(unittest.TestCase):
     def test_resumed_entry_skips_llm_call(self):
         jc = _judge_config()
         results = [_result()]
+        gen_event = {
+            "type": "gen", "cand_id": "A", "test_id": "t1", "rep": 0,
+            "output": "resumed output", "tokens": 7, "reasoning_tokens": 0,
+            "reasoning_text": "", "elapsed": 0.5,
+        }
         progress = ProgressState(
             completed_gen={("A", "t1", 0)},
-            events=[{
-                "type": "gen", "cand_id": "A", "test_id": "t1", "rep": 0,
-                "output": "resumed output", "tokens": 7, "reasoning_tokens": 0,
-                "reasoning_text": "", "elapsed": 0.5,
-            }],
+            events=[gen_event],
+            gen_events={("A", "t1", 0): gen_event},
         )
         with patch("prompttestenv.generation.get_llm_response") as mock_llm, \
              patch("prompttestenv.generation.preload_model_for_run"), \
@@ -77,7 +79,7 @@ class TestRunGenerationPhaseTimeout(unittest.TestCase):
         with patch("prompttestenv.generation.get_llm_response", side_effect=slow_response), \
              patch("prompttestenv.generation.preload_model_for_run"), \
              patch("prompttestenv.generation.append_event"), \
-             patch("prompttestenv.generation.subprocess.run") as mock_subprocess:
+             patch("prompttestenv.api.subprocess.run") as mock_subprocess:
             progress = ProgressState()
             pending = run_generation_phase([_candidate(provider="ollama")], results, jc, "/fake/project", progress)
 
@@ -96,7 +98,7 @@ class TestRunGenerationPhaseTimeout(unittest.TestCase):
         with patch("prompttestenv.generation.get_llm_response", side_effect=slow_response), \
              patch("prompttestenv.generation.preload_model_for_run"), \
              patch("prompttestenv.generation.append_event"), \
-             patch("prompttestenv.generation.subprocess.run") as mock_subprocess:
+             patch("prompttestenv.api.subprocess.run") as mock_subprocess:
             progress = ProgressState()
             run_generation_phase([_candidate(provider="google")], results, jc, "/fake/project", progress)
 

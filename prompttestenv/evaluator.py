@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-import concurrent.futures
 import time
-import subprocess
 
 import prompttestenv.logger as logger
-from prompttestenv.api import preload_model_for_run
+from prompttestenv.api import call_with_timeout, preload_model_for_run
 from prompttestenv.progress import append_event
 from prompttestenv.models import JudgeConfig, ProgressState
 from prompttestenv.test_judge import evaluate_with_judge
@@ -65,13 +63,7 @@ def run_evaluation_phase(
         # Resume logic
         key = (cand_id, test_result.test_id, rep)
         if key in progress_state.completed_eval:
-            event = next(
-                e for e in progress_state.events
-                if e["type"] == "eval"
-                and e["cand_id"] == cand_id
-                and e["test_id"] == test_result.test_id
-                and e["rep"] == rep
-            )
+            event = progress_state.eval_events[key]
             score = event["score"]
             g_score = event["global_score"]
             reason = event["reason"]
@@ -95,26 +87,24 @@ def run_evaluation_phase(
             logger.log_metric(f"{prefix}Score: {score}, Global: {g_score} (Resumed)")
             continue
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-            future_eval = executor.submit(
-                evaluate_with_judge,
-                test_result,
-                output,
-                judge_config,
-                local_media_path=m_path,
-            )
-            try:
-                eval_result = future_eval.result(timeout=timeout_val)
-            except concurrent.futures.TimeoutError:
-                logger.log_warning(f"{prefix}Judge timeout ({timeout_val}s).")
-                eval_result = {
-                    "score": 0,
-                    "reasoning": "⛔ [JUDGE TIMEOUT EXCEEDED]",
-                    "global_score": 0,
-                    "global_reasoning": "⛔ [JUDGE TIMEOUT EXCEEDED]",
-                }
-                if j_provider.lower() == "ollama":
-                    subprocess.run(["ollama", "stop", j_model], capture_output=True)
+        eval_result, timed_out = call_with_timeout(
+            evaluate_with_judge,
+            test_result,
+            output,
+            judge_config,
+            fn_kwargs={"local_media_path": m_path},
+            timeout=timeout_val,
+            provider=j_provider,
+            model=j_model,
+        )
+        if timed_out:
+            logger.log_warning(f"{prefix}Judge timeout ({timeout_val}s).")
+            eval_result = {
+                "score": 0,
+                "reasoning": "⛔ [JUDGE TIMEOUT EXCEEDED]",
+                "global_score": 0,
+                "global_reasoning": "⛔ [JUDGE TIMEOUT EXCEEDED]",
+            }
 
         score = eval_result.get("score", 0)
         g_score = eval_result.get("global_score", 0)
