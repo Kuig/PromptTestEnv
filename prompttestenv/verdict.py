@@ -95,6 +95,14 @@ at 1 repetition every ± is 0.00 by construction and says nothing about stabilit
 'Notes' come from the best-scoring repetition, not an average one.
 Token counts are OUTPUT only — reasoning tokens are separate and excluded, input tokens
 are not tracked.
+
+Where a reasoning profile is shown, it describes the SHAPE of a thinking trace, not its
+quality. Do not infer that a profile caused a score: candidates differ in more than one
+respect at once, and the coverages are an LLM's reading of the trace. Report a profile as
+an observation about behaviour, and say so when a claim about it is not supported by the
+scores themselves. A trace marked as a provider summary is not the model's raw chain of
+thought: its length, composition and self-correction counts reflect the summariser too,
+so never rank a summarised trace against a raw one on those figures.
 Both scores run 1-10, but what they measure is set by this project's criteria and may be
 redefined by the instructions below; 'N/A' means not computed.
 
@@ -157,8 +165,33 @@ def _format_global_score(perf: CandidatePerformance, with_std: bool) -> str:
     return f"{perf.global_score_mean:.2f}/10"
 
 
+def _format_metric(agg: dict, key: str, suffix: str = "", scale: float = 1.0) -> str:
+    """Format one aggregated figure, or "not measured" when it has no value.
+
+    Args:
+        agg: Aggregated reasoning stats.
+        key: Base field name, without the avg_/std_ prefix.
+        suffix: Unit to append, such as "%".
+        scale: Multiplier applied before formatting.
+
+    Returns:
+        A "mean ± sd" string, or "not measured".
+    """
+    mean = agg.get(f"avg_{key}", -1)
+    if mean is None or mean < 0:
+        return "not measured"
+    std = agg.get(f"std_{key}", 0) or 0
+    return f"{mean * scale:.1f}{suffix} ± {std * scale:.1f}{suffix}"
+
+
 def _format_reasoning_profile(analyses: list[dict]) -> str:
     """Render the aggregated reasoning trace profile for one candidate.
+
+    The three dimensions are scored independently, so their coverages do not sum
+    to 100%: a sentence can belong to more than one at once, and the sum of the
+    coverages is reported separately as density. Saying so in the payload matters,
+    because a judge shown three percentages will otherwise read them as shares of
+    a whole and "explain" the missing remainder.
 
     Args:
         analyses: Per-repetition reasoning analysis dicts.
@@ -167,16 +200,23 @@ def _format_reasoning_profile(analyses: list[dict]) -> str:
         Indented multi-line block describing the trace's composition and metrics.
     """
     agg = aggregate_reasoning_stats(analyses)
-    return (
-        f"    Reasoning trace profile (share of the trace's characters): "
-        f"interpretation {agg.get('avg_interpretation_pct', 0):.1f}% ± {agg.get('std_interpretation_pct', 0):.1f}%, "
-        f"planning {agg.get('avg_planning_pct', 0):.1f}% ± {agg.get('std_planning_pct', 0):.1f}%,\n"
-        f"      problem-solving {agg.get('avg_pure_reasoning_pct', 0):.1f}% ± {agg.get('std_pure_reasoning_pct', 0):.1f}%, "
-        f"output formulation {agg.get('avg_output_formulation_pct', 0):.1f}% ± {agg.get('std_output_formulation_pct', 0):.1f}%.\n"
-        f"      Alternatives explored: {agg.get('avg_alt_path', 0):.1f} ± {agg.get('std_alt_path', 0):.1f}. "
-        f"Self-corrections: {agg.get('avg_autocorrect', 0):.1f} ± {agg.get('std_autocorrect', 0):.1f}.\n"
-        f"      Response/reasoning alignment: {agg.get('avg_alignment_score', 0):.1f} ± {agg.get('std_alignment_score', 0):.1f} out of 10.\n"
-    )
+    source = "provider SUMMARY of the thinking" if agg.get("is_summary") else "raw thinking trace"
+    lines = [
+        f"    Reasoning profile over the {source} "
+        f"(independent coverages, NOT shares of a whole, so they need not sum to 100%):",
+        f"      framing {_format_metric(agg, 'coverage_framing', '%', 100)}, "
+        f"solving {_format_metric(agg, 'coverage_solving', '%', 100)}, "
+        f"presentation {_format_metric(agg, 'coverage_presentation', '%', 100)}.",
+        f"      Density (sum of the coverages; above 1.0 means the dimensions overlap): "
+        f"{_format_metric(agg, 'density')}.",
+        f"      Alternatives explored: {_format_metric(agg, 'alt_path')}. "
+        f"Self-corrections: {_format_metric(agg, 'autocorrect')}. "
+        f"Both are counts of cited sentences, so 0 means none were found, not none occurred.",
+        f"      Response/reasoning alignment: {_format_metric(agg, 'alignment_score')} out of 10. "
+        f"Trace/response similarity: {_format_metric(agg, 'trace_response_drift')}.",
+        f"      Repeated-trigram share of the trace: {_format_metric(agg, 'repetition_rate', '%', 100)}.",
+    ]
+    return "\n".join(lines) + "\n"
 
 
 def _build_summary_data(

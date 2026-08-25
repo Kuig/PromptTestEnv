@@ -83,53 +83,77 @@ A structured JSON file that defines the global rules applied to all test cases, 
 
 ---
 
-### E. Reasoning Analysis (`judge_config.json`)
+### E. Reasoning Analysis (`judge_config.json` + root `config.json`)
 
-This optional feature analyses the internal reasoning trace (the "thinking" output) of models that support it. When enabled, it gives insight not just into *what* a model answers, but *how* it thinks.
-
-> [!WARNING]
-> Reasoning analysis makes **2 additional LLM calls per candidate × test × repetition**. For a project with 3 candidates, 5 tests, and 3 repetitions, that is up to **90 extra LLM calls**. Plan your API budget accordingly.
+This optional feature analyses the internal reasoning trace (the "thinking" output) of models that support it. When enabled, it gives insight not just into *what* a model answers, but *how* it works its way there.
 
 **Enable it** by adding to `judge_config.json`:
 ```json
 "reasoning_analysis": true
 ```
-The feature is silently skipped for candidates that do not produce reasoning output (i.e., those with `"thinking": false`).
+It is silently skipped for candidates that produce no reasoning output.
 
-**`reasoning_judge` Options:**
-*Configures the LLM that analyses the reasoning trace.*
-- `provider`, `model`, `temperature`, `thinking`: Standard LLM parameters. Recommended: fast model with `thinking: false` (e.g. `gemini-2.5-flash`).
-- `reasoning_system_prompt` *(string)*: The system persona for the reasoning judge (e.g., "You are a cognitive process analyst...").
-- `segmentation_template`: Prompt template for the **first call**: the LLM must segment the reasoning trace verbatim into 4 JSON fields (see below). **Must include the variable:** `{reasoning_text}`.
-- `metrics_template`: Prompt template for the **second call**: the LLM must extract 3 numeric metrics. **Must include the variables:** `{reasoning_text}` and `{candidate_response}` (the final response is passed here so that `alignment_score` can be evaluated against the actual output).
+#### How it works
 
-**The 4 Cognitive Categories:**
-| Category | Description |
+1. The trace is split into sentence-sized **units** procedurally, in Python. No LLM is involved, so the text never gets rewritten: units are character offsets into the stored trace, which makes full coverage and zero overlap structural guarantees rather than instructions a judge may ignore.
+2. A judge scores **every unit on every dimension**, on a 0 to 3 scale, and is given the task the candidate was asked to perform so it can tell restating the request apart from reasoning about it.
+3. One further call extracts the metrics, citing unit ids as evidence.
+4. Two more metrics are computed with no LLM call at all.
+
+#### The three dimensions
+
+| Dimension | What it asks of each sentence |
 |---|---|
-| `interpretation` | How the model re-reads and rephrases the user's request to ensure it understood the problem. |
-| `planning` | Evaluation of approach, tools, or strategy before solving the problem. |
-| `pure_reasoning` | The actual problem-solving: fact recall, deduction, alternative options, self-correction. |
-| `output_formulation` | Reasoning spent purely on deciding how to format and structure the final answer. |
+| `framing` | Is it about understanding the problem: restating the request, weighing constraints, choosing an approach? |
+| `solving` | Does it advance the answer: recalling a fact, deducing, computing, drafting, verifying a result? |
+| `presentation` | Is it about the form of the answer: format, structure, length, tone, staying in an assigned persona? |
 
-The `segmentation_template` must instruct the model to copy all reasoning text verbatim into exactly these 4 JSON string fields without omission.
+These are **not** a partition, and this is the whole point. A sentence such as *"So it is: Paris, Berlin, Rome, though I should say it in character"* genuinely does two things at once, and forcing a single label made the old four-category scheme assign it almost arbitrarily. Each dimension therefore gets its own independent coverage in the 0 to 100% range, and the three do not add up to 100%.
 
-**The 3 Metrics (extracted by `metrics_template`):**
-- `alt_path` *(int)*: Number of alternative solution paths explicitly considered.
-- `autocorrect` *(int)*: Number of explicit self-corrections ("Wait, that's wrong…").
-- `alignment_score` *(int, 1-10)*: How well the final response reflects and builds upon the reasoning.
+Their sum is reported separately as **density**: how many concerns the trace carries per unit of text. A density near 1.0 means the model does one thing at a time; well above 1.0 means it interleaves them.
 
-**Reading the Stacked Bar in the HTML Report:**
+The dimensions, their definitions, their colours and the prompts that apply them live in the **root `config.json`**, not in `judge_config.json`. They are the measurement instrument: if each benchmark could redefine them, no two reports would be comparable. Change them there and every project changes together, and re-run `analyze` to recompute.
 
-The report includes a full-width CSS stacked bar chart per candidate (both in the summary stats row and inside each per-test details section):
+#### `reasoning_judge` options (`judge_config.json`)
 
-| Color | Category |
-|---|---|
-| 🔵 Blue | Interpretation |
-| 🟠 Orange | Planning |
-| 🟢 Green | Pure Reasoning |
-| 🟣 Purple | Output Formulation |
+*Only the call parameters. What the judge is asked comes from `config.json`.*
 
-A large **green (Pure Reasoning) segment** indicates the model dedicated most of its cognitive resources to actually solving the problem. A large **blue (Interpretation)** segment may indicate the model is over-analyzing simple prompts. A large **purple (Output Formulation)** segment may indicate excessive focus on presentation.
+- `provider`, `model`, `temperature`, `thinking`: standard LLM parameters. A fast model with `thinking: false` is the right choice.
+- `context_size` *(int, optional)*: context window to allocate. **Set this for a local judge.** Ollama sizes its context at load time, and a raw thinking trace from a local model easily exceeds the default, in which case it is truncated silently and the analysis looks plausible but is wrong.
+- `dimension_mode` *("split" | "joint", optional)*: `split` (the default) asks one single-concept question per dimension, which is what keeps the task tractable for a small local judge. `joint` asks for all three at once in a single call, sending the trace only once, which is worth it for very long traces or a strong judge.
+- `reliability_k` *(int, optional)*: repeat the scoring k times and average. Off by default. Only meaningful with `temperature` above 0, since at low temperature the passes are near-identical and you pay k times for the same answer.
+- `max_units_per_call` *(int, optional)*: window size for long traces. Above this, units are scored in successive windows, each carrying the two preceding units as unscored context.
+
+#### The metrics
+
+Counts are derived from the sentence ids the judge cites, so every one of them is traceable to a sentence in the report rather than being an unverifiable number.
+
+- `alt_path` *(int)*: distinct alternative approaches introduced.
+- `autocorrect` *(int)*: explicit retractions or revisions.
+- `alignment_score` *(int, 1-10)*: how faithfully the final response follows the conclusions the trace reached. Below 8, the judge must cite the sentences the response failed to honour, and those are flagged in the trace view.
+- `repetition_rate` *(float)*: share of repeated word trigrams, computed without an LLM. Catches the rumination that raw local traces are prone to.
+- `trace_response_drift` *(float)*: cosine similarity between trace and response embeddings, via the `similarity_judge` settings. An objective companion to `alignment_score`, which tends to saturate near 10.
+
+A value of `-1` means **not measured** (a judge call failed), and it is excluded from every average rather than counted as a zero. `0` is a real measurement.
+
+#### Cost
+
+Per candidate x test x repetition: 3 scoring calls plus 1 metrics call in `split` mode, or 2 calls in `joint` mode. The judge only ever returns a short list of numbers, never a copy of the trace, so the expensive output tokens stay near zero however long the trace is.
+
+Because it reads traces that generation already stored, this phase is **re-runnable on its own**:
+
+```powershell
+prompttestenv analyze Projects/MyBenchmark --force-reanalyze
+```
+
+Retuning the schema costs only these calls, never a re-run of the candidates: the reasoning settings are deliberately excluded from the resume hash.
+
+#### Reading the report
+
+Each candidate gets one horizontal bar per dimension, plus the density figure and thinking tokens spent per point of score. Under each test case, the **full trace is shown colour-coded in place**: every sentence is tinted by its dominant dimension, shaded by intensity, with all three scores on hover. Sentences cited as evidence carry a marker for an alternative, a self-correction, or a conclusion the response contradicted. Because the units are offsets, what you see is the trace itself, and you can check the analysis against the actual words.
+
+> [!WARNING]
+> **Some providers do not give you the raw chain of thought.** Google returns a *summary* the model writes about its own thinking, typically around half the length its billed thinking tokens imply, while Ollama, Anthropic and the OpenAI-compatible providers return the raw transcript. The report flags a summarised trace and withholds absolute token attribution for it. Trace length, composition and self-correction counts partly reflect the summariser, so do not rank a summarised trace against a raw one on those figures.
 
 ---
 

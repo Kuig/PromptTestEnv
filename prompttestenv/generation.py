@@ -5,7 +5,9 @@ import time
 import prompttestenv.logger as logger
 from prompttestenv.api import call_with_timeout, get_llm_response, preload_model_for_run
 from prompttestenv.progress import append_event
-from prompttestenv.models import Candidate, TestCaseResult, CandidatePerformance, JudgeConfig, ProgressState
+from prompttestenv.models import (
+    Candidate, TestCaseResult, CandidatePerformance, JudgeConfig, LlmResult, ProgressState,
+)
 
 
 def run_generation_phase(
@@ -74,6 +76,7 @@ def run_generation_phase(
                         "cand_perf": cand_perf,
                         "output": event["output"],
                         "reasoning_text": event.get("reasoning_text", ""),
+                        "reasoning_is_summary": event.get("reasoning_is_summary", False),
                         "rep": rep,
                         "repetitions": repetitions,
                         "elapsed": event["elapsed"],
@@ -99,12 +102,14 @@ def run_generation_phase(
                     model=cand.model,
                 )
                 if timed_out:
-                    output, tokens, reasoning_tokens, reasoning_text = "⛔ [TIMEOUT EXCEEDED]", 0, 0, ""
+                    result = LlmResult(text="⛔ [TIMEOUT EXCEEDED]")
                     elapsed = timeout_val
                     logger.log_warning(f"{prefix}Timeout hit ({timeout_val}s).")
                 else:
-                    output, tokens, reasoning_tokens, reasoning_text = result
                     elapsed = time.time() - t_start
+                output = result.text
+                tokens = result.output_tokens
+                reasoning_tokens = result.reasoning_tokens
 
                 logger.log_metric(f"{prefix}Generated ({elapsed:.2f}s) — tokens: {tokens}")
                 cand_perf.tokens.append(tokens)
@@ -117,7 +122,8 @@ def run_generation_phase(
                     "test_result": test_result,
                     "cand_perf": cand_perf,
                     "output": output,
-                    "reasoning_text": reasoning_text,
+                    "reasoning_text": result.reasoning_text,
+                    "reasoning_is_summary": result.reasoning_is_summary,
                     "rep": rep,
                     "repetitions": repetitions,
                     "elapsed": elapsed,
@@ -131,7 +137,8 @@ def run_generation_phase(
                     "output": output,
                     "tokens": tokens,
                     "reasoning_tokens": reasoning_tokens,
-                    "reasoning_text": reasoning_text,
+                    "reasoning_text": result.reasoning_text,
+                    "reasoning_is_summary": result.reasoning_is_summary,
                     "elapsed": elapsed,
                 })
 

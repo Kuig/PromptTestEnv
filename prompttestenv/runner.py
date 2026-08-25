@@ -4,6 +4,7 @@ import os
 import datetime
 
 import prompttestenv.logger as logger
+from prompttestenv.analysis import attach_reasoning, run_analysis_phase
 from prompttestenv.api import teardown
 from prompttestenv.evaluator import run_evaluation_phase
 from prompttestenv.verdict import generate_verdict, evaluate_best_candidate_fast, parse_grouped_verdict
@@ -166,6 +167,23 @@ def run_project(
 
         run_evaluation_phase(pending_evals, judge_config, project_dir, progress_state)
 
+        # Re-read the log: the snapshot taken before the phases predates every
+        # event they just appended, and the analysis phase reads its input
+        # (the stored traces) from exactly those events.
+        progress_state = ProgressState.load(project_dir, force_restart=False)
+
+        # Reasoning analysis reads the traces the generation phase already
+        # stored, so it is a separate resumable pass rather than a step nested
+        # inside evaluation. `prompttestenv analyze` runs exactly this phase.
+        reasoning_events = progress_state.reasoning_events
+        if judge_config.reasoning_analysis:
+            reasoning_events = run_analysis_phase(
+                results, judge_config, project_dir, progress_state
+            )
+        attach_reasoning(
+            results, reasoning_events, progress_state.eval_events, progress_state.gen_events
+        )
+
     finally:
         teardown()
 
@@ -173,6 +191,52 @@ def run_project(
         output_mode, candidates, results, project_dir, judge_config, global_criteria, progress_state
     )
 
+
+def analyze_project(project_dir: str, force_reanalyze: bool = False) -> str:
+    """Run only the reasoning-analysis phase on an existing progress.jsonl.
+
+    Makes no generation and no judging calls: it reads the traces the run
+    already stored. This is what makes retuning the reasoning schema cheap, and
+    why the reasoning settings are excluded from the config hash.
+
+    Args:
+        project_dir: Path to the benchmark project directory.
+        force_reanalyze: If True, recompute analyses that already exist.
+
+    Returns:
+        A summary string, or a descriptive error. Never raises.
+    """
+    if not os.path.exists(project_dir):
+        return f"ERROR: Project folder '{project_dir}' does not exist. Use 'init' first."
+
+    try:
+        judge_config = JudgeConfig.load(project_dir)
+        test_cases = TestCase.load_all(project_dir)
+    except (FileNotFoundError, ValueError) as exc:
+        return f"Error: {exc}"
+
+    if not test_cases:
+        return f"Error: No test cases found in {project_dir}"
+
+    judge_config.global_criteria = GlobalCriteria.load(project_dir)
+    # Read-only: analysis consumes stored traces and does not care whether the
+    # config still matches, so it must never rename the log out from under itself.
+    progress_state = ProgressState.load(project_dir, readonly=True)
+    if not progress_state.gen_events:
+        return f"No generated responses found in {project_dir}. Run the benchmark first."
+
+    results = _initialize_test_results(test_cases, project_dir)
+    try:
+        analyzed = run_analysis_phase(
+            results, judge_config, project_dir, progress_state, force_reanalyze
+        )
+    finally:
+        teardown()
+
+    traced = sum(
+        1 for e in progress_state.gen_events.values() if (e.get("reasoning_text") or "").strip()
+    )
+    return f"Reasoning analysis complete: {len(analyzed)}/{traced} traces analyzed."
 
 def render_from_progress(project_dir: str) -> str:
     """Regenerate the report from an existing progress.jsonl without re-running.
@@ -183,7 +247,7 @@ def render_from_progress(project_dir: str) -> str:
     Returns:
         Report path string or partial progress summary.
     """
-    progress_state = ProgressState.load(project_dir, force_restart=False)
+    progress_state = ProgressState.load(project_dir, readonly=True)
     if not progress_state.events:
         return f"No progress found in {project_dir}"
 
@@ -227,10 +291,6 @@ def render_from_progress(project_dir: str) -> str:
                 cand_perf = test_result.candidates_perf[cand_id]
                 cand_perf.scores.append(event["score"])
                 cand_perf.global_scores.append(event["global_score"])
-                # Restore reasoning analysis if present in the progress event
-                r_analysis = event.get("reasoning_analysis")
-                if r_analysis:
-                    cand_perf.reasoning_analyses.append(r_analysis)
                 score_key = (cand_id, test_result.test_id)
                 if event["score"] > best_scores.get(score_key, -1):
                     best_scores[score_key] = event["score"]
@@ -241,6 +301,13 @@ def render_from_progress(project_dir: str) -> str:
                         cand_perf.best_output = gen_event["output"]
                     cand_perf.best_reason = event["reason"]
                     cand_perf.best_global_reason = event["g_reason"]
+
+    attach_reasoning(
+        results,
+        progress_state.reasoning_events,
+        progress_state.eval_events,
+        progress_state.gen_events,
+    )
 
     if progress_state.verdict:
         return _generate_output(

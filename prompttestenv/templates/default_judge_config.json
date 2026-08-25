@@ -21,12 +21,13 @@
     },
     "reasoning_judge": {
         "provider": "google",
-        "model": "gemini-2.5-flash",
+        "model": "gemini-3-flash-preview",
         "temperature": 0.2,
         "thinking": false,
-        "reasoning_system_prompt": "You are a cognitive process analyst. Your task is to analyze the internal reasoning traces of AI models and extract structured information from them. Always respond with valid JSON only \u2014 no prose, no markdown code blocks.",
-        "segmentation_template": "You will receive the internal reasoning trace of an AI model. Segment this trace verbatim into exactly 4 categories. Every single word of the reasoning MUST appear in exactly one category \u2014 do not omit, paraphrase, or summarize anything.\n\nCategories:\n- interpretation: The part where the model analyzes and rephrases the user's request to ensure it understood the problem correctly.\n- planning: The part where the model evaluates its approach, tools, or strategy before solving the problem.\n- pure_reasoning: The actual problem-solving: recall of facts, logical deduction, alternative options, self-correction, and computation.\n- output_formulation: The part dedicated exclusively to deciding how to present the final answer (format, markdown, structure, tone).\n\nOutput MUST be a JSON object with exactly these 4 string fields: interpretation, planning, pure_reasoning, output_formulation.\n\nREASONING TRACE:\n{reasoning_text}",
-        "metrics_template": "Analyze the following AI reasoning trace and the final response it produced, then extract exactly 3 numeric metrics.\n\nMetrics to extract:\n- alt_path (integer): The number of distinct alternative solution paths or approaches the model explicitly considered before choosing one.\n- autocorrect (integer): The number of times the model explicitly corrected itself (e.g., 'Wait, that\\'s wrong', 'Let me reconsider', 'Actually...').\n- alignment_score (integer 1-10): How well the FINAL RESPONSE reflects and builds upon the reasoning process. 10 = the response directly implements the conclusions of the reasoning; 1 = the response ignores or contradicts the reasoning.\n\nOutput MUST be a JSON object with exactly these 3 fields: alt_path, autocorrect, alignment_score.\n\nREASONING TRACE:\n{reasoning_text}\n\nFINAL RESPONSE:\n{candidate_response}"
+        "context_size": null,
+        "dimension_mode": "split",
+        "reliability_k": 1,
+        "max_units_per_call": 150
     },
     "verdict_judge": {
         "provider": "google",

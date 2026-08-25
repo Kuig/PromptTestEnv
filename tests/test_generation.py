@@ -5,7 +5,13 @@ import unittest
 from unittest.mock import patch
 
 from prompttestenv.generation import run_generation_phase
-from prompttestenv.models import Candidate, JudgeConfig, ProgressState, TestCaseResult
+from prompttestenv.models import (
+    Candidate,
+    JudgeConfig,
+    LlmResult,
+    ProgressState,
+    TestCaseResult,
+)
 
 
 def _judge_config(repetitions=1, timeout=5.0, rep_delay=0.0):
@@ -31,7 +37,7 @@ class TestRunGenerationPhaseNormal(unittest.TestCase):
         with patch("prompttestenv.generation.get_llm_response") as mock_llm, \
              patch("prompttestenv.generation.preload_model_for_run"), \
              patch("prompttestenv.generation.append_event") as mock_append:
-            mock_llm.return_value = ("hello", 42, 0, "")
+            mock_llm.return_value = LlmResult(text="hello", output_tokens=42, reasoning_tokens=0, reasoning_text="")
             progress = ProgressState()
             pending = run_generation_phase([_candidate()], results, jc, "/fake/project", progress)
 
@@ -113,7 +119,7 @@ class TestRunGenerationPhaseRepetitionDelay(unittest.TestCase):
              patch("prompttestenv.generation.preload_model_for_run"), \
              patch("prompttestenv.generation.append_event"), \
              patch("prompttestenv.generation.time.sleep") as mock_sleep:
-            mock_llm.return_value = ("hi", 1, 0, "")
+            mock_llm.return_value = LlmResult(text="hi", output_tokens=1, reasoning_tokens=0, reasoning_text="")
             progress = ProgressState()
             run_generation_phase([_candidate()], results, jc, "/fake/project", progress)
 
@@ -127,7 +133,7 @@ class TestRunGenerationPhaseRepetitionDelay(unittest.TestCase):
              patch("prompttestenv.generation.preload_model_for_run"), \
              patch("prompttestenv.generation.append_event"), \
              patch("prompttestenv.generation.time.sleep") as mock_sleep:
-            mock_llm.return_value = ("hi", 1, 0, "")
+            mock_llm.return_value = LlmResult(text="hi", output_tokens=1, reasoning_tokens=0, reasoning_text="")
             progress = ProgressState()
             run_generation_phase([_candidate()], results, jc, "/fake/project", progress)
 

@@ -4,6 +4,7 @@ Usage examples:
     prompttestenv init Projects/MyBenchmark
     prompttestenv run Projects/MyBenchmark --output-mode html
     prompttestenv run Projects/MyBenchmark --force-restart
+    prompttestenv analyze Projects/MyBenchmark
     prompttestenv render Projects/MyBenchmark
     prompttestenv mcp
     prompttestenv gui
@@ -37,6 +38,14 @@ def cmd_run(args: argparse.Namespace) -> None:
     from prompttestenv.runner import run_project
     import prompttestenv.logger as logger
     result = run_project(args.project_dir, args.output_mode, args.force_restart)
+    logger.log_info(result)
+
+
+def cmd_analyze(args: argparse.Namespace) -> None:
+    """Handle the ``analyze`` subcommand."""
+    from prompttestenv.runner import analyze_project
+    import prompttestenv.logger as logger
+    result = analyze_project(args.project_dir, args.force_reanalyze)
     logger.log_info(result)
 
 
@@ -92,6 +101,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Ignore previous progress.jsonl and restart from scratch.",
     )
     p_run.set_defaults(func=cmd_run)
+
+    p_analyze = subparsers.add_parser(
+        "analyze",
+        help="Run only the reasoning analysis on an existing progress.jsonl.",
+    )
+    p_analyze.add_argument("project_dir", help="Path to the project directory.")
+    p_analyze.add_argument(
+        "--force-reanalyze",
+        action="store_true",
+        help="Recompute reasoning analyses that already exist.",
+    )
+    p_analyze.set_defaults(func=cmd_analyze)
 
     p_render = subparsers.add_parser(
         "render",

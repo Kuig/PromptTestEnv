@@ -12,6 +12,7 @@ from prompttestenv.models import (
     CandidatePerformance,
     GlobalCriteria,
     JudgeConfig,
+    ReasoningStats,
     TestCaseResult,
 )
 from prompttestenv.verdict import (
@@ -31,17 +32,21 @@ def _make_result(cand_name: str, score: float) -> TestCaseResult:
     return result
 
 
-def _reasoning_analysis() -> dict:
+def _reasoning_analysis(**overrides) -> dict:
     """One repetition's reasoning analysis, as stored in progress.jsonl."""
-    return {
-        "interpretation_pct": 20.0,
-        "planning_pct": 10.0,
-        "pure_reasoning_pct": 40.0,
-        "output_formulation_pct": 30.0,
-        "alt_path": 2,
-        "autocorrect": 1,
-        "alignment_score": 9,
-    }
+    analysis = ReasoningStats(
+        coverage_framing=0.20,
+        coverage_solving=0.40,
+        coverage_presentation=0.30,
+        density=0.90,
+        alt_path=2,
+        autocorrect=1,
+        alignment_score=9,
+        repetition_rate=0.05,
+        trace_response_drift=0.82,
+    ).to_dict()
+    analysis.update(overrides)
+    return analysis
 
 
 class TestEvaluateBestCandidateFast(unittest.TestCase):
@@ -150,19 +155,54 @@ class TestBuildSummaryData(unittest.TestCase):
         out = _build_summary_data([row], self.candidates, self.judge_config)
         self.assertIn("Global Score: N/A", out)
 
-    def test_reasoning_profile_reports_all_four_categories(self):
+    def test_reasoning_profile_reports_every_dimension_and_metric(self):
         row = self._row()
         row.candidates_perf["Alpha"].reasoning_analyses.append(_reasoning_analysis())
         self.judge_config.reasoning_analysis = True
         out = _build_summary_data([row], self.candidates, self.judge_config)
 
-        self.assertIn("interpretation 20.0%", out)
-        self.assertIn("planning 10.0%", out)
-        self.assertIn("problem-solving 40.0%", out)
-        self.assertIn("output formulation 30.0%", out)
+        self.assertIn("framing 20.0%", out)
+        self.assertIn("solving 40.0%", out)
+        self.assertIn("presentation 30.0%", out)
+        self.assertIn("Density", out)
         self.assertIn("Alternatives explored: 2.0", out)
         self.assertIn("Self-corrections: 1.0", out)
         self.assertIn("Response/reasoning alignment: 9.0", out)
+        self.assertIn("Trace/response similarity: 0.8", out)
+
+    def test_profile_states_that_coverages_are_not_shares_of_a_whole(self):
+        """Three percentages that do not add up invite a judge to explain the gap."""
+        row = self._row()
+        row.candidates_perf["Alpha"].reasoning_analyses.append(_reasoning_analysis())
+        self.judge_config.reasoning_analysis = True
+        out = _build_summary_data([row], self.candidates, self.judge_config)
+
+        self.assertIn("NOT shares of a whole", out)
+
+    def test_unmeasured_metrics_say_so_instead_of_reporting_a_number(self):
+        row = self._row()
+        row.candidates_perf["Alpha"].reasoning_analyses.append(
+            _reasoning_analysis(alt_path=-1, coverage_solving=-1.0)
+        )
+        self.judge_config.reasoning_analysis = True
+        out = _build_summary_data([row], self.candidates, self.judge_config)
+
+        self.assertIn("solving not measured", out)
+        self.assertIn("Alternatives explored: not measured", out)
+
+    def test_summary_traces_are_flagged_in_the_payload(self):
+        row = self._row()
+        row.candidates_perf["Alpha"].reasoning_analyses.append(
+            _reasoning_analysis(reasoning_is_summary=True)
+        )
+        self.judge_config.reasoning_analysis = True
+        out = _build_summary_data([row], self.candidates, self.judge_config)
+
+        self.assertIn("provider SUMMARY", out)
+
+    def test_metadata_warns_against_inferring_causality(self):
+        out = _build_summary_data([self._row()], self.candidates, self.judge_config)
+        self.assertIn("Do not infer that a profile caused a score", out)
 
     def test_reasoning_profile_drops_the_misleading_cognitive_framing(self):
         row = self._row()
@@ -204,7 +244,7 @@ class TestBuildSummaryData(unittest.TestCase):
         results_section = out.split("# TEST RESULTS")[1]
         alpha_block = results_section.split("> CANDIDATE: Alpha")[1].split("> CANDIDATE: Beta")[0]
         self.assertLess(
-            alpha_block.index("Reasoning trace profile"), alpha_block.index("Notes:")
+            alpha_block.index("Reasoning profile"), alpha_block.index("Notes:")
         )
 
 

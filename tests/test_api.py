@@ -32,25 +32,39 @@ class TestCosineSimilarity(unittest.TestCase):
 
 
 class TestGetLlmResponse(unittest.TestCase):
-    def _fake_response(self, text="hi", out_tok=10, r_tok=0, reasoning=""):
+    def _fake_response(self, text="hi", out_tok=10, r_tok=0, reasoning="", is_summary=False):
         resp = MagicMock()
         resp.text = text
         resp.output_tokens = out_tok
         resp.reasoning_tokens = r_tok
         resp.reasoning_text = reasoning
+        resp.reasoning_is_summary = is_summary
         return resp
 
     @patch("prompttestenv.api.call_ai")
-    def test_returns_tuple_from_response(self, mock_call_ai):
-        mock_call_ai.return_value = self._fake_response(text="hello", out_tok=5, r_tok=2, reasoning="thinking...")
+    def test_returns_populated_result_from_response(self, mock_call_ai):
+        mock_call_ai.return_value = self._fake_response(
+            text="hello", out_tok=5, r_tok=2, reasoning="thinking...", is_summary=True
+        )
         result = get_llm_response("google", "gemini", None, "prompt")
-        self.assertEqual(result, ("hello", 5, 2, "thinking..."))
+        self.assertEqual(result.text, "hello")
+        self.assertEqual(result.output_tokens, 5)
+        self.assertEqual(result.reasoning_tokens, 2)
+        self.assertEqual(result.reasoning_text, "thinking...")
+        self.assertTrue(result.reasoning_is_summary)
 
     @patch("prompttestenv.api.call_ai")
     def test_none_reasoning_text_becomes_empty_string(self, mock_call_ai):
         mock_call_ai.return_value = self._fake_response(reasoning=None)
-        _, _, _, reasoning_text = get_llm_response("google", "gemini", None, "prompt")
-        self.assertEqual(reasoning_text, "")
+        self.assertEqual(get_llm_response("google", "gemini", None, "prompt").reasoning_text, "")
+
+    @patch("prompttestenv.api.call_ai")
+    def test_provider_without_the_summary_flag_defaults_to_raw(self, mock_call_ai):
+        """An older UnifiedAiClient has no reasoning_is_summary, and raw is the safe reading."""
+        resp = self._fake_response(reasoning="raw trace")
+        del resp.reasoning_is_summary
+        mock_call_ai.return_value = resp
+        self.assertFalse(get_llm_response("google", "gemini", None, "prompt").reasoning_is_summary)
 
     @patch("prompttestenv.api.call_ai")
     def test_thinking_string_true_normalized_to_bool(self, mock_call_ai):

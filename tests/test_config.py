@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import importlib.resources
 import json
+import os
 import shutil
 import tempfile
 import unittest
@@ -8,7 +10,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 import prompttestenv.config as config
+from prompttestenv.models import REASONING_DIMENSIONS
 from testutils import LoggerResetTestCase
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
 class TestInitProject(LoggerResetTestCase):
@@ -94,6 +99,86 @@ class TestGetApiKey(unittest.TestCase):
         mock_load_secrets.return_value = {"google_api_key": "INSERT_YOUR_API_KEY_HERE"}
         with self.assertRaises(ValueError):
             config.get_api_key()
+
+
+
+class TestAppConfig(LoggerResetTestCase):
+    """config.json holds the measurement instrument, so its resolution is part of the contract."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="prompttestenv_test_")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.addCleanup(os.chdir, os.getcwd())
+
+    def _write(self, directory, payload):
+        path = Path(directory) / "config.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        return path
+
+    def test_explicit_path_is_read(self):
+        path = self._write(self.tmp, {"local_providers": ["from-file"]})
+        self.assertEqual(config.AppConfig.load(path).local_providers, ["from-file"])
+
+    def test_working_directory_takes_precedence_over_the_repo_root(self):
+        self._write(self.tmp, {"local_providers": ["from-cwd"]})
+        os.chdir(self.tmp)
+        self.assertEqual(config.AppConfig.load().local_providers, ["from-cwd"])
+
+    def test_falls_back_to_the_repo_root_when_the_cwd_has_none(self):
+        empty = tempfile.mkdtemp(prefix="prompttestenv_test_")
+        self.addCleanup(shutil.rmtree, empty, ignore_errors=True)
+        os.chdir(empty)
+        loaded = config.AppConfig.load()
+        self.assertEqual(loaded.reasoning_schema.dimension_names, list(REASONING_DIMENSIONS))
+
+    def test_falls_back_to_the_packaged_default_when_no_file_exists(self):
+        """An install from requirements_prod.txt has no config.json anywhere near the cwd."""
+        loaded = config.AppConfig.load(Path(self.tmp) / "absent.json")
+        self.assertEqual(loaded.reasoning_schema.dimension_names, list(REASONING_DIMENSIONS))
+        self.assertTrue(loaded.reasoning_schema.dimension_template)
+
+    def test_unreadable_file_degrades_instead_of_raising(self):
+        path = Path(self.tmp) / "config.json"
+        path.write_text("{ not json", encoding="utf-8")
+        with patch("prompttestenv.logger.log_warning"):
+            loaded = config.AppConfig.load(path)
+        self.assertEqual(loaded.reasoning_schema.dimension_names, list(REASONING_DIMENSIONS))
+
+    def test_missing_sections_fall_back_to_field_defaults(self):
+        loaded = config.AppConfig.load(self._write(self.tmp, {}))
+        self.assertEqual(loaded.reasoning_defaults.dimension_mode, "split")
+        self.assertEqual(loaded.unit_splitting.min_unit_chars, 15)
+        self.assertEqual(loaded.reasoning_schema.dimensions, [])
+
+    def test_unknown_keys_are_ignored(self):
+        path = self._write(self.tmp, {"unit_splitting": {"min_unit_chars": 9, "future_knob": 1}})
+        self.assertEqual(config.AppConfig.load(path).unit_splitting.min_unit_chars, 9)
+
+    def test_schema_stamp_tracks_meaning_not_presentation(self):
+        base = config.AppConfig.load().reasoning_schema
+
+        recoloured = config.AppConfig.load().reasoning_schema
+        recoloured.dimensions[0].color = "#000000"
+        self.assertEqual(base.stamp, recoloured.stamp, "a colour is presentation, not measurement")
+
+        reworded = config.AppConfig.load().reasoning_schema
+        reworded.dimensions[0].definition += " (reworded)"
+        self.assertNotEqual(base.stamp, reworded.stamp)
+
+    def test_get_app_config_caches_until_asked_to_reload(self):
+        first = config.get_app_config()
+        self.assertIs(config.get_app_config(), first)
+        self.assertIsNot(config.get_app_config(reload=True), first)
+
+    def test_shipped_default_matches_the_repo_root_config(self):
+        """Two copies exist so a prod install still resolves one; they must not drift apart."""
+        root = json.loads((PROJECT_ROOT / "config.json").read_text(encoding="utf-8"))
+        packaged = json.loads(
+            importlib.resources.files("prompttestenv")
+            .joinpath("templates/default_config.json")
+            .read_text(encoding="utf-8")
+        )
+        self.assertEqual(root, packaged)
 
 
 if __name__ == "__main__":

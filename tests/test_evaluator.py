@@ -96,34 +96,39 @@ class TestRunEvaluationPhaseTimeout(unittest.TestCase):
 
 
 class TestRunEvaluationPhaseReasoning(unittest.TestCase):
-    def test_reasoning_analysis_appended_when_enabled_and_trace_present(self):
+    """Reasoning analysis is its own phase now, driven off the stored traces.
+
+    Keeping it out of evaluation is what lets it be re-run without re-judging,
+    so the evaluation phase must not touch it even when it is enabled.
+    """
+
+    def test_evaluation_phase_does_not_analyze_reasoning(self):
         jc = _judge_config(reasoning_analysis=True)
         task, cand_perf = _pending_eval(reasoning_text="the model thought a lot")
-        fake_stats = type("FakeStats", (), {"to_dict": lambda self: {"alt_path": 2}, "pure_reasoning_pct": 50.0, "alignment_score": 8})()
 
         with patch("prompttestenv.evaluator.evaluate_with_judge") as mock_eval, \
-             patch("prompttestenv.evaluator.analyze_reasoning") as mock_reasoning, \
              patch("prompttestenv.evaluator.preload_model_for_run"), \
-             patch("prompttestenv.evaluator.append_event"):
-            mock_eval.return_value = {"score": 7, "reasoning": "ok", "global_score": -1, "global_reasoning": "N/A"}
-            mock_reasoning.return_value = fake_stats
-            run_evaluation_phase([task], jc, "/fake/project", ProgressState())
-
-        self.assertEqual(cand_perf.reasoning_analyses, [{"alt_path": 2}])
-
-    def test_reasoning_analysis_skipped_when_no_trace(self):
-        jc = _judge_config(reasoning_analysis=True)
-        task, cand_perf = _pending_eval(reasoning_text="")
-
-        with patch("prompttestenv.evaluator.evaluate_with_judge") as mock_eval, \
-             patch("prompttestenv.evaluator.analyze_reasoning") as mock_reasoning, \
-             patch("prompttestenv.evaluator.preload_model_for_run"), \
+             patch("prompttestenv.analysis.analyze_reasoning") as mock_reasoning, \
              patch("prompttestenv.evaluator.append_event"):
             mock_eval.return_value = {"score": 7, "reasoning": "ok", "global_score": -1, "global_reasoning": "N/A"}
             run_evaluation_phase([task], jc, "/fake/project", ProgressState())
 
         mock_reasoning.assert_not_called()
         self.assertEqual(cand_perf.reasoning_analyses, [])
+
+    def test_eval_event_carries_no_reasoning_payload(self):
+        jc = _judge_config(reasoning_analysis=True)
+        task, _ = _pending_eval(reasoning_text="the model thought a lot")
+
+        with patch("prompttestenv.evaluator.evaluate_with_judge") as mock_eval, \
+             patch("prompttestenv.evaluator.preload_model_for_run"), \
+             patch("prompttestenv.evaluator.append_event") as mock_append:
+            mock_eval.return_value = {"score": 7, "reasoning": "ok", "global_score": -1, "global_reasoning": "N/A"}
+            run_evaluation_phase([task], jc, "/fake/project", ProgressState())
+
+        event = mock_append.call_args.args[1]
+        self.assertEqual(event["type"], "eval")
+        self.assertNotIn("reasoning_analysis", event)
 
 
 class TestRunEvaluationPhaseBestScoreTracking(unittest.TestCase):

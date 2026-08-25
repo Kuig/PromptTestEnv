@@ -53,6 +53,26 @@ def register_tools(mcp: "FastMCP") -> None:
             return f"Error: {exc}"
 
     @mcp.tool()
+    def prompttest_analyze_reasoning(project_dir: str, force_reanalyze: bool = False) -> str:
+        """Analyze the reasoning traces stored in a project's progress log.
+
+        Makes no generation or judging calls: it reads the thinking traces the
+        benchmark already recorded, so it is safe and cheap to re-run.
+
+        Args:
+            project_dir: Path to the project directory.
+            force_reanalyze: If True, recompute analyses that already exist.
+
+        Returns:
+            Summary of how many traces were analyzed, or an error description.
+        """
+        try:
+            from prompttestenv.runner import analyze_project
+            return analyze_project(project_dir, force_reanalyze)
+        except Exception as exc:
+            return f"Error: {exc}"
+
+    @mcp.tool()
     def prompttest_get_results(project_dir: str) -> str:
         """Regenerate and return the benchmark report from an existing progress.jsonl.
 

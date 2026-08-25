@@ -7,6 +7,27 @@ from typing import Any, Callable
 
 from unified_ai_client import call_ai, preload_model, cleanup, get_embedding
 
+from prompttestenv.config import get_app_config
+from prompttestenv.models import LlmResult
+
+
+def is_local_provider(provider: str) -> bool:
+    """Report whether a provider runs models on this machine.
+
+    Local backends serve one model at a time: firing concurrent requests at the
+    same model queues them, or forces a second load into VRAM, so callers must
+    run their calls sequentially instead of in a thread pool. The list is read
+    from config.json rather than hardcoded, so a new local backend does not
+    require a code change.
+
+    Args:
+        provider: Provider name, case-insensitive.
+
+    Returns:
+        True if the provider is served locally.
+    """
+    return provider.lower() in {p.lower() for p in get_app_config().local_providers}
+
 
 def get_text_embedding(
     provider: str,
@@ -63,7 +84,7 @@ def get_llm_response(
     response_mime_type: str | None = None,
     thinking: bool | str = "default",
     disable_safety: bool = False,
-) -> tuple[str, int, int, str]:
+) -> LlmResult:
     """Route an LLM generation request to the appropriate provider via UnifiedAiClient.
 
     File type classification, encoding, upload, caching, and cleanup are handled
@@ -84,8 +105,9 @@ def get_llm_response(
         disable_safety: Whether to disable safety settings (Google Gemini only).
 
     Returns:
-        Tuple of (response_text, output_tokens, reasoning_tokens, reasoning_text).
-        reasoning_text is the raw thinking transcript if available, otherwise an empty string.
+        An LlmResult. Its reasoning_text is the thinking transcript when the
+        model produced one, and reasoning_is_summary says whether that text is
+        the raw chain of thought or a summary the provider wrote about it.
     """
     normalized_provider = provider.lower()
 
@@ -115,20 +137,37 @@ def get_llm_response(
         max_retries=5,
         extra_options=extra_options,
     )
-    return response.text, response.output_tokens, response.reasoning_tokens, (response.reasoning_text or "")
+    return LlmResult(
+        text=response.text,
+        output_tokens=response.output_tokens,
+        reasoning_tokens=response.reasoning_tokens,
+        reasoning_text=response.reasoning_text or "",
+        reasoning_is_summary=bool(getattr(response, "reasoning_is_summary", False)),
+    )
 
 
-def preload_model_for_run(provider: str, model_name: str) -> None:
+def preload_model_for_run(
+    provider: str,
+    model_name: str,
+    context_size: int | None = None,
+) -> None:
     """Preload a model into memory before starting a benchmark run.
 
     Only meaningful for Ollama (Google does not support preloading).
 
+    ``context_size`` must be set here rather than per call: Ollama allocates the
+    context window at load time, so a later call asking for a different num_ctx
+    forces a reload. Leaving it unset means the server default applies, which
+    silently truncates long inputs such as a raw reasoning trace.
+
     Args:
         provider: LLM provider name.
         model_name: Model identifier to preload.
+        context_size: Context window to allocate, in tokens. Ignored when None.
     """
     if provider.lower() == "ollama":
-        preload_model(provider=provider, model=model_name, keep_alive="15m")
+        extra = {"context_size": context_size} if context_size else {}
+        preload_model(provider=provider, model=model_name, keep_alive="15m", **extra)
 
 
 def teardown() -> None:

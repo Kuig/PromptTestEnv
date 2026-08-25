@@ -24,10 +24,15 @@ class TestRegisterTools(unittest.TestCase):
         self.mcp = FakeMCP()
         register_tools(self.mcp)
 
-    def test_registers_the_three_expected_tools(self):
+    def test_registers_the_four_expected_tools(self):
         self.assertEqual(
             set(self.mcp.tools.keys()),
-            {"prompttest_init_project", "prompttest_run_project", "prompttest_get_results"},
+            {
+                "prompttest_init_project",
+                "prompttest_run_project",
+                "prompttest_analyze_reasoning",
+                "prompttest_get_results",
+            },
         )
 
     @patch("prompttestenv.config.init_project")

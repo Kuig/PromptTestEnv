@@ -9,7 +9,7 @@ import streamlit as st
 
 import prompttestenv.logger as logger
 from prompttestenv.config import init_project
-from prompttestenv.runner import run_project, render_from_progress
+from prompttestenv.runner import analyze_project, run_project, render_from_progress
 
 logger.set_backend("streamlit")
 
@@ -51,8 +51,9 @@ with st.sidebar:
     st.divider()
     output_mode = st.selectbox("Output mode", ["html", "md", "winner_only"])
     force_restart = st.checkbox("Force restart (ignore progress)")
+    force_reanalyze = st.checkbox("Force reanalyze (redo reasoning analysis)")
 
-col1, col2, col3 = st.columns(3)
+col1, col2, col3, col4 = st.columns(4)
 
 with col1:
     if st.button("📁 Initialize Project", use_container_width=True):
@@ -79,6 +80,19 @@ with col2:
                     st.error(f"Error: {exc}")
 
 with col3:
+    if st.button("🧠 Analyze Reasoning", use_container_width=True):
+        if not project_dir:
+            st.error("Project directory is required.")
+        else:
+            with st.spinner("Analyzing reasoning traces..."):
+                try:
+                    result = analyze_project(project_dir, force_reanalyze)
+                    st.success("Done.")
+                    st.text(result)
+                except Exception as exc:
+                    st.error(f"Error: {exc}")
+
+with col4:
     if st.button("📊 Render from Progress", use_container_width=True):
         if not project_dir:
             st.error("Project directory is required.")

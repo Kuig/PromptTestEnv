@@ -19,7 +19,7 @@ if sys.stderr.encoding and sys.stderr.encoding.lower() != "utf-8":
 # names is actually accessed — CLI subcommands that don't need them (e.g. init,
 # mcp) keep their current fast startup.
 _CONFIG_EXPORTS = ("init_project",)
-_RUNNER_EXPORTS = ("run_project", "render_from_progress")
+_RUNNER_EXPORTS = ("run_project", "render_from_progress", "analyze_project")
 _MODELS_EXPORTS = ("Candidate", "TestCase", "JudgeConfig", "GlobalCriteria")
 
 __all__ = [*_CONFIG_EXPORTS, *_RUNNER_EXPORTS, *_MODELS_EXPORTS]

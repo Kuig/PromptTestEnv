@@ -7,7 +7,6 @@ from prompttestenv.api import call_with_timeout, preload_model_for_run
 from prompttestenv.progress import append_event
 from prompttestenv.models import JudgeConfig, ProgressState
 from prompttestenv.test_judge import evaluate_with_judge
-from prompttestenv.reasoning import analyze_reasoning
 
 
 def run_evaluation_phase(
@@ -72,11 +71,6 @@ def run_evaluation_phase(
             cand_perf.scores.append(score)
             cand_perf.global_scores.append(g_score)
 
-            # Restore reasoning analysis from progress if available
-            r_analysis = event.get("reasoning_analysis")
-            if r_analysis:
-                cand_perf.reasoning_analyses.append(r_analysis)
-
             score_key = (cand_id, test_result.test_id)
             if score > best_scores.get(score_key, -1):
                 best_scores[score_key] = score
@@ -116,20 +110,6 @@ def run_evaluation_phase(
         cand_perf.scores.append(score)
         cand_perf.global_scores.append(g_score)
 
-        # --- Reasoning analysis (optional) ---
-        reasoning_analysis_dict: dict | None = None
-        reasoning_text = eval_task.get("reasoning_text", "")
-        if judge_config.reasoning_analysis and reasoning_text:
-            logger.log_action(f"{prefix}Analyzing reasoning trace...")
-            r_stats = analyze_reasoning(reasoning_text, judge_config, candidate_response=output)
-            if r_stats is not None:
-                reasoning_analysis_dict = r_stats.to_dict()
-                cand_perf.reasoning_analyses.append(reasoning_analysis_dict)
-                logger.log_metric(
-                    f"{prefix}Reasoning: {r_stats.pure_reasoning_pct:.1f}% pure | "
-                    f"align={r_stats.alignment_score}/10"
-                )
-
         score_key = (cand_id, test_result.test_id)
         if score > best_scores.get(score_key, -1):
             best_scores[score_key] = score
@@ -146,7 +126,6 @@ def run_evaluation_phase(
             "global_score": g_score,
             "reason": reason,
             "g_reason": g_reason,
-            "reasoning_analysis": reasoning_analysis_dict,
         })
 
         if eval_delay > 0 and eval_task is not pending_evals[-1]:

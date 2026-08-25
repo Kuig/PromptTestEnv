@@ -4,7 +4,7 @@ import json
 import unittest
 from unittest.mock import patch
 
-from prompttestenv.models import GlobalCriteria, JudgeConfig, TestCaseResult
+from prompttestenv.models import LlmResult, GlobalCriteria, JudgeConfig, TestCaseResult
 from prompttestenv.test_judge import (
     _evaluate_assert,
     _evaluate_llm_judge,
@@ -59,7 +59,7 @@ class TestEvaluateLlmJudge(unittest.TestCase):
         jc = self._judge_config()
         prompt = TestCaseResult(test_id="t1", prompt="p", criteria="c")
         with patch("prompttestenv.test_judge.get_llm_response") as mock_llm:
-            mock_llm.return_value = (json.dumps({"score": 8, "reasoning": "good job"}), 0, 0, "")
+            mock_llm.return_value = LlmResult(text=json.dumps({"score": 8, "reasoning": "good job"}))
             score, reasoning = _evaluate_llm_judge(prompt, "resp", jc)
         self.assertEqual(score, 8)
         self.assertEqual(reasoning, "good job")
@@ -68,7 +68,7 @@ class TestEvaluateLlmJudge(unittest.TestCase):
         jc = self._judge_config()
         prompt = TestCaseResult(test_id="t1", prompt="p", criteria="c")
         with patch("prompttestenv.test_judge.get_llm_response") as mock_llm:
-            mock_llm.return_value = (json.dumps([{"score": 6, "reasoning": "ok"}]), 0, 0, "")
+            mock_llm.return_value = LlmResult(text=json.dumps([{"score": 6, "reasoning": "ok"}]))
             score, reasoning = _evaluate_llm_judge(prompt, "resp", jc)
         self.assertEqual(score, 6)
 
@@ -76,7 +76,7 @@ class TestEvaluateLlmJudge(unittest.TestCase):
         jc = self._judge_config()
         prompt = TestCaseResult(test_id="t1", prompt="p", criteria="c")
         with patch("prompttestenv.test_judge.get_llm_response") as mock_llm:
-            mock_llm.return_value = ("not json", 0, 0, "")
+            mock_llm.return_value = LlmResult(text="not json")
             score, reasoning = _evaluate_llm_judge(prompt, "resp", jc)
         self.assertEqual(score, 0)
         self.assertIn("failed", reasoning)

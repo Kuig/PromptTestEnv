@@ -5,7 +5,12 @@ import concurrent.futures
 from dataclasses import dataclass
 
 import prompttestenv.logger as logger
-from prompttestenv.api import get_llm_response, get_text_embedding, cosine_similarity
+from prompttestenv.api import (
+    cosine_similarity,
+    get_llm_response,
+    get_text_embedding,
+    is_local_provider,
+)
 from prompttestenv.models import (
     TestCaseResult,
     JudgeConfig,
@@ -61,7 +66,7 @@ def _evaluate_llm_judge(
     disable_safety = judge_config.test_judge.disable_safety
 
     try:
-        resp, _, _, _ = get_llm_response(
+        result = get_llm_response(
             provider=provider,
             model_name=model_name,
             system_instruction=sys_prompt,
@@ -72,11 +77,11 @@ def _evaluate_llm_judge(
             response_mime_type="application/json",
             disable_safety=disable_safety,
         )
-        parsed = json.loads(resp)
+        parsed = json.loads(result.text)
         if isinstance(parsed, list):
             parsed = parsed[0] if parsed and isinstance(parsed[0], dict) else {}
         if not isinstance(parsed, dict):
-            return 0, f"Error: LLM response did not parse as a dict: {resp}"
+            return 0, f"Error: LLM response did not parse as a dict: {result.text}"
         score = parsed.get("score", 0)
         reasoning = parsed.get("reasoning", "")
         return int(score), str(reasoning)
@@ -209,12 +214,25 @@ def evaluate_with_judge(
             return 0, f"Error: Unknown global evaluation mode '{g_mode}'."
 
     try:
+        # A local backend serves one model at a time, so running the task and
+        # global judges concurrently would only queue them against each other,
+        # or force a second load into VRAM.
+        if is_local_provider(judge_config.test_judge.provider):
+            score, reasoning = run_task_eval()
+            global_score, global_reasoning = run_global_eval()
+            return {
+                "score": score,
+                "reasoning": reasoning,
+                "global_score": global_score,
+                "global_reasoning": global_reasoning,
+            }
+
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
             future_task = executor.submit(run_task_eval)
             future_global = executor.submit(run_global_eval)
             score, reasoning = future_task.result()
             global_score, global_reasoning = future_global.result()
-            
+
             return {
                 "score": score,
                 "reasoning": reasoning,

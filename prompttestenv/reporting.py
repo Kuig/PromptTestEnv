@@ -7,7 +7,16 @@ import re
 
 import jinja2
 
-from prompttestenv.models import calculate_stats, Candidate, JudgeConfig, TestCaseResult, GlobalCriteria
+from prompttestenv.config import get_app_config
+from prompttestenv.models import (
+    REASONING_DIMENSIONS,
+    calculate_stats,
+    Candidate,
+    CandidatePerformance,
+    JudgeConfig,
+    TestCaseResult,
+    GlobalCriteria,
+)
 from prompttestenv.reasoning import aggregate_reasoning_stats
 from prompttestenv.verdict import parse_grouped_verdict
 
@@ -37,6 +46,102 @@ def format_thinking_value(val: bool | str | None) -> str:
             return "DEFAULT"
         return val.upper()
     return str(val).upper()
+
+
+NEUTRAL_UNIT_COLOR = "#9e9e9e"
+
+
+def _tint(hex_color: str, ratio: float) -> str:
+    """Build a translucent background from a dimension colour and an intensity.
+
+    Tinting the background rather than fading the whole span keeps the trace
+    readable at every intensity, which matters because the point of the view is
+    that the reader can check the analysis against the actual words.
+
+    Args:
+        hex_color: Dimension colour as ``#rrggbb``.
+        ratio: Intensity in [0, 1].
+
+    Returns:
+        An ``rgba(...)`` CSS colour, or ``transparent`` when the intensity is 0.
+    """
+    if ratio <= 0:
+        return "transparent"
+    value = hex_color.lstrip("#")
+    if len(value) != 6:
+        return "transparent"
+    red, green, blue = (int(value[i:i + 2], 16) for i in (0, 2, 4))
+    alpha = round(0.15 + 0.55 * min(1.0, ratio), 3)
+    return f"rgba({red}, {green}, {blue}, {alpha})"
+
+
+def build_trace_segments(perf: CandidatePerformance) -> list[dict]:
+    """Turn a scored trace into renderable, colour-coded spans.
+
+    The report shows the whole trace tinted in place rather than four buckets of
+    copied text: since the units are character offsets the reader can see that
+    every word is accounted for, which is the property the old rewrite-based
+    segmentation could not offer.
+
+    Args:
+        perf: Candidate performance holding best_reasoning_text and
+            best_reasoning_analysis.
+
+    Returns:
+        Ordered list of span dicts. Gap spans (whitespace between units) carry
+        ``unit_id`` 0 and no colour.
+    """
+    analysis = perf.best_reasoning_analysis
+    text = perf.best_reasoning_text
+    if analysis is None or not text or not analysis.units:
+        return []
+
+    colors = {d.name: d.color for d in get_app_config().reasoning_schema.dimensions}
+    scale = max(1, get_app_config().reasoning_schema.intensity_scale)
+    segments: list[dict] = []
+    cursor = 0
+    for index, unit in enumerate(analysis.units, start=1):
+        if unit.start > cursor:
+            segments.append({"text": text[cursor:unit.start], "unit_id": 0})
+        intensities = {d: unit.intensity(d) for d in REASONING_DIMENSIONS}
+        top = max(intensities, key=lambda d: intensities[d])
+        peak = intensities[top]
+        markers = ""
+        if index in analysis.alt_path_units:
+            markers += "⑂"
+        if index in analysis.autocorrect_units:
+            markers += "↺"
+        if index in analysis.alignment_evidence:
+            markers += "⚠"
+        segments.append({
+            "text": text[unit.start:unit.end],
+            "unit_id": index,
+            "background": _tint(colors.get(top, NEUTRAL_UNIT_COLOR), peak / scale),
+            "title": " | ".join(f"{d}: {intensities[d]:.1f}/{scale}" for d in REASONING_DIMENSIONS),
+            "markers": markers,
+        })
+        cursor = unit.end
+    if cursor < len(text):
+        segments.append({"text": text[cursor:], "unit_id": 0})
+    return segments
+
+
+def reasoning_efficiency(score_mean: float, reasoning_tokens_mean: float) -> str:
+    """Format thinking tokens spent per point of task score.
+
+    Answers the question the raw token count does not: whether a candidate is
+    getting anything back for the thinking it is billed for.
+
+    Args:
+        score_mean: Mean task score.
+        reasoning_tokens_mean: Mean reasoning tokens per response.
+
+    Returns:
+        A formatted figure, or "N/A" when it would not be meaningful.
+    """
+    if reasoning_tokens_mean <= 0 or score_mean <= 0:
+        return "N/A"
+    return f"{reasoning_tokens_mean / score_mean:.0f}"
 
 
 def md_to_html(md_text):
@@ -152,8 +257,11 @@ def generate_html_report(project_dir: str, results: list[TestCaseResult], candid
         judge_config=judge_config,
         reasoning_stats=reasoning_stats,
         reasoning_analysis_enabled=judge_config.reasoning_analysis,
+        reasoning_dimensions=get_app_config().reasoning_schema.dimensions,
         get_badge_class=get_badge_class,
         format_thinking_value=format_thinking_value,
+        build_trace_segments=build_trace_segments,
+        reasoning_efficiency=reasoning_efficiency,
     )
     report_dir = os.path.join(project_dir, "Report")
     os.makedirs(report_dir, exist_ok=True)

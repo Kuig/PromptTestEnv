@@ -25,16 +25,22 @@
         .candidates-footer { padding: 20px; background-color: #e9ecef; border-radius: 8px; color: #495057; border: 1px solid #ced4da; font-size: 0.9em; }
         .cand-card { background: #fff; padding: 10px; margin-bottom: 10px; border-radius: 4px; border: 1px solid #ddd; }
         .cand-name { font-weight: bold; color: #007bff; }
-        /* Reasoning analysis */
-        .reasoning-bar-wrap { width: 100%; height: 18px; border-radius: 4px; overflow: hidden; display: flex; margin: 6px 0 2px; }
-        .reasoning-bar-segment { height: 100%; display: flex; align-items: center; justify-content: center; font-size: 0.65em; color: #fff; overflow: hidden; white-space: nowrap; }
-        .rb-interpretation { background: #4FC3F7; }
-        .rb-planning { background: #FFB74D; }
-        .rb-pure-reasoning { background: #81C784; }
-        .rb-output-formulation { background: #BA68C8; }
+        /* Reasoning analysis.
+           Dimensions are scored independently, so each gets its own 0-100% bar:
+           a stacked bar would imply they partition the trace, which they do not.
+           Their sum is reported separately as density. */
+        .dim-row { display: flex; align-items: center; gap: 6px; margin: 3px 0; font-size: 0.72em; color: #555; }
+        .dim-name { width: 88px; text-align: right; white-space: nowrap; }
+        .dim-track { flex: 1; height: 10px; background: #e9ecef; border-radius: 5px; overflow: hidden; }
+        .dim-fill { display: block; height: 100%; border-radius: 5px; }
+        .dim-val { width: 64px; font-family: monospace; }
+        .density-note { font-size: 0.72em; color: #666; margin-top: 4px; }
+        .summary-banner { background: #fff3cd; border: 1px solid #ffeeba; color: #856404; font-size: 0.72em; padding: 5px 8px; border-radius: 4px; margin: 6px 0; }
+        .trace-view { font-size: 0.8em; line-height: 1.8; color: #333; background: #fcfcfc; border: 1px solid #e0e0e0; border-radius: 4px; padding: 10px; margin-top: 6px; max-height: 320px; overflow-y: auto; white-space: pre-wrap; }
+        .trace-unit { border-radius: 3px; padding: 1px 2px; box-decoration-break: clone; -webkit-box-decoration-break: clone; }
+        .trace-marker { font-size: 0.85em; vertical-align: super; color: #c62828; font-weight: bold; }
         .reasoning-legend { display: flex; gap: 12px; flex-wrap: wrap; font-size: 0.72em; color: #555; margin-top: 3px; }
         .reasoning-legend span::before { content: '\25A0 '; }
-        .reasoning-seg-text { font-size: 0.78em; color: #444; background: #f8f9fa; border: 1px solid #e0e0e0; border-radius: 4px; padding: 8px; margin-top: 4px; max-height: 200px; overflow-y: auto; white-space: pre-wrap; }
     </style>
 </head>
 <body>
@@ -70,19 +76,28 @@
                         {% if reasoning_analysis_enabled %}
                             {% set rs = reasoning_stats.get(cand.name, {}) %}
                             {% if rs %}
-                            <div style="margin-top:6px;">
-                                <span style="font-size:0.8em;color:#555;">🧠 Pure Reasoning: <b>{{ "{:.1f}".format(rs.avg_pure_reasoning_pct) }}% &plusmn; {{ "{:.1f}".format(rs.std_pure_reasoning_pct) }}%</b></span><br>
-                                <div class="reasoning-bar-wrap" title="Cognitive resource allocation">
-                                    <div class="reasoning-bar-segment rb-interpretation" style="width:{{ rs.avg_interpretation_pct }}%" title="Interpretation: {{ rs.avg_interpretation_pct }}%">{% if rs.avg_interpretation_pct > 8 %}I{% endif %}</div>
-                                    <div class="reasoning-bar-segment rb-planning" style="width:{{ rs.avg_planning_pct }}%" title="Planning: {{ rs.avg_planning_pct }}%">{% if rs.avg_planning_pct > 8 %}P{% endif %}</div>
-                                    <div class="reasoning-bar-segment rb-pure-reasoning" style="width:{{ rs.avg_pure_reasoning_pct }}%" title="Pure Reasoning: {{ rs.avg_pure_reasoning_pct }}%">{% if rs.avg_pure_reasoning_pct > 8 %}R{% endif %}</div>
-                                    <div class="reasoning-bar-segment rb-output-formulation" style="width:{{ rs.avg_output_formulation_pct }}%" title="Output Formulation: {{ rs.avg_output_formulation_pct }}%">{% if rs.avg_output_formulation_pct > 8 %}O{% endif %}</div>
+                            <div style="margin-top:6px; text-align:left;">
+                                {% if rs.is_summary %}
+                                <div class="summary-banner">
+                                    &#9888; This provider returns a <b>summary</b> of the model's thinking, not the
+                                    raw chain of thought. Composition is comparable only against other summarised
+                                    traces, and absolute token attribution is withheld.
                                 </div>
-                                <div class="reasoning-legend">
-                                    <span style="color:#4FC3F7;">Interpretation</span>
-                                    <span style="color:#FFB74D;">Planning</span>
-                                    <span style="color:#81C784;">Pure Reasoning</span>
-                                    <span style="color:#BA68C8;">Output Formulation</span>
+                                {% endif %}
+                                {% for dim in reasoning_dimensions %}
+                                    {% set cov = rs.get('avg_coverage_' ~ dim.name, -1) %}
+                                    {% set cstd = rs.get('std_coverage_' ~ dim.name, 0) %}
+                                    <div class="dim-row" title="{{ dim.definition }}">
+                                        <span class="dim-name">{{ dim.name }}</span>
+                                        <span class="dim-track">{% if cov >= 0 %}<span class="dim-fill" style="width:{{ (cov * 100) | round(1) }}%; background:{{ dim.color }};"></span>{% endif %}</span>
+                                        <span class="dim-val">{% if cov >= 0 %}{{ "{:.0f}".format(cov * 100) }}&plusmn;{{ "{:.0f}".format(cstd * 100) }}%{% else %}n/a{% endif %}</span>
+                                    </div>
+                                {% endfor %}
+                                <div class="density-note">
+                                    density <b>{% if rs.avg_density >= 0 %}{{ "{:.2f}".format(rs.avg_density) }}{% else %}n/a{% endif %}</b>
+                                    (concerns per unit of trace; above 1 means dimensions co-occur)
+                                    &nbsp;|&nbsp; 💭/point <b>{{ reasoning_efficiency(s.task_mean, s.reasoning_mean) }}</b>
+                                    {% if rs.avg_repetition_rate >= 0 %}&nbsp;|&nbsp; repetition <b>{{ "{:.0f}".format(rs.avg_repetition_rate * 100) }}%</b>{% endif %}
                                 </div>
                             </div>
                             {% endif %}
@@ -146,44 +161,34 @@
                                     <summary><strong>Best Model Response</strong></summary>
                                     <pre style="margin-top:10px;">{{ perf.best_output }}</pre>
                                 </details>
-                                {% if reasoning_analysis_enabled and perf.reasoning_analyses %}
-                                    {% set last_ra = perf.reasoning_analyses[-1] %}
+                                {% if reasoning_analysis_enabled and perf.best_reasoning_analysis %}
+                                    {% set ra = perf.best_reasoning_analysis %}
                                     <details style="margin-top:5px;">
                                         <summary><strong>🧠 Reasoning Analysis</strong></summary>
                                         <div style="font-size:0.8em; margin-top:8px; color:#444;">
-                                            <b>Metrics (last rep):</b>
-                                            Alt Paths: <b>{{ last_ra.alt_path }}</b> &nbsp;|
-                                            Self-corrections: <b>{{ last_ra.autocorrect }}</b> &nbsp;|
-                                            Alignment: <b>{{ last_ra.alignment_score }}/10</b><br><br>
-                                            <b>Cognitive distribution (last rep):</b>
-                                            <div class="reasoning-bar-wrap">
-                                                <div class="reasoning-bar-segment rb-interpretation" style="width:{{ last_ra.interpretation_pct }}%" title="Interpretation: {{ last_ra.interpretation_pct }}%">{% if last_ra.interpretation_pct > 8 %}I{% endif %}</div>
-                                                <div class="reasoning-bar-segment rb-planning" style="width:{{ last_ra.planning_pct }}%" title="Planning: {{ last_ra.planning_pct }}%">{% if last_ra.planning_pct > 8 %}P{% endif %}</div>
-                                                <div class="reasoning-bar-segment rb-pure-reasoning" style="width:{{ last_ra.pure_reasoning_pct }}%" title="Pure Reasoning: {{ last_ra.pure_reasoning_pct }}%">{% if last_ra.pure_reasoning_pct > 8 %}R{% endif %}</div>
-                                                <div class="reasoning-bar-segment rb-output-formulation" style="width:{{ last_ra.output_formulation_pct }}%" title="Output Formulation: {{ last_ra.output_formulation_pct }}%">{% if last_ra.output_formulation_pct > 8 %}O{% endif %}</div>
+                                            <b>Best repetition, the same one shown above.</b><br>
+                                            Alt paths <b>{% if ra.alt_path >= 0 %}{{ ra.alt_path }}{% else %}n/a{% endif %}</b> &nbsp;|
+                                            Self-corrections <b>{% if ra.autocorrect >= 0 %}{{ ra.autocorrect }}{% else %}n/a{% endif %}</b> &nbsp;|
+                                            Alignment <b>{% if ra.alignment_score >= 0 %}{{ ra.alignment_score }}/10{% else %}n/a{% endif %}</b>
+                                            {% if ra.trace_response_drift >= 0 %}&nbsp;| Trace/response similarity <b>{{ "{:.2f}".format(ra.trace_response_drift) }}</b>{% endif %}
+                                            <br><br>
+                                            {% for dim in reasoning_dimensions %}
+                                                {% set cov = ra.coverage(dim.name) %}
+                                                <div class="dim-row" title="{{ dim.definition }}">
+                                                    <span class="dim-name">{{ dim.name }}</span>
+                                                    <span class="dim-track">{% if cov >= 0 %}<span class="dim-fill" style="width:{{ (cov * 100) | round(1) }}%; background:{{ dim.color }};"></span>{% endif %}</span>
+                                                    <span class="dim-val">{% if cov >= 0 %}{{ "{:.0f}".format(cov * 100) }}%{% else %}n/a{% endif %}</span>
+                                                </div>
+                                            {% endfor %}
+                                            <div class="density-note">
+                                                density <b>{% if ra.density >= 0 %}{{ "{:.2f}".format(ra.density) }}{% else %}n/a{% endif %}</b>
+                                                &nbsp;|&nbsp; {{ ra.units | length }} units
+                                                &nbsp;|&nbsp; &#8706; alternative &nbsp; &#8634; self-correction &nbsp; &#9888; contradicted by the response
                                             </div>
-                                            <div class="reasoning-legend" style="margin-bottom:10px;">
-                                                <span style="color:#4FC3F7;">Interpretation</span>
-                                                <span style="color:#FFB74D;">Planning</span>
-                                                <span style="color:#81C784;">Pure Reasoning</span>
-                                                <span style="color:#BA68C8;">Output Formulation</span>
+                                            <div class="reasoning-legend" style="margin:6px 0;">
+                                                {% for dim in reasoning_dimensions %}<span style="color:{{ dim.color }};">{{ dim.name }}</span>{% endfor %}
                                             </div>
-                                            <details>
-                                                <summary style="cursor:pointer;">Interpretation</summary>
-                                                <div class="reasoning-seg-text">{{ last_ra.interpretation }}</div>
-                                            </details>
-                                            <details>
-                                                <summary style="cursor:pointer;">Planning</summary>
-                                                <div class="reasoning-seg-text">{{ last_ra.planning }}</div>
-                                            </details>
-                                            <details>
-                                                <summary style="cursor:pointer;">Pure Reasoning</summary>
-                                                <div class="reasoning-seg-text">{{ last_ra.pure_reasoning }}</div>
-                                            </details>
-                                            <details>
-                                                <summary style="cursor:pointer;">Output Formulation</summary>
-                                                <div class="reasoning-seg-text">{{ last_ra.output_formulation }}</div>
-                                            </details>
+                                            <div class="trace-view">{% for seg in build_trace_segments(perf) %}{% if seg.unit_id %}<span class="trace-unit" style="background:{{ seg.background }};" title="[{{ seg.unit_id }}] {{ seg.title }}">{{ seg.text }}</span>{% if seg.markers %}<span class="trace-marker">{{ seg.markers }}</span>{% endif %}{% else %}{{ seg.text }}{% endif %}{% endfor %}</div>
                                         </div>
                                     </details>
                                 {% endif %}

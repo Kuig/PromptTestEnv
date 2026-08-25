@@ -171,15 +171,38 @@ class TestJudgeConfigFromDict(unittest.TestCase):
         jc_falsy = JudgeConfig.from_dict({"global_criteria": ""})
         self.assertEqual(jc_falsy.global_criteria.mode, "none")
 
-    def test_reasoning_judge_legacy_system_prompt_fallback(self):
-        jc = JudgeConfig.from_dict({"reasoning_judge": {"system_prompt": "legacy prompt"}})
-        self.assertEqual(jc.reasoning_judge.reasoning_system_prompt, "legacy prompt")
-
-    def test_reasoning_judge_prefers_new_key_over_legacy(self):
+    def test_reasoning_judge_keeps_only_call_parameters(self):
+        """Prompts and taxonomy live in config.json, so judge_config only picks the judge."""
         jc = JudgeConfig.from_dict({
-            "reasoning_judge": {"reasoning_system_prompt": "new", "system_prompt": "legacy"}
+            "reasoning_judge": {
+                "provider": "ollama",
+                "model": "qwen",
+                "context_size": 32000,
+                "dimension_mode": "joint",
+            }
         })
-        self.assertEqual(jc.reasoning_judge.reasoning_system_prompt, "new")
+        self.assertEqual(jc.reasoning_judge.provider, "ollama")
+        self.assertEqual(jc.reasoning_judge.context_size, 32000)
+        self.assertEqual(jc.reasoning_judge.dimension_mode, "joint")
+
+    def test_reasoning_judge_knobs_default_to_none_so_config_json_decides(self):
+        jc = JudgeConfig.from_dict({"reasoning_judge": {}})
+        self.assertIsNone(jc.reasoning_judge.dimension_mode)
+        self.assertIsNone(jc.reasoning_judge.reliability_k)
+        self.assertIsNone(jc.reasoning_judge.max_units_per_call)
+
+    def test_retired_reasoning_prompt_keys_are_ignored(self):
+        """Old project configs still load; their dead prompt keys are simply dropped."""
+        jc = JudgeConfig.from_dict({
+            "reasoning_judge": {
+                "model": "m",
+                "segmentation_template": "dead",
+                "metrics_template": "dead",
+                "reasoning_system_prompt": "dead",
+            }
+        })
+        self.assertEqual(jc.reasoning_judge.model, "m")
+        self.assertFalse(hasattr(jc.reasoning_judge, "segmentation_template"))
 
 
 class TestJudgeConfigLoad(unittest.TestCase):
