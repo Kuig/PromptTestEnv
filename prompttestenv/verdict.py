@@ -5,7 +5,13 @@ import os
 
 import prompttestenv.logger as logger
 from prompttestenv.api import get_llm_response
-from prompttestenv.models import TestCaseResult, Candidate, JudgeConfig, calculate_stats, DEFAULT_GROUP
+from prompttestenv.models import (
+    TestCaseResult,
+    Candidate,
+    CandidatePerformance,
+    JudgeConfig,
+    DEFAULT_GROUP,
+)
 from prompttestenv.reasoning import aggregate_reasoning_stats
 
 
@@ -79,53 +85,168 @@ def _strip_code_fence(text: str) -> str:
     return text
 
 
+METADATA_TEMPLATE = """# BENCHMARK METADATA
+Each candidate saw only the PROMPT, the ATTACHMENT, and its own system prompt (not shown
+here, and it may differ per candidate). The EVALUATION CRITERIA are the judges' rubric,
+NOT shown to the candidate: missing one is a difference in behaviour, not disobedience.
+
+Repetitions per candidate x test case: {repetitions}. Figures are mean ± SD across them;
+at 1 repetition every ± is 0.00 by construction and says nothing about stability.
+'Notes' come from the best-scoring repetition, not an average one.
+Token counts are OUTPUT only — reasoning tokens are separate and excluded, input tokens
+are not tracked.
+Both scores run 1-10, but what they measure is set by this project's criteria and may be
+redefined by the instructions below; 'N/A' means not computed.
+
+Task scores come from different judges and are NOT comparable across test cases:
+- llm-judge: graded 1-10 by an LLM against the test's criteria.
+- similarity: cosine similarity to a target text, rescaled to 1-10.
+- assert: a user-authored Python expression; it may use the full 1-10 range or just a
+  pass/fail pair, and which one is never declared.
+Each test case declares its judge; the aggregate below pools all of them, so read it as an
+indication, not a measurement.
+"""
+
+
+def _aggregate_by_candidate(
+    candidates: list[Candidate],
+    rows: list[TestCaseResult],
+) -> dict[str, CandidatePerformance]:
+    """Pool each candidate's per-test-case performance into a single record.
+
+    Args:
+        candidates: Resolved candidate configurations.
+        rows: Test case results to pool over.
+
+    Returns:
+        Mapping of candidate name to a CandidatePerformance holding every
+        repetition of every test case, so its mean/std properties describe the
+        candidate's run as a whole. Candidates with no data map to an empty
+        record (whose means fall back to the usual defaults).
+    """
+    pooled: dict[str, CandidatePerformance] = {}
+    for cand in candidates:
+        agg = CandidatePerformance()
+        for row in rows:
+            perf = row.candidates_perf.get(cand.name)
+            if not perf:
+                continue
+            agg.scores.extend(perf.scores)
+            agg.global_scores.extend(perf.global_scores)
+            agg.times.extend(perf.times)
+            agg.tokens.extend(perf.tokens)
+            agg.reasoning_tokens.extend(perf.reasoning_tokens)
+        pooled[cand.name] = agg
+    return pooled
+
+
+def _format_global_score(perf: CandidatePerformance, with_std: bool) -> str:
+    """Render a global score, or "N/A" when global scoring produced nothing.
+
+    Args:
+        perf: Performance record to read the global score from.
+        with_std: Whether to append the standard deviation.
+
+    Returns:
+        Formatted score string.
+    """
+    if perf.global_score_mean < 0:
+        return "N/A"
+    if with_std:
+        return f"{perf.global_score_mean:.2f} ± {perf.global_score_std:.2f}/10"
+    return f"{perf.global_score_mean:.2f}/10"
+
+
+def _format_reasoning_profile(analyses: list[dict]) -> str:
+    """Render the aggregated reasoning trace profile for one candidate.
+
+    Args:
+        analyses: Per-repetition reasoning analysis dicts.
+
+    Returns:
+        Indented multi-line block describing the trace's composition and metrics.
+    """
+    agg = aggregate_reasoning_stats(analyses)
+    return (
+        f"    Reasoning trace profile (share of the trace's characters): "
+        f"interpretation {agg.get('avg_interpretation_pct', 0):.1f}% ± {agg.get('std_interpretation_pct', 0):.1f}%, "
+        f"planning {agg.get('avg_planning_pct', 0):.1f}% ± {agg.get('std_planning_pct', 0):.1f}%,\n"
+        f"      problem-solving {agg.get('avg_pure_reasoning_pct', 0):.1f}% ± {agg.get('std_pure_reasoning_pct', 0):.1f}%, "
+        f"output formulation {agg.get('avg_output_formulation_pct', 0):.1f}% ± {agg.get('std_output_formulation_pct', 0):.1f}%.\n"
+        f"      Alternatives explored: {agg.get('avg_alt_path', 0):.1f} ± {agg.get('std_alt_path', 0):.1f}. "
+        f"Self-corrections: {agg.get('avg_autocorrect', 0):.1f} ± {agg.get('std_autocorrect', 0):.1f}.\n"
+        f"      Response/reasoning alignment: {agg.get('avg_alignment_score', 0):.1f} ± {agg.get('std_alignment_score', 0):.1f} out of 10.\n"
+    )
+
+
 def _build_summary_data(
     rows: list[TestCaseResult],
     candidates: list[Candidate],
     judge_config: JudgeConfig,
 ) -> str:
-    """Build the per-test-case candidate performance summary for a verdict prompt.
+    """Build the self-describing results payload for a verdict prompt.
+
+    The payload carries its own metadata header (repetition count, metric
+    semantics, judge-type legend) so that whoever authors a verdict template
+    only needs to interpolate {summary_data} to get data the judge can read
+    without knowing anything about this codebase.
 
     Args:
         rows: Test case results to summarize (one group's rows, or all rows).
         candidates: Resolved candidate configurations.
-        judge_config: JudgeConfig instance (used for the reasoning_analysis flag).
+        judge_config: JudgeConfig instance (repetition count and the
+            reasoning_analysis flag).
 
     Returns:
         Formatted summary text ready to interpolate into a verdict template.
     """
-    summary_data = ""
+    parts = [METADATA_TEMPLATE.format(repetitions=judge_config.repetitions)]
+
+    parts.append("\n# OVERALL AGGREGATE (pooled across all test cases and repetitions)\n")
+    for name, agg in _aggregate_by_candidate(candidates, rows).items():
+        parts.append(
+            f"  > CANDIDATE: {name} | "
+            f"Task Score: {agg.score_mean:.2f}/10 | "
+            f"Global Score: {_format_global_score(agg, with_std=False)} | "
+            f"Time: {agg.time_mean:.2f}s | "
+            f"Output Tokens: {agg.tokens_mean:.0f} | "
+            f"Reasoning Tokens: {agg.reasoning_tokens_mean:.0f}\n"
+        )
+
+    parts.append("\n# TEST RESULTS\n")
     for row in rows:
-        summary_data += f"## TEST ID: {row.test_id}\n"
+        parts.append(
+            f"\n## TEST ID: {row.test_id}\n"
+            f"JUDGE TYPE: {row.judge_type}\n"
+            f"ATTACHMENT: {row.file_used or 'none'}\n"
+            f"PROMPT:\n{row.prompt}\n"
+            f"EVALUATION CRITERIA (rubric, NOT shown to the candidate):\n{row.criteria}\n"
+        )
         for cand in candidates:
-            cand_id = cand.name
-            perf = row.candidates_perf.get(cand_id)
-            if perf:
-                g_score_str = f"{perf.global_score_mean:.2f} ± {perf.global_score_std:.2f}/10" if perf.global_score_mean >= 0 else "N/A"
-                summary_data += (
-                    f"  > SYSTEM: {cand_id} | "
-                    f"Task Score: {perf.score_mean:.2f} ± {perf.score_std:.2f}/10 | "
-                    f"Global Score: {g_score_str} | "
-                    f"Time: {perf.time_mean:.2f}s ± {perf.time_std:.2f}s | "
-                    f"Tokens: {perf.tokens_mean:.0f} ± {perf.tokens_std:.0f} (Reasoning: {perf.reasoning_tokens_mean:.0f} ± {perf.reasoning_tokens_std:.0f}) | "
-                    f"Notes: {perf.best_reason}\n"
-                )
-                if judge_config.reasoning_analysis and perf.reasoning_analyses:
-                    r_agg = aggregate_reasoning_stats(perf.reasoning_analyses)
-                    summary_data += (
-                        f"    Cognitive Resource Analysis: On average, the candidate utilized "
-                        f"{r_agg.get('avg_pure_reasoning_pct', 0):.1f}% ± {r_agg.get('std_pure_reasoning_pct', 0):.1f}% "
-                        f"of their cognitive resources to solve the problem, with the remainder "
-                        f"dedicated to interacting with the user. "
-                        f"The model explored {r_agg.get('avg_alt_path', 0):.1f} ± {r_agg.get('std_alt_path', 0):.1f} alternatives "
-                        f"and self-corrected {r_agg.get('avg_autocorrect', 0):.1f} ± {r_agg.get('std_autocorrect', 0):.1f} times. "
-                        f"The alignment between the response and the reasoning process scored "
-                        f"{r_agg.get('avg_alignment_score', 0):.1f} ± {r_agg.get('std_alignment_score', 0):.1f} out of 10.\n"
-                    )
-            else:
-                summary_data += f"  > SYSTEM: {cand_id} | N/A\n"
-        summary_data += "\n"
-    return summary_data
+            perf = row.candidates_perf.get(cand.name)
+            parts.append(f"\n  > CANDIDATE: {cand.name}\n")
+            if not perf:
+                parts.append("    N/A (no completed repetitions)\n")
+                continue
+            parts.append(
+                f"    Task Score: {perf.score_mean:.2f} ± {perf.score_std:.2f}/10 | "
+                f"Global Score: {_format_global_score(perf, with_std=True)} | "
+                f"Time: {perf.time_mean:.2f}s ± {perf.time_std:.2f}s\n"
+                f"    Output Tokens: {perf.tokens_mean:.0f} ± {perf.tokens_std:.0f} | "
+                f"Reasoning Tokens: {perf.reasoning_tokens_mean:.0f} ± {perf.reasoning_tokens_std:.0f}\n"
+            )
+            if judge_config.reasoning_analysis and perf.reasoning_analyses:
+                parts.append(_format_reasoning_profile(perf.reasoning_analyses))
+            # Notes go last: best_reason is free-form judge prose that may span
+            # several lines, so indenting its continuations keeps them visibly
+            # subordinate and leaves the blank line before the next candidate as
+            # the one unambiguous record boundary.
+            notes = perf.best_reason.replace("\n", "\n      ")
+            parts.append(f"    Notes: {notes}\n")
+
+    # No trailing blank line: the surrounding verdict template owns the spacing
+    # between {summary_data} and whatever follows it.
+    return "".join(parts).rstrip()
 
 
 def generate_verdict(
@@ -160,12 +281,8 @@ def generate_verdict(
         if not verdict_template:
             return "No verdict template provided."
             
-        global_criteria_obj = getattr(judge_config, "global_criteria", None)
-        if global_criteria_obj and hasattr(global_criteria_obj, "to_verdict_string"):
-            global_criteria = global_criteria_obj.to_verdict_string()
-        else:
-            global_criteria = "None"
-            
+        global_criteria = judge_config.global_criteria.to_verdict_string()
+
         if judge_config.group_verdicts:
             groups = {}
             for row in results:
@@ -269,16 +386,9 @@ def evaluate_best_candidate_fast(
     Returns:
         String naming the winning candidate and their average score.
     """
-    stats: dict[str, float] = {}
-    for cand in candidates:
-        cand_id = cand.name
-        task_scores = []
-        for row in results:
-            perf = row.candidates_perf.get(cand_id)
-            if perf:
-                task_scores.extend(perf.scores)
-        t_mean, _ = calculate_stats(task_scores)
-        stats[cand_id] = t_mean
-
+    stats = {
+        name: agg.score_mean
+        for name, agg in _aggregate_by_candidate(candidates, results).items()
+    }
     best_cand = max(stats, key=lambda k: stats[k])
     return f"Winner (by Average Task Score): {best_cand} with a score of {stats[best_cand]:.2f}/10"

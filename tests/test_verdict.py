@@ -14,7 +14,12 @@ from prompttestenv.models import (
     JudgeConfig,
     TestCaseResult,
 )
-from prompttestenv.verdict import evaluate_best_candidate_fast, generate_verdict, save_verdict_debug_file
+from prompttestenv.verdict import (
+    _build_summary_data,
+    evaluate_best_candidate_fast,
+    generate_verdict,
+    save_verdict_debug_file,
+)
 from testutils import LoggerResetTestCase
 
 
@@ -26,6 +31,19 @@ def _make_result(cand_name: str, score: float) -> TestCaseResult:
     return result
 
 
+def _reasoning_analysis() -> dict:
+    """One repetition's reasoning analysis, as stored in progress.jsonl."""
+    return {
+        "interpretation_pct": 20.0,
+        "planning_pct": 10.0,
+        "pure_reasoning_pct": 40.0,
+        "output_formulation_pct": 30.0,
+        "alt_path": 2,
+        "autocorrect": 1,
+        "alignment_score": 9,
+    }
+
+
 class TestEvaluateBestCandidateFast(unittest.TestCase):
     def test_picks_the_highest_average_scorer(self):
         candidates = [Candidate(name="A", provider="p", model="m"), Candidate(name="B", provider="p", model="m")]
@@ -33,6 +51,161 @@ class TestEvaluateBestCandidateFast(unittest.TestCase):
         winner_line = evaluate_best_candidate_fast(candidates, results)
         self.assertIn("B", winner_line)
         self.assertIn("9.00", winner_line)
+
+
+class TestBuildSummaryData(unittest.TestCase):
+    def setUp(self):
+        self.candidates = [
+            Candidate(name="Alpha", provider="google", model="gemini"),
+            Candidate(name="Beta", provider="google", model="gemini"),
+        ]
+        self.judge_config = JudgeConfig(repetitions=7)
+
+    def _row(self, **overrides) -> TestCaseResult:
+        row = TestCaseResult(
+            test_id="t1",
+            prompt="Summarize the attached report.",
+            criteria="Must mention the revenue figure.",
+        )
+        for key, value in overrides.items():
+            setattr(row, key, value)
+        for cand in self.candidates:
+            perf = CandidatePerformance()
+            perf.scores.append(8.0)
+            perf.global_scores.append(7.0)
+            perf.times.append(1.5)
+            perf.tokens.append(100)
+            perf.reasoning_tokens.append(200)
+            perf.best_reason = "Solid answer."
+            row.candidates_perf[cand.name] = perf
+        return row
+
+    def test_metadata_header_declares_the_repetition_count(self):
+        out = _build_summary_data([self._row()], self.candidates, self.judge_config)
+        self.assertIn("# BENCHMARK METADATA", out)
+        self.assertIn("Repetitions per candidate x test case: 7", out)
+
+    def test_metadata_header_lists_every_judge_type(self):
+        out = _build_summary_data([self._row()], self.candidates, self.judge_config)
+        for judge_type in ("llm-judge", "similarity", "assert"):
+            self.assertIn(judge_type, out)
+
+    def test_test_case_block_declares_judge_type_prompt_and_criteria(self):
+        row = self._row(judge_type="similarity")
+        out = _build_summary_data([row], self.candidates, self.judge_config)
+        self.assertIn("JUDGE TYPE: similarity", out)
+        self.assertIn("PROMPT:\nSummarize the attached report.", out)
+        self.assertIn(
+            "EVALUATION CRITERIA (rubric, NOT shown to the candidate):\n"
+            "Must mention the revenue figure.",
+            out,
+        )
+
+    def test_metadata_header_states_what_the_candidate_could_see(self):
+        out = _build_summary_data([self._row()], self.candidates, self.judge_config)
+        # Scope to the header: the per-test-case CRITERIA label carries the same
+        # wording, so asserting over the whole payload would pass without it.
+        header = out.split("# OVERALL AGGREGATE")[0]
+        self.assertIn("NOT shown to the candidate", header)
+        self.assertIn("its own system prompt", header)
+
+    def test_prompt_and_criteria_are_not_truncated(self):
+        long_prompt = "x" * 5000
+        out = _build_summary_data(
+            [self._row(prompt=long_prompt)], self.candidates, self.judge_config
+        )
+        self.assertIn(long_prompt, out)
+
+    def test_attachment_is_declared_when_present_and_when_absent(self):
+        with_file = _build_summary_data(
+            [self._row(file_used="paper.pdf")], self.candidates, self.judge_config
+        )
+        self.assertIn("ATTACHMENT: paper.pdf", with_file)
+
+        without_file = _build_summary_data([self._row()], self.candidates, self.judge_config)
+        self.assertIn("ATTACHMENT: none", without_file)
+
+    def test_aggregate_block_lists_each_candidate_exactly_once(self):
+        rows = [self._row(), self._row(test_id="t2")]
+        out = _build_summary_data(rows, self.candidates, self.judge_config)
+        aggregate = out.split("# TEST RESULTS")[0]
+        self.assertIn("# OVERALL AGGREGATE", aggregate)
+        for cand in self.candidates:
+            self.assertEqual(aggregate.count(f"> CANDIDATE: {cand.name}"), 1)
+
+    def test_candidate_label_replaces_the_ambiguous_system_label(self):
+        out = _build_summary_data([self._row()], self.candidates, self.judge_config)
+        self.assertIn("> CANDIDATE: Alpha", out)
+        self.assertNotIn("> SYSTEM:", out)
+
+    def test_missing_performance_renders_as_not_available(self):
+        row = self._row()
+        del row.candidates_perf["Beta"]
+        out = _build_summary_data([row], self.candidates, self.judge_config)
+        self.assertIn("> CANDIDATE: Beta\n    N/A (no completed repetitions)", out)
+
+    def test_global_score_renders_as_not_available_when_never_scored(self):
+        row = self._row()
+        row.candidates_perf["Alpha"].global_scores.clear()
+        out = _build_summary_data([row], self.candidates, self.judge_config)
+        self.assertIn("Global Score: N/A", out)
+
+    def test_reasoning_profile_reports_all_four_categories(self):
+        row = self._row()
+        row.candidates_perf["Alpha"].reasoning_analyses.append(_reasoning_analysis())
+        self.judge_config.reasoning_analysis = True
+        out = _build_summary_data([row], self.candidates, self.judge_config)
+
+        self.assertIn("interpretation 20.0%", out)
+        self.assertIn("planning 10.0%", out)
+        self.assertIn("problem-solving 40.0%", out)
+        self.assertIn("output formulation 30.0%", out)
+        self.assertIn("Alternatives explored: 2.0", out)
+        self.assertIn("Self-corrections: 1.0", out)
+        self.assertIn("Response/reasoning alignment: 9.0", out)
+
+    def test_reasoning_profile_drops_the_misleading_cognitive_framing(self):
+        row = self._row()
+        row.candidates_perf["Alpha"].reasoning_analyses.append(_reasoning_analysis())
+        self.judge_config.reasoning_analysis = True
+        out = _build_summary_data([row], self.candidates, self.judge_config)
+
+        self.assertNotIn("cognitive resources", out)
+        self.assertNotIn("interacting with the user", out)
+
+    def test_reasoning_profile_omitted_when_analysis_is_disabled(self):
+        row = self._row()
+        row.candidates_perf["Alpha"].reasoning_analyses.append(_reasoning_analysis())
+        self.judge_config.reasoning_analysis = False
+        out = _build_summary_data([row], self.candidates, self.judge_config)
+        self.assertNotIn("Reasoning trace profile", out)
+
+    def test_reasoning_profile_omitted_when_no_trace_was_analysed(self):
+        self.judge_config.reasoning_analysis = True
+        out = _build_summary_data([self._row()], self.candidates, self.judge_config)
+        self.assertNotIn("Reasoning trace profile", out)
+
+    def test_multiline_notes_stay_indented_and_keep_record_boundaries_intact(self):
+        row = self._row()
+        row.candidates_perf["Alpha"].best_reason = "First line.\nSecond line."
+        out = _build_summary_data([row], self.candidates, self.judge_config)
+
+        # The continuation is indented under Notes, so it cannot be mistaken for
+        # a new field, and the next candidate still opens its own record.
+        self.assertIn("    Notes: First line.\n      Second line.\n", out)
+        self.assertIn("\n  > CANDIDATE: Beta\n", out)
+
+    def test_notes_are_the_last_field_of_a_candidate_record(self):
+        row = self._row()
+        row.candidates_perf["Alpha"].reasoning_analyses.append(_reasoning_analysis())
+        self.judge_config.reasoning_analysis = True
+        out = _build_summary_data([row], self.candidates, self.judge_config)
+
+        results_section = out.split("# TEST RESULTS")[1]
+        alpha_block = results_section.split("> CANDIDATE: Alpha")[1].split("> CANDIDATE: Beta")[0]
+        self.assertLess(
+            alpha_block.index("Reasoning trace profile"), alpha_block.index("Notes:")
+        )
 
 
 class TestSaveVerdictDebugFile(LoggerResetTestCase):
