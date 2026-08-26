@@ -84,6 +84,14 @@
                                     traces, and absolute token attribution is withheld.
                                 </div>
                                 {% endif %}
+                                <div class="density-note">
+                                    Alt paths <b>{% if rs.avg_alt_path >= 0 %}{{ "{:.1f}".format(rs.avg_alt_path) }}&plusmn;{{ "{:.1f}".format(rs.std_alt_path) }}{% else %}n/a{% endif %}</b>
+                                    &nbsp;| Self-corrections <b>{% if rs.avg_autocorrect >= 0 %}{{ "{:.1f}".format(rs.avg_autocorrect) }}&plusmn;{{ "{:.1f}".format(rs.std_autocorrect) }}{% else %}n/a{% endif %}</b>
+                                    &nbsp;| Alignment <b>{% if rs.avg_alignment_score >= 0 %}{{ "{:.1f}".format(rs.avg_alignment_score) }}&plusmn;{{ "{:.1f}".format(rs.std_alignment_score) }}{% else %}n/a{% endif %}</b>
+                                    &nbsp;| Trace/response similarity <b>{% if rs.avg_trace_response_drift >= 0 %}{{ "{:.2f}".format(rs.avg_trace_response_drift) }}&plusmn;{{ "{:.2f}".format(rs.std_trace_response_drift) }}{% else %}n/a{% endif %}</b>
+                                    &nbsp;| Density <b>{% if rs.avg_density >= 0 %}{{ "{:.2f}".format(rs.avg_density) }}&plusmn;{{ "{:.2f}".format(rs.std_density) }}{% else %}n/a{% endif %}</b>
+                                    &nbsp;| Repetition rate <b>{% if rs.avg_repetition_rate >= 0 %}{{ "{:.0f}".format(rs.avg_repetition_rate * 100) }}&plusmn;{{ "{:.0f}".format(rs.std_repetition_rate * 100) }}%{% else %}n/a{% endif %}</b>
+                                </div>
                                 {% for dim in reasoning_dimensions %}
                                     {% set cov = rs.get('avg_coverage_' ~ dim.name, -1) %}
                                     {% set cstd = rs.get('std_coverage_' ~ dim.name, 0) %}
@@ -93,11 +101,6 @@
                                         <span class="dim-val">{% if cov >= 0 %}{{ "{:.0f}".format(cov * 100) }}&plusmn;{{ "{:.0f}".format(cstd * 100) }}%{% else %}n/a{% endif %}</span>
                                     </div>
                                 {% endfor %}
-                                <div class="density-note">
-                                    density <b>{% if rs.avg_density >= 0 %}{{ "{:.2f}".format(rs.avg_density) }}{% else %}n/a{% endif %}</b>
-                                    (concerns per unit of trace; above 1 means dimensions co-occur)
-                                    {% if rs.avg_repetition_rate >= 0 %}&nbsp;|&nbsp; repetition <b>{{ "{:.0f}".format(rs.avg_repetition_rate * 100) }}%</b>{% endif %}
-                                </div>
                                 <div class="density-note" title="Scope 'best' profiles only each test's highest-scoring repetition, so these figures describe the model's reasoning when it succeeds. Scope 'all' profiles every repetition. Do not compare figures across the two.">
                                     scope <b>{{ judge_config.reasoning_analysis }}</b>
                                     ({{ rs.n }} trace{% if rs.n != 1 %}s{% endif %} analysed{% if judge_config.reasoning_analysis == 'best' %}, best repetition only{% endif %})
@@ -174,6 +177,8 @@
                                             Self-corrections <b>{% if ra.autocorrect >= 0 %}{{ ra.autocorrect }}{% else %}n/a{% endif %}</b> &nbsp;|
                                             Alignment <b>{% if ra.alignment_score >= 0 %}{{ ra.alignment_score }}/10{% else %}n/a{% endif %}</b>
                                             {% if ra.trace_response_drift >= 0 %}&nbsp;| Trace/response similarity <b>{{ "{:.2f}".format(ra.trace_response_drift) }}</b>{% endif %}
+                                            &nbsp;| Density <b>{% if ra.density >= 0 %}{{ "{:.2f}".format(ra.density) }}{% else %}n/a{% endif %}</b>
+                                            &nbsp;| Repetition rate <b>{% if ra.repetition_rate >= 0 %}{{ "{:.0f}".format(ra.repetition_rate * 100) }}%{% else %}n/a{% endif %}</b>
                                             <br><br>
                                             {% for dim in reasoning_dimensions %}
                                                 {% set cov = ra.coverage(dim.name) %}
@@ -183,13 +188,12 @@
                                                     <span class="dim-val">{% if cov >= 0 %}{{ "{:.0f}".format(cov * 100) }}%{% else %}n/a{% endif %}</span>
                                                 </div>
                                             {% endfor %}
-                                            <div class="density-note">
-                                                density <b>{% if ra.density >= 0 %}{{ "{:.2f}".format(ra.density) }}{% else %}n/a{% endif %}</b>
-                                                &nbsp;|&nbsp; {{ ra.units | length }} units
-                                                &nbsp;|&nbsp; &#8706; alternative &nbsp; &#8634; self-correction &nbsp; &#9888; contradicted by the response
-                                            </div>
                                             <div class="reasoning-legend" style="margin:6px 0;">
                                                 {% for dim in reasoning_dimensions %}<span style="color:{{ dim.color }};">{{ dim.name }}</span>{% endfor %}
+                                            </div>
+                                            <div class="density-note">
+                                                {{ ra.units | length }} units
+                                                &nbsp;|&nbsp; ⑂ alternative &nbsp; &#8634; self-correction &nbsp; &#9888; contradicted by the response
                                             </div>
                                             <div class="trace-view">{% for seg in build_trace_segments(perf) %}{% if seg.unit_id %}<span class="trace-unit" style="background:{{ seg.background }};" title="[{{ seg.unit_id }}] {{ seg.title }}">{{ seg.text }}</span>{% if seg.markers %}<span class="trace-marker">{{ seg.markers }}</span>{% endif %}{% else %}{{ seg.text }}{% endif %}{% endfor %}</div>
                                         </div>
