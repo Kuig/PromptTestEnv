@@ -1,0 +1,17 @@
+[
+    {
+        "id": "customer_email",
+        "prompt": "Write a short apology email.",
+        "criteria": "Empathetic tone. Do not promise refunds.",
+        "group": "Default group",
+        "judge_type": "llm-judge"
+    },
+    {
+        "id": "file_analysis",
+        "prompt": "What was the Q3 revenue and its percentage change?",
+        "criteria": "The Q3 revenue was 150,000 euros, with a 15% increase.",
+        "file": "test_files/sample.txt",
+        "group": "Default group",
+        "judge_type": "similarity"
+    }
+]

@@ -1,0 +1,19 @@
+[
+    {
+        "name": "Baseline",
+        "provider": "google",
+        "model": "gemini-2.5-flash",
+        "temperature": 0.5,
+        "disable_safety": false,
+        "thinking": false
+    },
+    {
+        "name": "Pirate Call Center",
+        "provider": "google",
+        "model": "gemini-2.5-flash",
+        "temperature": 0.8,
+        "disable_safety": true,
+        "thinking": false,
+        "system_prompt_file": "pirate_prompt.txt"
+    }
+]

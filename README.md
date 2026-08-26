@@ -34,11 +34,40 @@ Configure your API keys in `secrets.json`, in the directory you run `promptteste
 
 Credentials are read by `unified_ai_client`, not by this project, so the same file also accepts `mistral_api_key`, `cohere_api_key`, `meta_api_key`, `groq_api_key` and `xai_api_key`. Each one can be supplied as an environment variable instead (`GOOGLE_API_KEY`, `ANTHROPIC_API_KEY`, and so on), which takes priority over the file. Local providers such as Ollama need no key at all.
 
-Run the test suite (no API key or network access required, nothing under `unified_ai_client` is called for real):
+---
+
+## Testing
+
+Run the unit test suite (no API key or network access required, nothing under `unified_ai_client` is called for real):
 
 ```powershell
 python -m unittest discover -s tests -v
 ```
+
+`tests/fixtures/smoke_project` is not something you run directly: it's a minimal, git-tracked fixture that `tests/testutils.py::make_temp_project()` copies into a fresh temp directory for `test_runner.py` and `test_verdict.py`, which need a real project directory on disk to exercise `progress.jsonl`/`Report/` writing while the LLM calls themselves stay mocked. Never write into `tests/fixtures/smoke_project/` directly; treat it as read-only.
+
+### Manual smoke-test fixtures
+
+`tests/fixtures/` also holds four small benchmark projects meant to be *run for real*, each exercising a different corner of the pipeline:
+
+| Project | Role |
+|---|---|
+| `RemoteLLMTest` | Remote-only candidates (Google), costly in API calls. Also the only fixture with `pass_media_to_judge: true` and with `reasoning_analysis: "all"` + `dimension_mode: "joint"`, so it's the most expensive one to run in full. |
+| `LocalLLMTest` | Local-only candidates (Ollama), slow (local inference) but free of candidate API cost. The only fixture exercising `thinking: true` on a candidate. |
+| `FeaturesTest` | Kitchen sink: mixes local and remote candidates, all three `judge_type`s, two groups with `group_verdicts: true`, and `reasoning_analysis: "best"`. Covers the most features in one run. |
+| `QuickTest` | Minimal feature set and the shortest timeout: fast, but not free (it still calls remote candidates and judges). Good for a quick sanity check after a change. |
+
+Because they live under `Projects/` in spirit but not in location, they're safe to run repeatedly without any risk to your own benchmarks in the gitignored `Projects/` folder, and unlike a personal `Projects/_SmokeTest`, they're committed, so every contributor validates against the same fixtures:
+
+```powershell
+# Cheap: generation + evaluation only, skips verdict/report generation
+prompttestenv run tests/fixtures/QuickTest --output-mode winner_only
+
+# Full run: also produces the judge-written verdict/report
+prompttestenv run tests/fixtures/QuickTest --output-mode html
+```
+
+Either form leaves the fixture's own JSON config untouched: a real run only adds `progress.jsonl`, `Report/`, and `verdict_prompt_debug.txt` inside the project directory, and those are gitignored, so running one for a local check never shows up in your diff.
 
 ---
 

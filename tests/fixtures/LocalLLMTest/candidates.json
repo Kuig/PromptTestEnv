@@ -1,0 +1,16 @@
+[
+    {
+        "name": "Baseline",
+        "provider": "ollama",
+        "model": "gemma4:e2b",
+        "temperature": 1.0
+    },
+    {
+        "name": "Pirate Call Center",
+        "provider": "ollama",
+        "model": "gemma4:e2b",
+        "temperature": 1.0,
+        "thinking": true,
+        "system_prompt_file": "pirate_prompt.txt"
+    }
+]

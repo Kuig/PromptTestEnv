@@ -1,0 +1,17 @@
+[
+    {
+        "id": "file_analysis",
+        "prompt": "What was the Q3 revenue and its percentage change?",
+        "criteria": "The Q3 revenue was 150,000 euros, with a 15% increase.",
+        "file": "test_files/sample.txt",
+        "group": "Default group",
+        "judge_type": "similarity"
+    },
+    {
+        "id": "comma_count",
+        "prompt": "List exactly three European capitals, separated by commas.",
+        "criteria": "s: (10, 'Correct comma count') if s.count(',') == 2 else (1, f'Expected 2 commas, found {s.count(\",\")}')",
+        "group": "Default group",
+        "judge_type": "assert"
+    }
+]
