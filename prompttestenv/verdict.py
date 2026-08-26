@@ -93,6 +93,24 @@ def _strip_code_fence(text: str) -> str:
     return text
 
 
+def _format_score(mean: float, std: float, with_std: bool) -> str:
+    """Render a mean±std score, or "N/A" when it was not measured (-1).
+
+    Args:
+        mean: The score's mean, or -1 if not measured.
+        std: The score's standard deviation.
+        with_std: Whether to append the standard deviation.
+
+    Returns:
+        Formatted score string.
+    """
+    if mean < 0:
+        return "N/A"
+    if with_std:
+        return f"{mean:.2f} ± {std:.2f}/10"
+    return f"{mean:.2f}/10"
+
+
 def _format_global_score(perf: CandidatePerformance, with_std: bool) -> str:
     """Render a global score, or "N/A" when global scoring produced nothing.
 
@@ -103,11 +121,20 @@ def _format_global_score(perf: CandidatePerformance, with_std: bool) -> str:
     Returns:
         Formatted score string.
     """
-    if perf.global_score_mean < 0:
-        return "N/A"
-    if with_std:
-        return f"{perf.global_score_mean:.2f} ± {perf.global_score_std:.2f}/10"
-    return f"{perf.global_score_mean:.2f}/10"
+    return _format_score(perf.global_score_mean, perf.global_score_std, with_std)
+
+
+def _format_task_score(perf: CandidatePerformance, with_std: bool) -> str:
+    """Render a task score, or "N/A" when every judge call for it failed.
+
+    Args:
+        perf: Performance record to read the task score from.
+        with_std: Whether to append the standard deviation.
+
+    Returns:
+        Formatted score string.
+    """
+    return _format_score(perf.score_mean, perf.score_std, with_std)
 
 
 def _format_metric(agg: dict, key: str, suffix: str = "", scale: float = 1.0) -> str:
@@ -398,7 +425,7 @@ def _build_overall_aggregate(
         [
             [
                 name,
-                f"{perf.score_mean:.2f}",
+                "n/a" if perf.score_mean < 0 else f"{perf.score_mean:.2f}",
                 _format_global_score(perf, with_std=False),
                 f"{perf.time_mean:.2f}s",
                 f"{perf.tokens_mean:.0f}",
@@ -512,7 +539,7 @@ def _build_summary_data(
                 parts.append("    N/A (no completed repetitions)\n")
                 continue
             parts.append(
-                f"    Task Score: {perf.score_mean:.2f} ± {perf.score_std:.2f}/10 | "
+                f"    Task Score: {_format_task_score(perf, with_std=True)} | "
                 f"Global Score: {_format_global_score(perf, with_std=True)} | "
                 f"Time: {perf.time_mean:.2f}s ± {perf.time_std:.2f}s\n"
                 f"    Output Tokens: {perf.tokens_mean:.0f} ± {perf.tokens_std:.0f} | "

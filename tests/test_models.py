@@ -49,7 +49,7 @@ class TestCalculateStats(unittest.TestCase):
 class TestCandidatePerformance(unittest.TestCase):
     def test_defaults_are_empty(self):
         perf = CandidatePerformance()
-        self.assertEqual(perf.score_mean, 0.0)
+        self.assertEqual(perf.score_mean, -1.0)
         self.assertEqual(perf.score_std, 0.0)
 
     def test_global_score_mean_defaults_to_negative_one(self):
@@ -442,6 +442,18 @@ class TestCombinedAvg(unittest.TestCase):
         perf.scores.append(8.0)
         self.assertAlmostEqual(perf.combined_avg, 8.0)
 
+    def test_falls_back_to_global_alone_when_every_task_judge_call_failed(self):
+        """A task mean of -1 means "not measured", not a bad mark either."""
+        perf = CandidatePerformance()
+        perf.scores.append(-1.0)
+        perf.global_scores.append(7.0)
+        self.assertAlmostEqual(perf.combined_avg, 7.0)
+
+    def test_returns_negative_one_when_neither_side_was_measured(self):
+        perf = CandidatePerformance()
+        perf.scores.append(-1.0)
+        self.assertAlmostEqual(perf.combined_avg, -1.0)
+
 
 class TestPoolByCandidate(unittest.TestCase):
     """The single aggregation the report, the verdict and winner_only all read."""
@@ -479,7 +491,7 @@ class TestPoolByCandidate(unittest.TestCase):
         pooled = pool_by_candidate(self.candidates, [self._row("t1", 6.0)])
         self.assertIn("B", pooled)
         self.assertEqual(pooled["B"].scores, [])
-        self.assertEqual(pooled["B"].score_mean, 0.0)
+        self.assertEqual(pooled["B"].score_mean, -1.0)
 
     def test_does_not_mutate_the_source_records(self):
         rows = [self._row("t1", 6.0)]

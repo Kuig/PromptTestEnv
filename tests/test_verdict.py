@@ -243,6 +243,14 @@ class TestBuildSummaryData(_SummaryFixture, unittest.TestCase):
             perf.reasoning_tokens.clear()
         self.assertIn("n/a", self._aggregate([row]))
 
+    def test_aggregate_task_column_is_not_available_when_never_scored(self):
+        """Every task-judge call failing must read n/a, not 0.00."""
+        row = self._row()
+        row.candidates_perf["Alpha"].scores.clear()
+        rows = self._table_rows(self._aggregate([row]))
+        alpha_row = next(line for line in rows if "Alpha" in line)
+        self.assertIn("n/a", alpha_row)
+
 
 class TestPerTestCaseCostIsAlwaysShown(_SummaryFixture, unittest.TestCase):
     """The per-test-case Cost figure needs only tokens and a score.
@@ -381,6 +389,12 @@ class TestAggregateReasoningProfile(_SummaryFixture, unittest.TestCase):
         row.candidates_perf["Alpha"].global_scores.clear()
         out = _build_summary_data([row], self.candidates, self.judge_config)
         self.assertIn("Global Score: N/A", out)
+
+    def test_task_score_renders_as_not_available_when_never_scored(self):
+        row = self._row()
+        row.candidates_perf["Alpha"].scores.clear()
+        out = _build_summary_data([row], self.candidates, self.judge_config)
+        self.assertIn("Task Score: N/A", out)
 
     def test_reasoning_profile_reports_every_dimension_and_metric(self):
         row = self._row()

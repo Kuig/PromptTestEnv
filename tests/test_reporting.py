@@ -251,6 +251,21 @@ class TestReportStatsSurviveTheTemplate(unittest.TestCase):
         self.results[0].candidates_perf["Baseline"].reasoning_tokens.clear()
         self.assertNotIn("/point", self._render())
 
+    def test_task_box_renders_not_available_when_never_scored(self):
+        """Every task-judge call failing must read N/A, not the raw -1 sentinel."""
+        self.results[0].candidates_perf["Baseline"].scores.clear()
+        content = self._render()
+        self.assertIn("N/A", content)
+        self.assertNotIn("-1.00", content)
+
+    def test_header_badge_renders_not_available_when_neither_side_was_scored(self):
+        perf = self.results[0].candidates_perf["Baseline"]
+        perf.scores.clear()
+        perf.global_scores.clear()
+        content = self._render()
+        self.assertIn("N/A", content)
+        self.assertNotIn("-1.0", content)
+
 
 if __name__ == "__main__":
     unittest.main()

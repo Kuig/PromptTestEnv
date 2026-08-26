@@ -98,7 +98,7 @@ class CandidatePerformance:
     best_reasoning_analysis: ReasoningStats | None = None
 
     @property
-    def score_mean(self) -> float: return calculate_stats(self.scores, default_val=0.0)[0]
+    def score_mean(self) -> float: return calculate_stats(self.scores, default_val=-1.0)[0]
 
     @property
     def score_std(self) -> float: return calculate_stats(self.scores, default_val=0.0)[1]
@@ -197,18 +197,20 @@ class CandidatePerformance:
 
     @property
     def combined_avg(self) -> float:
-        """Task and global score averaged, or the task score alone.
+        """Task and global score averaged, or whichever one is actually measured.
 
-        A global score of -1 means global scoring is disabled for the project,
-        so it must not be averaged in as if it were a low mark.
+        A mean of -1 on either side means that side was not measured (global
+        scoring disabled, or every task-judge call for this record failed), so
+        it must never be averaged in as if it were a low mark.
 
         Returns:
-            The combined figure used to rank candidates in the report header.
+            The combined figure used to rank candidates in the report header,
+            or -1.0 if neither side has a measured value.
         """
-        global_score = self.global_score_mean
-        if global_score < 0:
-            return self.score_mean
-        return (self.score_mean + global_score) / 2 if (self.score_mean or global_score) else 0.0
+        parts = [p for p in (self.score_mean, self.global_score_mean) if p >= 0]
+        if not parts:
+            return -1.0
+        return sum(parts) / len(parts)
 
 
 def pool_by_candidate(

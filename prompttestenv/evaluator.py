@@ -94,14 +94,14 @@ def run_evaluation_phase(
         if timed_out:
             logger.log_warning(f"{prefix}Judge timeout ({timeout_val}s).")
             eval_result = {
-                "score": 0,
+                "score": -1,
                 "reasoning": "⛔ [JUDGE TIMEOUT EXCEEDED]",
-                "global_score": 0,
+                "global_score": -1,
                 "global_reasoning": "⛔ [JUDGE TIMEOUT EXCEEDED]",
             }
 
-        score = eval_result.get("score", 0)
-        g_score = eval_result.get("global_score", 0)
+        score = eval_result.get("score", -1)
+        g_score = eval_result.get("global_score", -1)
         reason = eval_result.get("reasoning", "")
         g_reason = eval_result.get("global_reasoning", "")
 

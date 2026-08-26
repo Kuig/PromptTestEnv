@@ -41,6 +41,8 @@ This file contains the actual prompts (the tasks) that the candidates will execu
   - `"similarity"`: Calculates the embedding cosine similarity between the response and the target criteria, scaled 1 to 10.
   - `"assert"`: Evaluates the criteria expression directly in Python.
 - `file` *(string, optional)*: A relative path to a file inside the `test_files/` folder (e.g., `"test_files/report.pdf"`). The file will be attached to the prompt.
+
+Every evaluator normally returns a score of 1-10, or the shared `-1` "not measured" sentinel when it failed to produce one at all (excluded from every average, never counted as a zero) — a judge LLM call that errored, or a `similarity`/`assert` evaluation that raised an exception. `assert` is the one place the framework does **not** clamp the score for you: your lambda is your own arbitrary Python, so keeping its return value in the range you intend is your job, and you may return `-1` yourself to mark a specific response "not applicable/not measured". `similarity`'s score, by contrast, is computed by the framework, so it is always clamped to 1-10 on your behalf.
 - `group` *(string, optional)*: Assigns the test case to a specific category (e.g., `"Coding"`, `"Creative Writing"`). Used in combination with `group_verdicts` (default: `"Default group"`).
 
 ### C. `judge_config.json`

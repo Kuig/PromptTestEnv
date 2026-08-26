@@ -90,7 +90,7 @@ class TestRunEvaluationPhaseTimeout(unittest.TestCase):
              patch("prompttestenv.api.subprocess.run") as mock_subprocess:
             run_evaluation_phase([task], jc, "/fake/project", ProgressState())
 
-        self.assertEqual(cand_perf.scores, [0])
+        self.assertEqual(cand_perf.scores, [-1])
         mock_subprocess.assert_called_once()
         self.assertEqual(mock_subprocess.call_args.args[0], ["ollama", "stop", "judge-model"])
 

@@ -55,7 +55,7 @@
                     <th class="sys-col">
                         {{ cand.name }}
                         <span class="header-badge" title="Average of Task & Global Means">
-                            {{ "{:.1f}".format(s.combined_avg) }}
+                            {% if s.combined_avg >= 0 %}{{ "{:.1f}".format(s.combined_avg) }}{% else %}N/A{% endif %}
                         </span>
                     </th>
                 {% endfor %}
@@ -68,7 +68,7 @@
                 {% for cand in candidates %}
                     {% set s = stats[cand.name] %}
                     <td class="stats-cell">
-                        Task: {{ "{:.2f}".format(s.score_mean) }} &plusmn; {{ "{:.2f}".format(s.score_std) }}<br>
+                        Task: {% if s.score_mean >= 0 %}{{ "{:.2f}".format(s.score_mean) }} &plusmn; {{ "{:.2f}".format(s.score_std) }}{% else %}N/A{% endif %}<br>
                         Global: {% if s.global_score_mean >= 0 %}{{ "{:.2f}".format(s.global_score_mean) }} &plusmn; {{ "{:.2f}".format(s.global_score_std) }}{% else %}N/A{% endif %}<br>
                         <span style="font-size:0.85em; color:#666; margin-top:4px; display:inline-block;">
                             Tokens: {{ "{:.0f}".format(s.tokens_mean) }} &plusmn; {{ "{:.0f}".format(s.tokens_std) }} (💭 {{ "{:.0f}".format(s.reasoning_tokens_mean) }} &plusmn; {{ "{:.0f}".format(s.reasoning_tokens_std) }}{% if s.reasoning_cost_per_point >= 0 %} | <span title="Thinking tokens per point of task score, so lower is cheaper. A diagnostic, not a ranking key: a candidate that thinks little and fails also scores well here.">{{ format_cost_per_point(s.reasoning_cost_per_point) }}/point</span>{% endif %}) | ⏱️ {{ "{:.2f}".format(s.time_mean) }}s &plusmn; {{ "{:.2f}".format(s.time_std) }}s
@@ -138,9 +138,15 @@
                                 <div style="font-size:0.75em;color:#888;margin-bottom:5px">🪙 {{ "{:.0f}".format(perf.tokens_mean) }} &plusmn; {{ "{:.0f}".format(perf.tokens_std) }} tokens (💭 {{ "{:.0f}".format(perf.reasoning_tokens_mean) }} &plusmn; {{ "{:.0f}".format(perf.reasoning_tokens_std) }}{% if perf.mean_cost_per_point >= 0 %} | <span title="Mean of each repetition's own reasoning-tokens/score ratio (not the ratio of the means). A diagnostic, not a ranking key.">{{ "{:.1f}".format(perf.mean_cost_per_point) }} &plusmn; {{ "{:.1f}".format(perf.std_cost_per_point) }}/point</span>{% endif %}) | ⏱️ {{ "{:.2f}".format(perf.time_mean) }}s &plusmn; {{ "{:.2f}".format(perf.time_std) }}s</div>
                                 <div class="score-container" style="margin-top:10px;">
                                     <div class="score-box">
-                                        <span class="score-val {{ get_badge_class(perf.score_mean) }}">
-                                            {{ "{:.2f}".format(perf.score_mean) }} &plusmn; {{ "{:.2f}".format(perf.score_std) }}
-                                        </span>
+                                        {% if perf.score_mean >= 0 %}
+                                            <span class="score-val {{ get_badge_class(perf.score_mean) }}">
+                                                {{ "{:.2f}".format(perf.score_mean) }} &plusmn; {{ "{:.2f}".format(perf.score_std) }}
+                                            </span>
+                                        {% else %}
+                                            <span class="score-val" style="color: #6c757d; background-color: #e9ecef; padding: 2px 8px; border-radius: 4px; align-self: flex-start;">
+                                                N/A
+                                            </span>
+                                        {% endif %}
                                         <span style="font-size:0.8em">Task</span>
                                     </div>
                                     <div class="score-box" style="background:#fafafa">
