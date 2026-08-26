@@ -51,7 +51,7 @@ class TestInitProject(LoggerResetTestCase):
         config.init_project(self.project_dir)
         data = json.loads((Path(self.project_dir) / "candidates.json").read_text(encoding="utf-8"))
         self.assertEqual(len(data), 4)
-        self.assertEqual(data[0]["name"], "Baseline (Flash 2.5)")
+        self.assertEqual(data[0]["name"], "Baseline")
 
     def test_does_not_touch_the_real_repo_secrets(self):
         # Sanity check that the chdir actually redirected the scaffold away

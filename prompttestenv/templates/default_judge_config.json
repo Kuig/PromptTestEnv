@@ -2,18 +2,18 @@
     "repetitions": 5,
     "repetition_delay_seconds": 2,
     "evaluation_delay_seconds": 2,
-    "max_response_timeout_seconds": 240,
+    "max_response_timeout_seconds": 300,
     "pass_media_to_judge": false,
     "group_verdicts": false,
-    "reasoning_analysis": "best",
+    "reasoning_analysis": "none",
     "test_judge": {
         "provider": "google",
         "model": "gemini-3-flash-preview",
         "temperature": 0.2,
-        "disable_safety": true,
+        "disable_safety": false,
         "thinking": "default",
-        "evaluation_system_prompt": "You are an impartial AI judge. Evaluate the candidate's response against the specified criteria. Output MUST be JSON with fields: score (1-10), reasoning.",
-        "evaluation_template": "[USER INPUT]\n{user_prompt}\n\n[CANDIDATE RESPONSE]\n{candidate_response}\n\n[CRITERIA]\n{criteria}\n\n---\n\nAnalyze the response and provide the JSON output. Score: 1-10."
+        "evaluation_system_prompt": "You are an impartial AI judge. Evaluate the candidate's response against the specified criteria (criteria are unknown to the candidate). Output MUST be JSON with fields: score (int between 1 and 10), reasoning (string).",
+        "evaluation_template": "[USER INPUT]\n{user_prompt}\n\n[CANDIDATE RESPONSE]\n{candidate_response}\n\n[HIDDEN CRITERIA]\n{criteria}\n\n---\n\nAnalyze the response and provide the JSON output (score and reasoning)."
     },
     "similarity_judge": {
         "provider": "ollama",
@@ -23,7 +23,7 @@
         "provider": "google",
         "model": "gemini-3-flash-preview",
         "temperature": 0.2,
-        "thinking": false,
+        "thinking": "default",
         "context_size": null,
         "dimension_mode": "split",
         "reliability_k": 1,
@@ -33,10 +33,10 @@
         "provider": "google",
         "model": "gemini-3-flash-preview",
         "temperature": 0.2,
-        "disable_safety": true,
-        "thinking": "default",
-        "verdict_system_prompt": "You are a Senior AI Analyst. Your task is to analyze the results of a comparative benchmark across different models given a set of criteria, metrics and test results. Be direct and concise. Do not use pleasantries, only provide the requested report.",
+        "disable_safety": false,
+        "thinking": true,
+        "verdict_system_prompt": "You are a Senior AI Analyst. Your task is to analyze the results of a comparative benchmark across different candidate models. You will be given a set of criteria (unknown to the candidates), metrics and/or test results. You will be asked to write a report. Be direct and concise. Do not use pleasantries, only provide the requested report.",
         "verdict_template": "# GLOBAL EVALUATION CRITERIA:\n{global_criteria}\n\n# TESTS RESULTS:\n{summary_data}\n\n---\n\n# ANALYSIS INSTRUCTIONS:\nAnalyze the results and create a Markdown report:\n1. Identify the winning candidate.\n2. Briefly describe each candidate's behavior, based on the evidence in the data.\n3. Highlight each candidate's strengths and weaknesses relative to the others.\n4. Suggest use cases for each candidate.\n5. Note any trends or special cases.\n6. Write a concluding verdict.",
-        "global_verdict_template": "# GROUP VERDICTS:\n{group_verdicts_data}\n\n---\n\n# ANALYSIS INSTRUCTIONS:\nAnalyze the verdicts from all groups and provide a final overall conclusion.\n1. Identify the winning candidate.\n2. Briefly describe each candidate's behavior, based on the evidence in the data.\n3. Highlight each candidate's strengths and weaknesses relative to the others.\n4. Suggest use cases for each candidate.\n5. Note any trends or special cases.\n6. Write a concluding verdict."
+        "global_verdict_template": "# GROUP VERDICTS:\n{group_verdicts_data}\n\n---\n\n# ANALYSIS INSTRUCTIONS:\nAnalyze the verdicts from all test groups and provide a final overall conclusion.\n1. Identify the winning candidate.\n2. Briefly describe each candidate's behavior, based on the evidence in the data.\n3. Highlight each candidate's strengths and weaknesses relative to the others.\n4. Suggest use cases for each candidate.\n5. Note any trends or special cases.\n6. Write a concluding verdict."
     }
 }

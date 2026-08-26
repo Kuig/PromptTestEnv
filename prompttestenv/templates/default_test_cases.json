@@ -1,7 +1,7 @@
 [
     {
         "id": "customer_email",
-        "prompt": "Write a short apology email.",
+        "prompt": "Write a short apology email for an unsatisfied customer.",
         "criteria": "Empathetic tone. Do not promise refunds.",
         "group": "Default group",
         "judge_type": "llm-judge"
@@ -16,7 +16,7 @@
     },
     {
         "id": "comma_count",
-        "prompt": "List exactly three European capitals, separated by commas.",
+        "prompt": "List exactly three European capitals, separated by commas. Nothing else.",
         "criteria": "s: (10, 'Correct comma count') if s.count(',') == 2 else (1, f'Expected 2 commas, found {s.count(\",\")}')",
         "group": "Default group",
         "judge_type": "assert"

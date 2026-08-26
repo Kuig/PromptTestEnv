@@ -103,7 +103,7 @@ The setting chooses how much of the run gets measured, because the cost scales w
 | `"best"` | the highest-scoring repetition of each candidate x test case | 1 trace per test case |
 | `"all"` | every repetition of every test case | `repetitions` traces per test case |
 
-`"best"` is the recommended starting point, and the default in a scaffolded project. It measures exactly the repetition whose trace the report draws anyway, so nothing on screen is lost, at a fifth of the calls under the default `repetitions: 5`.
+`"best"` is the recommended starting point once you want the profile at all: it measures exactly the repetition whose trace the report draws anyway, so nothing on screen is lost, at a fifth of the calls under the default `repetitions: 5`. A scaffolded project starts with `"none"`, since not every benchmark involves thinking-enabled candidates — switch it on explicitly when it does.
 
 Be aware of what `"best"` changes, though: the profile then describes how a model reasons **when it succeeds**, not how it reasons on a typical run. That is a legitimate question to ask, but it is a different one, so the report and the verdict payload both state which scope produced the figures, and figures from the two scopes must not be compared. Use `"all"` when you want the unfiltered picture, or when repetitions disagree with each other and you want to know why.
 
