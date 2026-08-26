@@ -13,7 +13,14 @@ from prompttestenv.config import (
     ReasoningSchema,
     UnitSplittingConfig,
 )
-from prompttestenv.models import JudgeConfig, LlmResult, ReasoningStats, ReasoningUnit
+from prompttestenv.models import (
+    REASONING_SCOPE_ALL,
+    REASONING_SCOPE_NONE,
+    JudgeConfig,
+    LlmResult,
+    ReasoningStats,
+    ReasoningUnit,
+)
 from prompttestenv.config import get_app_config
 from prompttestenv.reasoning import (
     _example_json,
@@ -187,7 +194,7 @@ class TestAnalyzeReasoning(unittest.TestCase):
         self.addCleanup(patcher.stop)
 
         self.judge_config = JudgeConfig()
-        self.judge_config.reasoning_analysis = True
+        self.judge_config.reasoning_analysis = REASONING_SCOPE_ALL
         self.judge_config.reasoning_judge.provider = "google"
 
         drift = patch("prompttestenv.reasoning.compute_trace_response_drift", return_value=-1.0)
@@ -221,7 +228,7 @@ class TestAnalyzeReasoning(unittest.TestCase):
         return _respond
 
     def test_disabled_analysis_returns_none_without_calling_llm(self):
-        self.judge_config.reasoning_analysis = False
+        self.judge_config.reasoning_analysis = REASONING_SCOPE_NONE
         with patch("prompttestenv.reasoning.get_llm_response") as mock_llm:
             self.assertIsNone(analyze_reasoning(self.TRACE, self.judge_config))
         mock_llm.assert_not_called()

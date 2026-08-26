@@ -5,7 +5,7 @@
     "max_response_timeout_seconds": 240,
     "pass_media_to_judge": false,
     "group_verdicts": false,
-    "reasoning_analysis": true,
+    "reasoning_analysis": "best",
     "test_judge": {
         "provider": "google",
         "model": "gemini-3-flash-preview",

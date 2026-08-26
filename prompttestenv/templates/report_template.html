@@ -68,10 +68,10 @@
                 {% for cand in candidates %}
                     {% set s = stats[cand.name] %}
                     <td class="stats-cell">
-                        Task: {{ "{:.2f}".format(s.task_mean) }} &plusmn; {{ "{:.2f}".format(s.task_std) }}<br>
-                        Global: {% if s.global_mean >= 0 %}{{ "{:.2f}".format(s.global_mean) }} &plusmn; {{ "{:.2f}".format(s.global_std) }}{% else %}N/A{% endif %}<br>
+                        Task: {{ "{:.2f}".format(s.score_mean) }} &plusmn; {{ "{:.2f}".format(s.score_std) }}<br>
+                        Global: {% if s.global_score_mean >= 0 %}{{ "{:.2f}".format(s.global_score_mean) }} &plusmn; {{ "{:.2f}".format(s.global_score_std) }}{% else %}N/A{% endif %}<br>
                         <span style="font-size:0.85em; color:#666; margin-top:4px; display:inline-block;">
-                            Tokens: {{ "{:.0f}".format(s.token_mean) }} &plusmn; {{ "{:.0f}".format(s.token_std) }} (💭 {{ "{:.0f}".format(s.reasoning_mean) }} &plusmn; {{ "{:.0f}".format(s.reasoning_std) }}) | ⏱️ {{ "{:.2f}".format(s.time_mean) }}s &plusmn; {{ "{:.2f}".format(s.time_std) }}s
+                            Tokens: {{ "{:.0f}".format(s.tokens_mean) }} &plusmn; {{ "{:.0f}".format(s.tokens_std) }} (💭 {{ "{:.0f}".format(s.reasoning_tokens_mean) }} &plusmn; {{ "{:.0f}".format(s.reasoning_tokens_std) }}{% if s.reasoning_cost_per_point >= 0 %} | <span title="Thinking tokens per point of task score, so lower is cheaper. A diagnostic, not a ranking key: a candidate that thinks little and fails also scores well here.">{{ format_cost_per_point(s.reasoning_cost_per_point) }}/point</span>{% endif %}) | ⏱️ {{ "{:.2f}".format(s.time_mean) }}s &plusmn; {{ "{:.2f}".format(s.time_std) }}s
                         </span>
                         {% if reasoning_analysis_enabled %}
                             {% set rs = reasoning_stats.get(cand.name, {}) %}
@@ -96,8 +96,11 @@
                                 <div class="density-note">
                                     density <b>{% if rs.avg_density >= 0 %}{{ "{:.2f}".format(rs.avg_density) }}{% else %}n/a{% endif %}</b>
                                     (concerns per unit of trace; above 1 means dimensions co-occur)
-                                    &nbsp;|&nbsp; 💭/point <b>{{ reasoning_efficiency(s.task_mean, s.reasoning_mean) }}</b>
                                     {% if rs.avg_repetition_rate >= 0 %}&nbsp;|&nbsp; repetition <b>{{ "{:.0f}".format(rs.avg_repetition_rate * 100) }}%</b>{% endif %}
+                                </div>
+                                <div class="density-note" title="Scope 'best' profiles only each test's highest-scoring repetition, so these figures describe the model's reasoning when it succeeds. Scope 'all' profiles every repetition. Do not compare figures across the two.">
+                                    scope <b>{{ judge_config.reasoning_analysis }}</b>
+                                    ({{ rs.n }} trace{% if rs.n != 1 %}s{% endif %} analysed{% if judge_config.reasoning_analysis == 'best' %}, best repetition only{% endif %})
                                 </div>
                             </div>
                             {% endif %}
@@ -129,7 +132,7 @@
                         {% set perf = row.candidates_perf.get(cand.name) %}
                         <td>
                             {% if perf %}
-                                <div style="font-size:0.75em;color:#888;margin-bottom:5px">🪙 {{ "{:.0f}".format(perf.tokens_mean) }} &plusmn; {{ "{:.0f}".format(perf.tokens_std) }} tokens (💭 {{ "{:.0f}".format(perf.reasoning_tokens_mean) }} &plusmn; {{ "{:.0f}".format(perf.reasoning_tokens_std) }}) | ⏱️ {{ "{:.2f}".format(perf.time_mean) }}s &plusmn; {{ "{:.2f}".format(perf.time_std) }}s</div>
+                                <div style="font-size:0.75em;color:#888;margin-bottom:5px">🪙 {{ "{:.0f}".format(perf.tokens_mean) }} &plusmn; {{ "{:.0f}".format(perf.tokens_std) }} tokens (💭 {{ "{:.0f}".format(perf.reasoning_tokens_mean) }} &plusmn; {{ "{:.0f}".format(perf.reasoning_tokens_std) }}{% if perf.mean_cost_per_point >= 0 %} | <span title="Mean of each repetition's own reasoning-tokens/score ratio (not the ratio of the means). A diagnostic, not a ranking key.">{{ "{:.1f}".format(perf.mean_cost_per_point) }} &plusmn; {{ "{:.1f}".format(perf.std_cost_per_point) }}/point</span>{% endif %}) | ⏱️ {{ "{:.2f}".format(perf.time_mean) }}s &plusmn; {{ "{:.2f}".format(perf.time_std) }}s</div>
                                 <div class="score-container" style="margin-top:10px;">
                                     <div class="score-box">
                                         <span class="score-val {{ get_badge_class(perf.score_mean) }}">
@@ -200,7 +203,7 @@
                                         <span style="font-size:0.8em">Task</span>
                                     </div>
                                     <div class="score-box" style="background:#fafafa">
-                                        {% if stats[cand.name].global_mean >= 0 %}
+                                        {% if stats[cand.name].global_score_mean >= 0 %}
                                             <span class="score-val {{ get_badge_class(0) }}">0.00 &plusmn; 0.00</span>
                                         {% else %}
                                             <span class="score-val" style="color: #6c757d; background-color: #e9ecef; padding: 2px 8px; border-radius: 4px; align-self: flex-start;">

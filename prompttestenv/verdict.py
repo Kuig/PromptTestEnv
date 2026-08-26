@@ -5,12 +5,20 @@ import os
 
 import prompttestenv.logger as logger
 from prompttestenv.api import get_llm_response
+from prompttestenv.config import get_app_config
 from prompttestenv.models import (
     TestCaseResult,
     Candidate,
     CandidatePerformance,
     JudgeConfig,
     DEFAULT_GROUP,
+    JUDGE_TYPE_ASSERT,
+    JUDGE_TYPE_LLM,
+    JUDGE_TYPE_SIMILARITY,
+    REASONING_DIMENSIONS,
+    REASONING_SCOPE_ALL,
+    REASONING_SCOPE_BEST,
+    pool_by_candidate,
 )
 from prompttestenv.reasoning import aggregate_reasoning_stats
 
@@ -85,69 +93,6 @@ def _strip_code_fence(text: str) -> str:
     return text
 
 
-METADATA_TEMPLATE = """# BENCHMARK METADATA
-Each candidate saw only the PROMPT, the ATTACHMENT, and its own system prompt (not shown
-here, and it may differ per candidate). The EVALUATION CRITERIA are the judges' rubric,
-NOT shown to the candidate: missing one is a difference in behaviour, not disobedience.
-
-Repetitions per candidate x test case: {repetitions}. Figures are mean ± SD across them;
-at 1 repetition every ± is 0.00 by construction and says nothing about stability.
-'Notes' come from the best-scoring repetition, not an average one.
-Token counts are OUTPUT only — reasoning tokens are separate and excluded, input tokens
-are not tracked.
-
-Where a reasoning profile is shown, it describes the SHAPE of a thinking trace, not its
-quality. Do not infer that a profile caused a score: candidates differ in more than one
-respect at once, and the coverages are an LLM's reading of the trace. Report a profile as
-an observation about behaviour, and say so when a claim about it is not supported by the
-scores themselves. A trace marked as a provider summary is not the model's raw chain of
-thought: its length, composition and self-correction counts reflect the summariser too,
-so never rank a summarised trace against a raw one on those figures.
-Both scores run 1-10, but what they measure is set by this project's criteria and may be
-redefined by the instructions below; 'N/A' means not computed.
-
-Task scores come from different judges and are NOT comparable across test cases:
-- llm-judge: graded 1-10 by an LLM against the test's criteria.
-- similarity: cosine similarity to a target text, rescaled to 1-10.
-- assert: a user-authored Python expression; it may use the full 1-10 range or just a
-  pass/fail pair, and which one is never declared.
-Each test case declares its judge; the aggregate below pools all of them, so read it as an
-indication, not a measurement.
-"""
-
-
-def _aggregate_by_candidate(
-    candidates: list[Candidate],
-    rows: list[TestCaseResult],
-) -> dict[str, CandidatePerformance]:
-    """Pool each candidate's per-test-case performance into a single record.
-
-    Args:
-        candidates: Resolved candidate configurations.
-        rows: Test case results to pool over.
-
-    Returns:
-        Mapping of candidate name to a CandidatePerformance holding every
-        repetition of every test case, so its mean/std properties describe the
-        candidate's run as a whole. Candidates with no data map to an empty
-        record (whose means fall back to the usual defaults).
-    """
-    pooled: dict[str, CandidatePerformance] = {}
-    for cand in candidates:
-        agg = CandidatePerformance()
-        for row in rows:
-            perf = row.candidates_perf.get(cand.name)
-            if not perf:
-                continue
-            agg.scores.extend(perf.scores)
-            agg.global_scores.extend(perf.global_scores)
-            agg.times.extend(perf.times)
-            agg.tokens.extend(perf.tokens)
-            agg.reasoning_tokens.extend(perf.reasoning_tokens)
-        pooled[cand.name] = agg
-    return pooled
-
-
 def _format_global_score(perf: CandidatePerformance, with_std: bool) -> str:
     """Render a global score, or "N/A" when global scoring produced nothing.
 
@@ -184,7 +129,7 @@ def _format_metric(agg: dict, key: str, suffix: str = "", scale: float = 1.0) ->
     return f"{mean * scale:.1f}{suffix} ± {std * scale:.1f}{suffix}"
 
 
-def _format_reasoning_profile(analyses: list[dict]) -> str:
+def _format_reasoning_profile(analyses: list[dict], scope: str = REASONING_SCOPE_ALL) -> str:
     """Render the aggregated reasoning trace profile for one candidate.
 
     The three dimensions are scored independently, so their coverages do not sum
@@ -195,14 +140,21 @@ def _format_reasoning_profile(analyses: list[dict]) -> str:
 
     Args:
         analyses: Per-repetition reasoning analysis dicts.
+        scope: The reasoning_analysis scope the figures were produced under.
 
     Returns:
         Indented multi-line block describing the trace's composition and metrics.
     """
     agg = aggregate_reasoning_stats(analyses)
     source = "provider SUMMARY of the thinking" if agg.get("is_summary") else "raw thinking trace"
+    sampled = (
+        "the single highest-scoring repetition of each test, so this profile describes "
+        "how the model reasons WHEN IT SUCCEEDS and is not a sample of its typical run"
+        if scope == REASONING_SCOPE_BEST
+        else "every repetition of each test"
+    )
     lines = [
-        f"    Reasoning profile over the {source} "
+        f"    Reasoning profile over the {source}, measured on {sampled} "
         f"(independent coverages, NOT shares of a whole, so they need not sum to 100%):",
         f"      framing {_format_metric(agg, 'coverage_framing', '%', 100)}, "
         f"solving {_format_metric(agg, 'coverage_solving', '%', 100)}, "
@@ -217,6 +169,306 @@ def _format_reasoning_profile(analyses: list[dict]) -> str:
         f"      Repeated-trigram share of the trace: {_format_metric(agg, 'repetition_rate', '%', 100)}.",
     ]
     return "\n".join(lines) + "\n"
+
+
+class MetadataError(Exception):
+    """A metadata section the payload needs is missing or will not format.
+
+    Raised rather than degraded: an absent section does not remove a figure from
+    the payload, only the caveat that stops the judge over-claiming about it.
+    """
+
+
+def _section(metadata, name: str, **values) -> str:
+    """Return one metadata section, formatted.
+
+    Args:
+        metadata: The VerdictMetadata carrying the section texts.
+        name: Field name on metadata.
+        **values: Placeholder values for str.format.
+
+    Returns:
+        The formatted section text.
+
+    Raises:
+        MetadataError: If the section is empty or its placeholders do not resolve.
+    """
+    template = getattr(metadata, name, "")
+    if not template.strip():
+        raise MetadataError(
+            f"verdict_metadata.{name} is empty in config.json, but this payload needs it."
+        )
+    try:
+        return template.format(**values)
+    except (KeyError, IndexError, ValueError) as exc:
+        raise MetadataError(
+            f"verdict_metadata.{name} in config.json could not be formatted ({exc})."
+        ) from exc
+
+
+def _build_metadata(
+    rows: list[TestCaseResult],
+    pooled: dict[str, CandidatePerformance],
+    judge_config: JudgeConfig,
+    profile_shown: bool,
+) -> str:
+    """Assemble the payload header from the sections this payload actually needs.
+
+    Emitting the whole thing unconditionally meant a project with no reasoning
+    analysis read several paragraphs on how to interpret a reasoning profile it
+    would never see, and a project using a single judge type was told its scores
+    came from different judges.
+
+    Args:
+        rows: Test case results, read for the judge types in use.
+        pooled: Per-candidate pooled records, read for whether any cost exists.
+        judge_config: JudgeConfig, for the repetition count.
+        profile_shown: Whether the reasoning profile table is being emitted.
+
+    Returns:
+        The metadata block, sections separated by blank lines.
+
+    Raises:
+        MetadataError: If a needed section is missing or malformed.
+    """
+    metadata = get_app_config().verdict_metadata
+    parts = [
+        _section(metadata, "header"),
+        _section(metadata, "figures", repetitions=judge_config.repetitions),
+        _section(metadata, "score_scales"),
+    ]
+
+    if any(perf.reasoning_cost_per_point >= 0 for perf in pooled.values()):
+        parts.append(_section(metadata, "cost_per_point"))
+
+    if profile_shown:
+        parts.append(_section(metadata, "reasoning_profile"))
+
+    judge_types = {row.judge_type for row in rows}
+    legend = [_section(metadata, "judge_types_intro")]
+    for judge_type, field_name in (
+        (JUDGE_TYPE_LLM, "judge_llm"),
+        (JUDGE_TYPE_SIMILARITY, "judge_similarity"),
+        (JUDGE_TYPE_ASSERT, "judge_assert"),
+    ):
+        if judge_type in judge_types:
+            legend.append(_section(metadata, field_name))
+    if len(judge_types) > 1:
+        legend.append(_section(metadata, "judge_types_mixed"))
+    parts.append("\n".join(legend))
+
+    return "\n\n".join(parts) + "\n"
+
+
+def _render_table(headers: list[str], rows: list[list[str]]) -> str:
+    """Render a padded Markdown table.
+
+    Columns are padded to a common width purely so the payload stays readable
+    when a human opens verdict_prompt_debug.txt; the judge reads it either way.
+
+    Args:
+        headers: Column headings.
+        rows: One list of pre-formatted cells per row, same length as headers.
+
+    Returns:
+        The table as text, ending in a newline.
+    """
+    widths = [
+        max([len(headers[i])] + [len(row[i]) for row in rows])
+        for i in range(len(headers))
+    ]
+    lines = [
+        "| " + " | ".join(h.ljust(w) for h, w in zip(headers, widths)) + " |",
+        "|" + "|".join("-" * (w + 2) for w in widths) + "|",
+    ]
+    lines += [
+        "| " + " | ".join(c.rjust(w) for c, w in zip(row, widths)) + " |" for row in rows
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def _metric_cell(
+    agg: dict,
+    key: str,
+    suffix: str = "",
+    scale: float = 1.0,
+    decimals: int = 2,
+) -> str:
+    """Format one aggregated figure as a table cell, mean only.
+
+    The pooled standard deviation is left out on purpose: across test cases it
+    is mostly between-task variance, not the run-to-run stability a reader
+    assumes a "±" describes. The per-test-case sections still carry both.
+
+    Args:
+        agg: Aggregated reasoning stats.
+        key: Base field name, without the avg_ prefix.
+        suffix: Unit to append, such as "%".
+        scale: Multiplier applied before formatting.
+        decimals: Digits after the decimal point.
+
+    Returns:
+        The formatted value, or "n/a" when it was not measured.
+    """
+    mean = agg.get(f"avg_{key}", -1)
+    if mean is None or mean < 0:
+        return "n/a"
+    return f"{mean * scale:.{decimals}f}{suffix}"
+
+
+def _format_cost_cell(perf: CandidatePerformance) -> str:
+    """Format reasoning cost per point, or "n/a" when it was not measurable.
+
+    Args:
+        perf: Pooled performance record.
+
+    Returns:
+        The rounded ratio, or "n/a".
+    """
+    cost = perf.reasoning_cost_per_point
+    return "n/a" if cost < 0 else f"{cost:.0f}"
+
+
+def _format_cost_suffix(perf: CandidatePerformance) -> str:
+    """Format the per-test-case mean-of-ratios cost, or "" when not measurable.
+
+    Needs only reasoning_tokens and scores, both always recorded regardless of
+    whether reasoning_analysis is enabled, so unlike _format_cost_cell's
+    sibling this never depends on the reasoning-analysis phase having run. An
+    empty string rather than "not measured" because the line it appends to has
+    never needed a placeholder for an absent figure.
+
+    Args:
+        perf: The row's own performance record (repetitions of one test case),
+            or a pooled one; the statistic is defined the same way for both.
+
+    Returns:
+        " | Cost: X.X ± Y.Y/point" or "".
+    """
+    mean = perf.mean_cost_per_point
+    if mean < 0:
+        return ""
+    return f" | Cost: {mean:.1f} ± {perf.std_cost_per_point:.1f}/point"
+
+
+def _source_cell(analyses: list[dict]) -> str:
+    """Say whether the traces are raw chains of thought, summaries, or unknown.
+
+    "raw" is a positive claim, so it must not be the fallback for a missing
+    flag: traces recorded before the provider reported it carry None, and
+    labelling those raw is exactly the mistake that leads a judge to compare a
+    Google summary against a real transcript on length and composition.
+
+    Args:
+        analyses: Per-repetition analysis dicts for one candidate.
+
+    Returns:
+        "summary", "raw", "unknown", or "mixed".
+    """
+    flags = {a.get("reasoning_is_summary") for a in analyses}
+    if flags == {None}:
+        return "unknown"
+    if len(flags - {None}) > 1:
+        return "mixed"
+    return "summary" if True in flags else "raw"
+
+
+def _build_overall_aggregate(
+    pooled: dict[str, CandidatePerformance],
+    judge_config: JudgeConfig,
+) -> tuple[str, bool]:
+    """Render the pooled per-candidate view as one or two tables.
+
+    The reasoning table is emitted only when there is a profile to show, so a
+    project with the analysis switched off gets no empty columns to explain
+    away. Before this existed the judge saw no reasoning figures at all in the
+    pooled view, only fragmented per-test-case ones.
+
+    Args:
+        pooled: Per-candidate pooled records, from models.pool_by_candidate.
+        judge_config: JudgeConfig, for the reasoning scope.
+
+    Returns:
+        The section text and whether the reasoning profile table was emitted,
+        which decides whether the metadata explains how to read one.
+    """
+    parts = ["\n# OVERALL AGGREGATE (pooled across all test cases and repetitions)\n\n"]
+    parts.append(_render_table(
+        ["Candidate", "Task", "Global", "Time", "Out tok", "Think tok", "Think/point"],
+        [
+            [
+                name,
+                f"{perf.score_mean:.2f}",
+                _format_global_score(perf, with_std=False),
+                f"{perf.time_mean:.2f}s",
+                f"{perf.tokens_mean:.0f}",
+                f"{perf.reasoning_tokens_mean:.0f}",
+                _format_cost_cell(perf),
+            ]
+            for name, perf in pooled.items()
+        ],
+    ))
+
+    if not judge_config.reasoning_enabled:
+        return "".join(parts), False
+
+    profiles = {
+        name: (aggregate_reasoning_stats(perf.reasoning_analyses), perf.reasoning_analyses)
+        for name, perf in pooled.items()
+        if perf.reasoning_analyses
+    }
+    if not profiles:
+        return "".join(parts), False
+
+    measured_on = (
+        "the highest-scoring repetition of each test case"
+        if judge_config.reasoning_analysis == REASONING_SCOPE_BEST
+        else "every repetition"
+    )
+    parts.append(
+        f"\n## REASONING PROFILE (measured on {measured_on}; coverages are independent "
+        "axes, NOT shares of a whole, so they need not sum to 100%)\n\n"
+    )
+    parts.append(_render_table(
+        ["Candidate"] + list(REASONING_DIMENSIONS)
+        + ["density", "alt", "corr", "align", "drift", "repet", "n", "source"],
+        [
+            [name]
+            + [_metric_cell(agg, f"coverage_{d}", "%", 100, 0) for d in REASONING_DIMENSIONS]
+            + [
+                _metric_cell(agg, "density"),
+                _metric_cell(agg, "alt_path", decimals=1),
+                _metric_cell(agg, "autocorrect", decimals=1),
+                _metric_cell(agg, "alignment_score", decimals=1),
+                _metric_cell(agg, "trace_response_drift"),
+                _metric_cell(agg, "repetition_rate", "%", 100, 0),
+                str(agg.get("n", 0)),
+                _source_cell(analyses),
+            ]
+            for name, (agg, analyses) in profiles.items()
+        ],
+    ))
+    parts.append(
+        "Legend: alt = alternative approaches explored, corr = self-corrections, "
+        "align = how faithfully the response followed the trace (1-10), "
+        "drift = trace/response embedding similarity, repet = repeated-trigram share, "
+        "n = traces analysed, source = raw chain of thought, provider summary, or "
+        "unknown when the provider did not report it. "
+        "A summarised trace is not the model's own wording: never rank it against a raw "
+        "one on length, composition or self-correction counts.\n"
+    )
+
+    stamps = sorted({
+        stamp for agg, _ in profiles.values() for stamp in agg.get("schema_stamps", [])
+    })
+    if len(stamps) > 1:
+        parts.append(
+            "WARNING: these profiles were produced by DIFFERENT analysis schemas "
+            f"({', '.join(stamps)}), so their coverages are not comparable with "
+            "each other. Re-run `prompttestenv analyze --force-reanalyze` to align them.\n"
+        )
+
+    return "".join(parts), True
 
 
 def _build_summary_data(
@@ -235,23 +487,14 @@ def _build_summary_data(
         rows: Test case results to summarize (one group's rows, or all rows).
         candidates: Resolved candidate configurations.
         judge_config: JudgeConfig instance (repetition count and the
-            reasoning_analysis flag).
+            reasoning_analysis scope).
 
     Returns:
         Formatted summary text ready to interpolate into a verdict template.
     """
-    parts = [METADATA_TEMPLATE.format(repetitions=judge_config.repetitions)]
-
-    parts.append("\n# OVERALL AGGREGATE (pooled across all test cases and repetitions)\n")
-    for name, agg in _aggregate_by_candidate(candidates, rows).items():
-        parts.append(
-            f"  > CANDIDATE: {name} | "
-            f"Task Score: {agg.score_mean:.2f}/10 | "
-            f"Global Score: {_format_global_score(agg, with_std=False)} | "
-            f"Time: {agg.time_mean:.2f}s | "
-            f"Output Tokens: {agg.tokens_mean:.0f} | "
-            f"Reasoning Tokens: {agg.reasoning_tokens_mean:.0f}\n"
-        )
+    pooled = pool_by_candidate(candidates, rows)
+    aggregate, profile_shown = _build_overall_aggregate(pooled, judge_config)
+    parts = [_build_metadata(rows, pooled, judge_config, profile_shown), aggregate]
 
     parts.append("\n# TEST RESULTS\n")
     for row in rows:
@@ -273,10 +516,15 @@ def _build_summary_data(
                 f"Global Score: {_format_global_score(perf, with_std=True)} | "
                 f"Time: {perf.time_mean:.2f}s ± {perf.time_std:.2f}s\n"
                 f"    Output Tokens: {perf.tokens_mean:.0f} ± {perf.tokens_std:.0f} | "
-                f"Reasoning Tokens: {perf.reasoning_tokens_mean:.0f} ± {perf.reasoning_tokens_std:.0f}\n"
+                f"Reasoning Tokens: {perf.reasoning_tokens_mean:.0f} ± {perf.reasoning_tokens_std:.0f}"
+                f"{_format_cost_suffix(perf)}\n"
             )
-            if judge_config.reasoning_analysis and perf.reasoning_analyses:
-                parts.append(_format_reasoning_profile(perf.reasoning_analyses))
+            if judge_config.reasoning_enabled and perf.reasoning_analyses:
+                parts.append(
+                    _format_reasoning_profile(
+                        perf.reasoning_analyses, judge_config.reasoning_analysis
+                    )
+                )
             # Notes go last: best_reason is free-form judge prose that may span
             # several lines, so indenting its continuations keeps them visibly
             # subordinate and leaves the blank line before the next candidate as
@@ -294,7 +542,7 @@ def generate_verdict(
     results: list[TestCaseResult],
     project_dir: str,
     judge_config: JudgeConfig,
-) -> str:
+) -> str | None:
     """Generate a final comparative verdict across all candidates.
 
     Args:
@@ -304,7 +552,9 @@ def generate_verdict(
         judge_config: JudgeConfig instance.
 
     Returns:
-        Verdict text (Markdown or JSON if grouped) from the verdict judge, or an error string.
+        Verdict text (Markdown, or JSON if grouped) from the verdict judge, or
+        None if it could not be produced. None must never be written to the
+        progress log: a persisted failure is resumed forever instead of retried.
     """
     logger.log_separator()
     logger.log_ai("Generating final verdict...")
@@ -319,7 +569,8 @@ def generate_verdict(
     try:
         verdict_template = judge_config.verdict_judge.verdict_template
         if not verdict_template:
-            return "No verdict template provided."
+            logger.log_error("No verdict template provided in judge_config.json.")
+            return None
             
         global_criteria = judge_config.global_criteria.to_verdict_string()
 
@@ -342,7 +593,7 @@ def generate_verdict(
                 
                 save_verdict_debug_file(project_dir, sys_prompt, prompt, v_provider, v_model, v_judge_temp)
                 
-                response_text, _, _, _ = get_llm_response(
+                result = get_llm_response(
                     provider=v_provider,
                     model_name=v_model,
                     system_instruction=sys_prompt,
@@ -351,14 +602,17 @@ def generate_verdict(
                     thinking=thinking,
                     disable_safety=disable_safety,
                 )
-                response_text = _strip_code_fence(response_text.strip())
+                response_text = _strip_code_fence(result.text.strip())
 
                 group_verdicts_list.append({"group_name": group_name, "verdict": response_text})
                 
             logger.log_ai("Generating global verdict...")
             global_verdict_template = judge_config.verdict_judge.global_verdict_template
             if not global_verdict_template:
-                return "No global verdict template provided."
+                logger.log_error(
+                    "No global verdict template provided in judge_config.json."
+                )
+                return None
                 
             group_verdicts_data = ""
             for g in group_verdicts_list:
@@ -371,7 +625,7 @@ def generate_verdict(
             
             save_verdict_debug_file(project_dir, sys_prompt, global_prompt, v_provider, v_model, v_judge_temp)
             
-            global_response_text, _, _, _ = get_llm_response(
+            global_result = get_llm_response(
                 provider=v_provider,
                 model_name=v_model,
                 system_instruction=sys_prompt,
@@ -380,7 +634,7 @@ def generate_verdict(
                 thinking=thinking,
                 disable_safety=disable_safety,
             )
-            global_response_text = _strip_code_fence(global_response_text.strip())
+            global_response_text = _strip_code_fence(global_result.text.strip())
 
             final_json = {
                 "is_grouped": True,
@@ -398,7 +652,7 @@ def generate_verdict(
             )
             save_verdict_debug_file(project_dir, sys_prompt, prompt, v_provider, v_model, v_judge_temp)
 
-            response_text, _, _, _ = get_llm_response(
+            result = get_llm_response(
                 provider=v_provider,
                 model_name=v_model,
                 system_instruction=sys_prompt,
@@ -407,10 +661,11 @@ def generate_verdict(
                 thinking=thinking,
                 disable_safety=disable_safety,
             )
-            response_text = _strip_code_fence(response_text.strip())
+            response_text = _strip_code_fence(result.text.strip())
             return response_text
     except Exception as exc:
-        return f"Error generating verdict: {str(exc)}"
+        logger.log_error(f"Verdict generation failed: {exc}")
+        return None
 
 
 def evaluate_best_candidate_fast(
@@ -428,7 +683,7 @@ def evaluate_best_candidate_fast(
     """
     stats = {
         name: agg.score_mean
-        for name, agg in _aggregate_by_candidate(candidates, results).items()
+        for name, agg in pool_by_candidate(candidates, results).items()
     }
     best_cand = max(stats, key=lambda k: stats[k])
     return f"Winner (by Average Task Score): {best_cand} with a score of {stats[best_cand]:.2f}/10"

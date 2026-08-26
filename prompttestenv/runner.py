@@ -4,7 +4,7 @@ import os
 import datetime
 
 import prompttestenv.logger as logger
-from prompttestenv.analysis import attach_reasoning, run_analysis_phase
+from prompttestenv.analysis import attach_reasoning, keys_to_analyze, run_analysis_phase
 from prompttestenv.api import teardown
 from prompttestenv.evaluator import run_evaluation_phase
 from prompttestenv.verdict import generate_verdict, evaluate_best_candidate_fast, parse_grouped_verdict
@@ -77,6 +77,14 @@ def _generate_output(
         logger.log_info("Verdict resumed from log.")
     else:
         verdict = generate_verdict(candidates, results, project_dir, judge_config)
+        if verdict is None:
+            # Deliberately not logged as a verdict event: generation and
+            # evaluation are already saved, so the run is resumable and the
+            # judge can be retried once the cause is fixed.
+            return (
+                "Error: the verdict judge produced nothing. The run is intact, so fix "
+                "the cause and re-run 'prompttestenv render' to retry just the verdict."
+            )
         append_event(project_dir, {"type": "verdict", "content": verdict})
 
     now_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -176,7 +184,7 @@ def run_project(
         # stored, so it is a separate resumable pass rather than a step nested
         # inside evaluation. `prompttestenv analyze` runs exactly this phase.
         reasoning_events = progress_state.reasoning_events
-        if judge_config.reasoning_analysis:
+        if judge_config.reasoning_enabled:
             reasoning_events = run_analysis_phase(
                 results, judge_config, project_dir, progress_state
             )
@@ -218,6 +226,13 @@ def analyze_project(project_dir: str, force_reanalyze: bool = False) -> str:
     if not test_cases:
         return f"Error: No test cases found in {project_dir}"
 
+    if not judge_config.reasoning_enabled:
+        return (
+            "Error: reasoning_analysis is \"none\" in judge_config.json. "
+            "Set it to \"best\" (the highest-scoring repetition of each test) "
+            "or \"all\" (every repetition) first."
+        )
+
     judge_config.global_criteria = GlobalCriteria.load(project_dir)
     # Read-only: analysis consumes stored traces and does not care whether the
     # config still matches, so it must never rename the log out from under itself.
@@ -233,10 +248,16 @@ def analyze_project(project_dir: str, force_reanalyze: bool = False) -> str:
     finally:
         teardown()
 
-    traced = sum(
-        1 for e in progress_state.gen_events.values() if (e.get("reasoning_text") or "").strip()
+    # Count against the traces this scope actually targets, not every stored
+    # trace: under "best" the denominator is one repetition per test, and
+    # `analyzed` may also carry analyses left over from a wider earlier scope.
+    scope = judge_config.reasoning_analysis
+    in_scope = keys_to_analyze(progress_state, scope, force_reanalyze=True)
+    done = sum(1 for key in in_scope if key in analyzed)
+    return (
+        f"Reasoning analysis complete (scope '{scope}'): "
+        f"{done}/{len(in_scope)} traces analyzed."
     )
-    return f"Reasoning analysis complete: {len(analyzed)}/{traced} traces analyzed."
 
 def render_from_progress(project_dir: str) -> str:
     """Regenerate the report from an existing progress.jsonl without re-running.

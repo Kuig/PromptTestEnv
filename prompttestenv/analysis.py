@@ -16,12 +16,73 @@ import time
 import prompttestenv.logger as logger
 from prompttestenv.api import is_local_provider, preload_model_for_run
 from prompttestenv.models import (
+    REASONING_SCOPE_BEST,
     JudgeConfig,
     ReasoningStats,
     TestCaseResult,
 )
 from prompttestenv.progress import append_event
 from prompttestenv.reasoning import analyze_reasoning
+
+
+def _best_key(
+    keys: list[tuple[str, str, int]],
+    eval_events: dict[tuple[str, str, int], dict],
+) -> tuple[str, str, int]:
+    """Pick the highest-scoring repetition out of one candidate x test group.
+
+    Sole definition of "best" in the codebase: the analysis phase uses it to
+    decide what to spend calls on, and the report uses it to decide which trace
+    to draw, so the two must not be able to disagree.
+
+    A repetition whose evaluation is missing or failed scores -1 and therefore
+    loses to any evaluated one; ties go to the earliest repetition, so the
+    choice stays deterministic when scores are missing or identical.
+
+    Args:
+        keys: Non-empty list of (candidate, test_id, repetition) keys.
+        eval_events: Eval events keyed the same way.
+
+    Returns:
+        The winning key.
+    """
+    return max(keys, key=lambda k: (eval_events.get(k, {}).get("score", -1), -k[2]))
+
+
+def keys_to_analyze(
+    progress_state,
+    scope: str,
+    force_reanalyze: bool,
+) -> list[tuple[str, str, int]]:
+    """List the traces this run should spend judge calls on.
+
+    Args:
+        progress_state: ProgressState snapshot holding gen, eval and reasoning events.
+        scope: REASONING_SCOPE_BEST or REASONING_SCOPE_ALL.
+        force_reanalyze: If True, include traces that already have an analysis.
+
+    Returns:
+        Keys into progress_state.gen_events, in a stable order.
+    """
+    with_trace = [
+        key
+        for key, event in progress_state.gen_events.items()
+        if (event.get("reasoning_text") or "").strip()
+    ]
+
+    if scope == REASONING_SCOPE_BEST:
+        by_group: dict[tuple[str, str], list[tuple[str, str, int]]] = {}
+        for key in with_trace:
+            by_group.setdefault((key[0], key[1]), []).append(key)
+        with_trace = [
+            _best_key(group, progress_state.eval_events) for group in by_group.values()
+        ]
+
+    return [
+        key
+        for key in sorted(with_trace)
+        if force_reanalyze or key not in progress_state.reasoning_events
+    ]
 
 
 def run_analysis_phase(
@@ -31,7 +92,14 @@ def run_analysis_phase(
     progress_state,
     force_reanalyze: bool = False,
 ) -> dict[tuple[str, str, int], dict]:
-    """Analyze every stored reasoning trace that has no analysis yet.
+    """Analyze the stored reasoning traces that have no analysis yet.
+
+    Which traces those are depends on judge_config.reasoning_analysis: "all"
+    covers every repetition, "best" only the highest-scoring one per test, which
+    costs `repetitions` times less and is the repetition the report draws the
+    trace for anyway. Analyses already in the log are kept and reused either
+    way, so narrowing the scope never discards work already paid for, and
+    widening it later fills in only what is missing.
 
     Args:
         results: Test case results, used to recover each test's prompt and
@@ -52,12 +120,15 @@ def run_analysis_phase(
     tests_by_id = {row.test_id: row for row in results}
     analyzed: dict[tuple[str, str, int], dict] = dict(progress_state.reasoning_events)
 
+    scope = judge_config.reasoning_analysis
     pending = [
-        (key, event)
-        for key, event in progress_state.gen_events.items()
-        if (event.get("reasoning_text") or "").strip()
-        and (force_reanalyze or key not in progress_state.reasoning_events)
+        (key, progress_state.gen_events[key])
+        for key in keys_to_analyze(progress_state, scope, force_reanalyze)
     ]
+    if scope == REASONING_SCOPE_BEST:
+        logger.log_info(
+            "Scope 'best': analyzing only the highest-scoring repetition of each test."
+        )
     if not pending:
         logger.log_info("No reasoning traces to analyze.")
         return analyzed
@@ -146,9 +217,6 @@ def attach_reasoning(
                 continue
             perf.reasoning_analyses = [reasoning_events[k] for k in keys]
 
-            best_key = max(
-                keys,
-                key=lambda k: eval_events.get(k, {}).get("score", -1),
-            )
+            best_key = _best_key(keys, eval_events)
             perf.best_reasoning_analysis = ReasoningStats.from_dict(reasoning_events[best_key])
             perf.best_reasoning_text = gen_events.get(best_key, {}).get("reasoning_text", "")

@@ -654,7 +654,7 @@ def analyze_reasoning(
     Returns:
         A populated ReasoningStats, or None if analysis was skipped.
     """
-    if not judge_config.reasoning_analysis:
+    if not judge_config.reasoning_enabled:
         return None
     if not reasoning_text.strip():
         return None

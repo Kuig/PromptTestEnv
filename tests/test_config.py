@@ -18,16 +18,16 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 class TestInitProject(LoggerResetTestCase):
     def setUp(self):
-        # Two separate temp dirs: one stands in for the "real repo root" that
-        # config._PROJECT_ROOT normally points to (so secrets.json never
-        # touches the actual repo), one is the project_dir under test.
-        self.fake_repo_root = Path(tempfile.mkdtemp(prefix="prompttestenv_test_root_"))
+        # Two separate temp dirs: one stands in for the working directory that
+        # init_project scaffolds secrets.json into (so it never touches the
+        # actual repo), one is the project_dir under test.
+        self.fake_cwd = Path(tempfile.mkdtemp(prefix="prompttestenv_test_root_"))
         self.project_dir = tempfile.mkdtemp(prefix="prompttestenv_test_project_")
-        self.addCleanup(shutil.rmtree, str(self.fake_repo_root), ignore_errors=True)
+        self.addCleanup(shutil.rmtree, str(self.fake_cwd), ignore_errors=True)
         self.addCleanup(shutil.rmtree, self.project_dir, ignore_errors=True)
-        self._patcher = patch.object(config, "_PROJECT_ROOT", self.fake_repo_root)
-        self._patcher.start()
-        self.addCleanup(self._patcher.stop)
+        real_cwd = os.getcwd()
+        os.chdir(self.fake_cwd)
+        self.addCleanup(os.chdir, real_cwd)
 
     def test_creates_all_expected_files(self):
         config.init_project(self.project_dir)
@@ -39,7 +39,7 @@ class TestInitProject(LoggerResetTestCase):
         self.assertTrue((p / "global_criteria.json").exists())
         self.assertTrue((p / "system_prompts" / "pirate_prompt.txt").exists())
         self.assertTrue((p / "test_files" / "sample.txt").exists())
-        self.assertTrue((self.fake_repo_root / "secrets.json").exists())
+        self.assertTrue((self.fake_cwd / "secrets.json").exists())
 
         # Regression guard for the templates/default_*.json resource-file
         # loading path: confirm actual prompt content was written, not just
@@ -54,11 +54,17 @@ class TestInitProject(LoggerResetTestCase):
         self.assertEqual(data[0]["name"], "Baseline (Flash 2.5)")
 
     def test_does_not_touch_the_real_repo_secrets(self):
-        # Sanity check that the patch actually redirected _PROJECT_ROOT away
-        # from the real repository root.
-        real_root = Path(__file__).parent.parent
+        # Sanity check that the chdir actually redirected the scaffold away
+        # from the real repository, whose secrets.json holds live credentials.
+        real_root = Path(__file__).resolve().parent.parent
+        before = (real_root / "secrets.json").read_bytes() if (real_root / "secrets.json").exists() else None
+
         config.init_project(self.project_dir)
-        self.assertNotEqual(config._PROJECT_ROOT, real_root)
+
+        self.assertNotEqual(Path.cwd().resolve(), real_root)
+        self.assertTrue((self.fake_cwd / "secrets.json").exists())
+        after = (real_root / "secrets.json").read_bytes() if (real_root / "secrets.json").exists() else None
+        self.assertEqual(before, after, "init_project wrote into the real repository")
 
     def test_second_call_does_not_overwrite_existing_files(self):
         config.init_project(self.project_dir)
@@ -82,24 +88,49 @@ class TestInitProject(LoggerResetTestCase):
         self.assertEqual(prompt_path.read_text(encoding="utf-8"), "Be nice.")
 
 
-class TestGetApiKey(unittest.TestCase):
-    @patch("prompttestenv.config.load_secrets")
-    def test_returns_key_when_present(self, mock_load_secrets):
-        mock_load_secrets.return_value = {"google_api_key": "real-key"}
-        self.assertEqual(config.get_api_key(), "real-key")
+class TestSecretsScaffold(LoggerResetTestCase):
+    """Credentials are UnifiedAiClient's job; this project only scaffolds the file.
 
-    @patch("prompttestenv.config.load_secrets")
-    def test_raises_when_key_missing(self, mock_load_secrets):
-        mock_load_secrets.return_value = {}
-        with self.assertRaises(ValueError):
-            config.get_api_key()
+    It has to scaffold it in the directory UnifiedAiClient actually reads
+    (the CWD), otherwise a non-editable install writes it into site-packages
+    where nothing will ever look.
+    """
 
-    @patch("prompttestenv.config.load_secrets")
-    def test_raises_when_key_is_placeholder(self, mock_load_secrets):
-        mock_load_secrets.return_value = {"google_api_key": "INSERT_YOUR_API_KEY_HERE"}
-        with self.assertRaises(ValueError):
-            config.get_api_key()
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="prompttestenv_test_")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
 
+    def test_example_file_matches_the_scaffold_template(self):
+        """The two drift apart silently otherwise, and only one of them is tested."""
+        example = json.loads((PROJECT_ROOT / "secrets.json.example").read_text(encoding="utf-8"))
+        self.assertEqual(example, config.SECRETS_TEMPLATE)
+
+    def test_template_covers_every_credential_the_client_looks_for(self):
+        from unified_ai_client.config import _ENV_VAR_MAP
+
+        self.assertEqual(set(config.SECRETS_TEMPLATE), set(_ENV_VAR_MAP.values()))
+
+    def test_keys_are_scaffolded_empty_not_with_a_placeholder(self):
+        """A placeholder string would reach the provider as a real key."""
+        self.assertTrue(all(v == "" for v in config.SECRETS_TEMPLATE.values()))
+
+    def test_created_in_the_working_directory_that_the_client_reads(self):
+        cwd = os.getcwd()
+        os.chdir(self.tmp)
+        self.addCleanup(os.chdir, cwd)
+        config.init_project(os.path.join(self.tmp, "Proj"))
+        written = Path(self.tmp) / "secrets.json"
+        self.assertTrue(written.exists())
+        self.assertEqual(json.loads(written.read_text(encoding="utf-8")), config.SECRETS_TEMPLATE)
+
+    def test_existing_secrets_file_is_never_overwritten(self):
+        cwd = os.getcwd()
+        os.chdir(self.tmp)
+        self.addCleanup(os.chdir, cwd)
+        existing = Path(self.tmp) / "secrets.json"
+        existing.write_text('{"google_api_key": "real-key"}', encoding="utf-8")
+        config.init_project(os.path.join(self.tmp, "Proj"))
+        self.assertEqual(json.loads(existing.read_text(encoding="utf-8")), {"google_api_key": "real-key"})
 
 
 class TestAppConfig(LoggerResetTestCase):

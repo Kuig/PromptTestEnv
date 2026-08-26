@@ -16,6 +16,7 @@ from prompttestenv.models import (
     TestCaseResult,
 )
 from prompttestenv.runner import (
+    analyze_project,
     _generate_output,
     _initialize_test_results,
     render_from_progress,
@@ -166,6 +167,36 @@ class TestRunProject(LoggerResetTestCase):
              patch("prompttestenv.runner.teardown"):
             result = run_project(self.project_dir, output_mode="winner_only")
         self.assertIn("No results produced", result)
+
+
+class TestAnalyzeProject(LoggerResetTestCase):
+    def setUp(self):
+        self.project_dir = make_temp_project()
+        self.addCleanup(shutil.rmtree, self.project_dir, ignore_errors=True)
+        self.judge_path = Path(self.project_dir) / "judge_config.json"
+
+    def _set_scope(self, scope: str) -> None:
+        data = json.loads(self.judge_path.read_text(encoding="utf-8"))
+        data["reasoning_analysis"] = scope
+        self.judge_path.write_text(json.dumps(data), encoding="utf-8")
+
+    def test_none_scope_is_refused_instead_of_silently_doing_nothing(self):
+        self._set_scope("none")
+        result = analyze_project(self.project_dir)
+        self.assertIn("Error", result)
+        self.assertIn("reasoning_analysis", result)
+
+    def test_enabled_scope_reports_the_scope_it_ran_under(self):
+        self._set_scope("best")
+        with patch("prompttestenv.runner.ProgressState.load") as mock_load, \
+                patch("prompttestenv.runner.run_analysis_phase") as mock_phase:
+            mock_load.return_value = ProgressState(
+                gen_events={("A", "t1", 0): {"reasoning_text": "A thought."}},
+            )
+            mock_phase.return_value = {}
+            result = analyze_project(self.project_dir)
+        self.assertIn("scope 'best'", result)
+        self.assertIn("0/1", result)
 
 
 class TestRenderFromProgress(LoggerResetTestCase):

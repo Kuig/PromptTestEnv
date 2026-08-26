@@ -27,9 +27,26 @@ import os
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 
-from unified_ai_client import load_secrets
-
 _PROJECT_ROOT = Path(__file__).parent.parent
+
+SECRETS_FILE = "secrets.json"
+
+# Every credential UnifiedAiClient looks for (unified_ai_client.config._ENV_VAR_MAP).
+# Scaffolded empty rather than with a placeholder string: UnifiedAiClient does not
+# validate keys, it puts them straight in the request header, so a leftover
+# placeholder would come back as a provider auth error instead of a missing key.
+# Each one can also be supplied as an environment variable (GOOGLE_API_KEY,
+# ANTHROPIC_API_KEY, ...), which takes priority over this file.
+SECRETS_TEMPLATE: dict[str, str] = {
+    "google_api_key": "",
+    "anthropic_api_key": "",
+    "openai_api_key": "",
+    "mistral_api_key": "",
+    "cohere_api_key": "",
+    "meta_api_key": "",
+    "groq_api_key": "",
+    "xai_api_key": "",
+}
 
 CONFIG_FILE = "config.json"
 DEFAULT_CONFIG_TEMPLATE = "default_config.json"
@@ -137,6 +154,39 @@ class ReasoningDefaults:
 
 
 @dataclass
+class VerdictMetadata:
+    """The self-describing header the verdict payload opens with.
+
+    This is not benchmark prose: every section describes something the CODE
+    emits, such as that the aggregate tables carry no standard deviation or that
+    an `assert` judge may use the full 1-10 range or only a pass/fail pair. Two
+    projects wording it differently would make their reports incomparable, which
+    is why it belongs here and not in judge_config.json. What a benchmark means
+    by its scores stays the author's business, in verdict_template.
+
+    Sections are emitted only when the payload actually contains what they
+    describe, so a project with no reasoning analysis is not told how to read a
+    reasoning profile it will never see.
+
+    Every field defaults to the empty string, matching ReasoningSchema. An empty
+    section that the payload needs is a refusal, never a silent omission: the
+    figures would still reach the judge, just without the caveats that keep it
+    from over-claiming.
+    """
+
+    header: str = ""
+    figures: str = ""
+    score_scales: str = ""
+    cost_per_point: str = ""
+    reasoning_profile: str = ""
+    judge_types_intro: str = ""
+    judge_llm: str = ""
+    judge_similarity: str = ""
+    judge_assert: str = ""
+    judge_types_mixed: str = ""
+
+
+@dataclass
 class AppConfig:
     """Global, cross-project application configuration.
 
@@ -148,6 +198,7 @@ class AppConfig:
     unit_splitting: UnitSplittingConfig = field(default_factory=UnitSplittingConfig)
     reasoning_defaults: ReasoningDefaults = field(default_factory=ReasoningDefaults)
     local_providers: list[str] = field(default_factory=list)
+    verdict_metadata: VerdictMetadata = field(default_factory=VerdictMetadata)
 
     @classmethod
     def from_dict(cls, data: dict) -> AppConfig:
@@ -168,6 +219,9 @@ class AppConfig:
             unit_splitting=_from_dict(UnitSplittingConfig, data.get("unit_splitting", {})),
             reasoning_defaults=_from_dict(ReasoningDefaults, data.get("reasoning_defaults", {})),
             local_providers=data.get("local_providers", []),
+            verdict_metadata=_from_dict(
+                VerdictMetadata, data.get("verdict_metadata", {})
+            ),
         )
 
     @classmethod
@@ -227,24 +281,6 @@ def get_app_config(reload: bool = False) -> AppConfig:
     return _APP_CONFIG
 
 
-def get_api_key() -> str:
-    """Load the Google AI API key from the project root secrets.json.
-
-    Returns:
-        The API key string.
-
-    Raises:
-        ValueError: If the key is missing or still has the placeholder value.
-    """
-    secrets = load_secrets(str(_PROJECT_ROOT))
-    key = secrets.get("google_api_key")
-    if not key or key == "INSERT_YOUR_API_KEY_HERE":
-        raise ValueError(
-            "Please provide a valid 'google_api_key' in secrets.json at the project root."
-        )
-    return key
-
-
 def init_project(project_dir: str, custom_candidates: list[dict] | None = None) -> None:
     """Initialize the project directory structure for a new benchmark.
 
@@ -265,12 +301,20 @@ def init_project(project_dir: str, custom_candidates: list[dict] | None = None) 
     os.makedirs(sys_dir, exist_ok=True)
     os.makedirs(os.path.join(project_dir, "test_files"), exist_ok=True)
 
-    # 1. Root secrets.json — only create if missing; uses google_api_key key
-    secrets_path = _PROJECT_ROOT / "secrets.json"
+    # 1. secrets.json, created only if missing. It goes in the CURRENT WORKING
+    # DIRECTORY because that is where UnifiedAiClient looks for it when it
+    # instantiates a provider, and it is the only copy that will ever be read.
+    # Writing it next to the package instead would put it inside site-packages
+    # on a non-editable install, where nothing would ever find it.
+    secrets_path = Path(os.getcwd()) / SECRETS_FILE
     if not secrets_path.exists():
-        secrets_data = {"google_api_key": "INSERT_YOUR_API_KEY_HERE"}
-        secrets_path.write_text(json.dumps(secrets_data, indent=4), encoding="utf-8")
-        logger.log_warning(f"Created secrets.json at {secrets_path}. Please insert your API key.")
+        secrets_path.write_text(json.dumps(SECRETS_TEMPLATE, indent=4), encoding="utf-8")
+        logger.log_warning(
+            f"Created {secrets_path}. Fill in the key for the providers you use, "
+            "or set the matching environment variable (GOOGLE_API_KEY, "
+            "ANTHROPIC_API_KEY, ...), which takes priority. Local providers such "
+            "as Ollama need no key at all."
+        )
 
     # 2. Judge Configuration
     judge_file = os.path.join(project_dir, "judge_config.json")

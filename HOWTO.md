@@ -53,6 +53,7 @@ This is the core engine configuration file. It dictates how the framework behave
 - `max_response_timeout_seconds` *(float)*: Maximum wait time for the judge (default: `240.0`).
 - `pass_media_to_judge` *(boolean)*: If `true`, the media file attached in the test case is also sent to the judge as "ground truth" context.
 - `group_verdicts` *(boolean)*: If `true`, the framework will generate specific verdicts for each `group` defined in `test_cases.json`, plus a global overview.
+- `reasoning_analysis` *(string)*: How much of the run the reasoning-analysis phase covers: `"none"`, `"best"` or `"all"`. See section E below.
 
 **`test_judge` Options:**
 *Configures the LLM that scores individual responses.*
@@ -89,9 +90,24 @@ This optional feature analyses the internal reasoning trace (the "thinking" outp
 
 **Enable it** by adding to `judge_config.json`:
 ```json
-"reasoning_analysis": true
+"reasoning_analysis": "best"
 ```
-It is silently skipped for candidates that produce no reasoning output.
+
+The setting chooses how much of the run gets measured, because the cost scales with `repetitions`:
+
+| Value | What gets analysed | Cost |
+|---|---|---|
+| `"none"` | nothing. The phase does not run. | zero |
+| `"best"` | the highest-scoring repetition of each candidate x test case | 1 trace per test case |
+| `"all"` | every repetition of every test case | `repetitions` traces per test case |
+
+`"best"` is the recommended starting point, and the default in a scaffolded project. It measures exactly the repetition whose trace the report draws anyway, so nothing on screen is lost, at a fifth of the calls under the default `repetitions: 5`.
+
+Be aware of what `"best"` changes, though: the profile then describes how a model reasons **when it succeeds**, not how it reasons on a typical run. That is a legitimate question to ask, but it is a different one, so the report and the verdict payload both state which scope produced the figures, and figures from the two scopes must not be compared. Use `"all"` when you want the unfiltered picture, or when repetitions disagree with each other and you want to know why.
+
+Switching scope is free and never wastes work. Analyses already in `progress.jsonl` are kept, so narrowing from `"all"` to `"best"` throws nothing away, and widening later analyses only the repetitions that are missing.
+
+Analysis is silently skipped for candidates that produce no reasoning output.
 
 #### How it works
 
@@ -136,9 +152,23 @@ Counts are derived from the sentence ids the judge cites, so every one of them i
 
 A value of `-1` means **not measured** (a judge call failed), and it is excluded from every average rather than counted as a zero. `0` is a real measurement.
 
+#### Cost per point (not part of the reasoning analysis)
+
+Every candidate carries a reasoning-token cost figure regardless of whether `reasoning_analysis` runs at all, since it needs only the thinking-token count and the task score, both recorded for every repetition no matter what. It shows up in two places, computed two different ways:
+
+- **Per test case**, on the token line right under that test's response: the **mean of each repetition's own ratio** (that repetition's own thinking tokens divided by its own score), with a standard deviation across the repetitions of that one test.
+- **Per candidate**, in the header STATS row, next to the pooled token counts: the **ratio of the pooled means** (mean thinking tokens divided by mean task score), a single figure.
+
+The two are different statistics and will not generally agree. They coincide only when every repetition scores the same; the more the score varies, the more a repetition that failed cheaply pulls the pooled figure up without pulling the per-test-case mean up nearly as much, since that repetition's own ratio (thinking tokens over a low score) is large on its own. Both answer the question the raw token count does not, which is whether a candidate got anything back for the thinking it was billed for; **lower is cheaper** on both.
+
+> [!WARNING]
+> Read either figure as a diagnostic, never as a ranking. The task score floors at 1 rather than 0 and spans only 10x, while thinking tokens span far more, so the figure is largely a token count in disguise: **a candidate that thinks little and fails scores well on it.** A model spending 69 tokens to earn a 1 prices at 69 per point, which looks better than one spending 1051 to earn a 10. Rank on the scores, and use this to explain what the thinking cost.
+
 #### Cost
 
-Per candidate x test x repetition: 3 scoring calls plus 1 metrics call in `split` mode, or 2 calls in `joint` mode. The judge only ever returns a short list of numbers, never a copy of the trace, so the expensive output tokens stay near zero however long the trace is.
+Per trace analysed: 3 scoring calls plus 1 metrics call in `split` mode, or 2 calls in `joint` mode. The judge only ever returns a short list of numbers, never a copy of the trace, so the expensive output tokens stay near zero however long the trace is.
+
+How many traces that is comes from the scope above: one per candidate x test case under `"best"`, or one per candidate x test case x repetition under `"all"`.
 
 Because it reads traces that generation already stored, this phase is **re-runnable on its own**:
 
@@ -150,7 +180,7 @@ Retuning the schema costs only these calls, never a re-run of the candidates: th
 
 #### Reading the report
 
-Each candidate gets one horizontal bar per dimension, plus the density figure and thinking tokens spent per point of score. Under each test case, the **full trace is shown colour-coded in place**: every sentence is tinted by its dominant dimension, shaded by intensity, with all three scores on hover. Sentences cited as evidence carry a marker for an alternative, a self-correction, or a conclusion the response contradicted. Because the units are offsets, what you see is the trace itself, and you can check the analysis against the actual words.
+Each candidate gets one horizontal bar per dimension, plus the density figure, the cost in thinking tokens per point of score, and the scope the figures were measured under with the number of traces behind them. Under each test case, the **full trace is shown colour-coded in place**: every sentence is tinted by its dominant dimension, shaded by intensity, with all three scores on hover. Sentences cited as evidence carry a marker for an alternative, a self-correction, or a conclusion the response contradicted. Because the units are offsets, what you see is the trace itself, and you can check the analysis against the actual words.
 
 > [!WARNING]
 > **Some providers do not give you the raw chain of thought.** Google returns a *summary* the model writes about its own thinking, typically around half the length its billed thinking tokens imply, while Ollama, Anthropic and the OpenAI-compatible providers return the raw transcript. The report flags a summarised trace and withholds absolute token attribution for it. Trace length, composition and self-correction counts partly reflect the summariser, so do not rank a summarised trace against a raw one on those figures.

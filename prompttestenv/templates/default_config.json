@@ -52,5 +52,17 @@
         "lmstudio",
         "llamacpp",
         "script"
-    ]
+    ],
+    "verdict_metadata": {
+        "header": "# BENCHMARK METADATA\nEach candidate saw only the PROMPT, the ATTACHMENT, and its own system prompt (not shown\nhere, and it may differ per candidate). The EVALUATION CRITERIA are the judges' rubric,\nNOT shown to the candidate: missing one is a difference in behaviour, not disobedience.",
+        "figures": "Repetitions per candidate x test case: {repetitions}. Figures are mean +/- SD across them;\nat 1 repetition every +/- is 0.00 by construction and says nothing about stability.\nThe OVERALL AGGREGATE tables carry means WITHOUT a deviation: pooled across test cases,\nthat spread is mostly the difference between tasks, not run-to-run stability. Read the\nper-test-case sections when you need the +/-.\n'Notes' come from the best-scoring repetition, not an average one.\nToken counts are OUTPUT only: reasoning tokens are separate and excluded, input tokens\nare not tracked.",
+        "score_scales": "Both scores run 1-10, but what they measure is set by this project's criteria and may be\nredefined by the instructions below; 'N/A' means not computed.",
+        "cost_per_point": "'Think/point' is reasoning tokens divided by task score, so LOWER is cheaper. Treat it as\na diagnostic, never as a ranking: the task score floors at 1 rather than 0 and spans only\n10x, while thinking tokens span far more, so a candidate that thinks little AND fails\nscores well on it. Say what it shows, and rank on the scores themselves.",
+        "reasoning_profile": "Where a reasoning profile is shown, it describes the SHAPE of a thinking trace, not its\nquality. Do not infer that a profile caused a score: candidates differ in more than one\nrespect at once, and the coverages are an LLM's reading of the trace. The aggregate\nprofile pools traces from tasks of different natures, so read it as a description of the\ncandidate's habits, not as a measurement of any one task. Report a profile as an\nobservation about behaviour, and say so when a claim about it is not supported by the\nscores themselves. A trace marked as a provider summary is not the model's raw chain of\nthought: its length, composition and self-correction counts reflect the summariser too,\nso never rank a summarised trace against a raw one on those figures.",
+        "judge_types_intro": "How task scores were produced:",
+        "judge_llm": "- llm-judge: graded 1-10 by an LLM against the test's criteria.",
+        "judge_similarity": "- similarity: cosine similarity to a target text, rescaled to 1-10.",
+        "judge_assert": "- assert: a user-authored Python expression; it may use the full 1-10 range or just a\n  pass/fail pair, and which one is never declared.",
+        "judge_types_mixed": "These are DIFFERENT judges, so their scores are not comparable across test cases, and the\naggregate above pools all of them: read it as an indication, not a measurement."
+    }
 }

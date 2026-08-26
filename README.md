@@ -22,13 +22,17 @@ pip install -e .
 
 `pip install -e .` reads `pyproject.toml` and installs `mcp`, `streamlit`, `jinja2`, and `unified-ai-client`, plus the `prompttestenv` console script, in one step.
 
-Configure your API key in `secrets.json` at the project root (copy `secrets.json.example` to get started):
+Configure your API keys in `secrets.json`, in the directory you run `prompttestenv` from (copy `secrets.json.example` to get started). Fill in only the providers you actually use, and leave the rest empty:
 
 ```json
 {
-    "google_api_key": "YOUR_KEY_HERE"
+    "google_api_key": "YOUR_KEY_HERE",
+    "anthropic_api_key": "",
+    "openai_api_key": ""
 }
 ```
+
+Credentials are read by `unified_ai_client`, not by this project, so the same file also accepts `mistral_api_key`, `cohere_api_key`, `meta_api_key`, `groq_api_key` and `xai_api_key`. Each one can be supplied as an environment variable instead (`GOOGLE_API_KEY`, `ANTHROPIC_API_KEY`, and so on), which takes priority over the file. Local providers such as Ollama need no key at all.
 
 Run the test suite (no API key or network access required, nothing under `unified_ai_client` is called for real):
 
@@ -42,10 +46,12 @@ python -m unittest discover -s tests -v
 
 | File | Purpose |
 |---|---|
-| `secrets.json` | `google_api_key` for Google AI. Copy `secrets.json.example` to get started. |
-| `config.json` | Cross-project settings: the reasoning-analysis taxonomy and its judge prompts, the sentence-splitting parameters, and the list of locally served providers. |
+| `secrets.json` | Provider API keys, read by `unified_ai_client` from the working directory. Copy `secrets.json.example` to get started. |
+| `config.json` | Cross-project settings: the reasoning-analysis taxonomy and its judge prompts, the sentence-splitting parameters, the list of locally served providers, and the metadata header the verdict payload opens with. |
 
 Everything that describes a single benchmark lives in `Projects/<name>/` and nothing else needs to. `config.json` holds the opposite kind of setting: the definition of the *measurement instrument*. The reasoning dimensions, their definitions and the prompts that apply them have to be identical everywhere, otherwise two reports are not comparable, so they are deliberately not per-project and not editable from `judge_config.json`.
+
+`verdict_metadata` is there for the same reason. It is the header the verdict payload opens with, and every section of it describes what the *code* emits: that the aggregate tables carry no standard deviation, that token counts are output only, that an `assert` judge may use the full 1 to 10 range or only a pass/fail pair. Sections are emitted only when the payload contains what they describe, so a project with no reasoning analysis is never told how to read a reasoning profile it will not receive. What a benchmark *means* by its scores stays the author's business, in `verdict_template`.
 
 > **Note:** unlike the sibling projects, this `config.json` is **versioned**, not git-ignored, and ships no `config.json.example`. It contains no credentials, only the measurement instrument, which must be the same for anyone who clones the repo. It is resolved from the current working directory first, then the repo root, then a read-only copy shipped inside the package (`prompttestenv/templates/default_config.json`), so an install from `requirements_prod.txt` still finds it. Every field has a default, so a missing or unreadable file degrades instead of failing.
 
@@ -60,7 +66,7 @@ Each run writes an append-only `progress.jsonl` inside the project directory. On
 
 Two deliberate exclusions:
 
-- `judge_config.json` is hashed **without** its `reasoning_analysis` flag and `reasoning_judge` block, and the rest of the file is canonicalised before hashing (so reformatting it alone is not a change). Reasoning analysis is a post-hoc pass over traces already stored in the log, so retuning it must not force you to re-buy every candidate response. Run `prompttestenv analyze` to redo just that pass.
+- `judge_config.json` is hashed **without** its `reasoning_analysis` scope and `reasoning_judge` block, and the rest of the file is canonicalised before hashing (so reformatting it alone is not a change). Reasoning analysis is a post-hoc pass over traces already stored in the log, so retuning it must not force you to re-buy every candidate response. Run `prompttestenv analyze` to redo just that pass.
 - `config.json` is not hashed at all: it is global, so including it would invalidate every project's progress on any edit to the reasoning schema. Instead each reasoning record stores a short stamp of the schema that produced it, which is what lets a report notice it is mixing analyses from different schema versions.
 
 `analyze` and `render` open the log **read-only**: they consume stored results and do not depend on the config still matching, so they never rename or create `progress.jsonl`.
@@ -211,8 +217,8 @@ PromptTestEnv runs each benchmark through a two-phase pipeline, orchestrated by 
 
 1. **Generation** (`generation.py`): for every candidate × test case × repetition, calls the candidate LLM and records the response, token counts, and timing to `progress.jsonl`.
 2. **Evaluation** (`evaluator.py`): for every generated response, calls the judge (per the test case's `judge_type`, plus an independent global-criteria score). Results are appended to `progress.jsonl`.
-3. **Reasoning analysis** (`analysis.py`, only when `reasoning_analysis` is enabled): splits each stored thinking trace into sentence-sized units and has a judge score every unit on each reasoning dimension. It reads only what generation already wrote, so it makes no generation and no judging calls and can be re-run on its own with `prompttestenv analyze`.
-4. **Verdict** (`verdict.py`): a verdict LLM writes the final comparative report body (per-group verdicts plus a global verdict if `group_verdicts` is enabled, otherwise a single verdict).
+3. **Reasoning analysis** (`analysis.py`, only when `reasoning_analysis` is `"best"` or `"all"`): splits each stored thinking trace into sentence-sized units and has a judge score every unit on each reasoning dimension. It reads only what generation already wrote, so it makes no generation and no judging calls and can be re-run on its own with `prompttestenv analyze`. `"best"` measures only the highest-scoring repetition of each test case, which is the one the report draws, so it costs `repetitions` times less than `"all"`; the report and the verdict payload both record which scope produced the figures, since the two are not comparable.
+4. **Verdict** (`verdict.py`): a verdict LLM writes the final comparative report body (per-group verdicts plus a global verdict if `group_verdicts` is enabled, otherwise a single verdict). Its payload opens with a pooled per-candidate table, plus a second table of the reasoning profile when the analysis ran, so the judge compares candidates on figures it does not have to compute itself.
 5. **Report** (`reporting.py`): renders the verdict and aggregated statistics into an HTML or Markdown report under `Report/`.
 
 Every phase resumes safely: `progress.jsonl` is an append-only JSONL log, and each run starts by comparing an MD5 hash of the project's config files against the hash stored on the first line (see [Resume Policy](#resume-policy)).

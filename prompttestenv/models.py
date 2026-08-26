@@ -13,11 +13,43 @@ JUDGE_TYPE_SIMILARITY = "similarity"
 JUDGE_TYPE_ASSERT = "assert"
 GLOBAL_MODE_NONE = "none"
 
+# How much of a run the reasoning-analysis phase covers. "best" analyses only
+# the highest-scoring repetition of each candidate x test, which is the one the
+# report shows the trace for, and costs `repetitions` times less than "all".
+REASONING_SCOPE_NONE = "none"
+REASONING_SCOPE_BEST = "best"
+REASONING_SCOPE_ALL = "all"
+REASONING_SCOPES = (REASONING_SCOPE_NONE, REASONING_SCOPE_BEST, REASONING_SCOPE_ALL)
+
 # Axes of the reasoning profile. Mirrored as fields on ReasoningUnit and
 # ReasoningStats (CONVENTIONS 5.3 rules out a dict here), so changing this
 # tuple is a code change, not a config change: config.json may reword a
 # dimension's definition or colour, but not invent a new one.
 REASONING_DIMENSIONS: tuple[str, ...] = ("framing", "solving", "presentation")
+
+
+def compute_cost_per_point(numerator: float, denominator: float) -> float:
+    """Divide two run figures with the shared -1 "not measured" sentinel.
+
+    Used both by CandidatePerformance.reasoning_cost_per_point (pooled across a
+    run: mean tokens / mean score, "how much does this candidate cost overall")
+    and by CandidatePerformance.mean_cost_per_point, applied once per
+    repetition before averaging (this rep's own tokens / this rep's own score,
+    "how much does a typical single run cost, and how much does that vary").
+    The two need not agree numerically: the mean of several ratios is not the
+    ratio of the means, and diverges further the more the score varies between
+    repetitions.
+
+    Args:
+        numerator: E.g. reasoning tokens.
+        denominator: E.g. task score.
+
+    Returns:
+        numerator / denominator, or -1.0 if either is <= 0.
+    """
+    if numerator <= 0 or denominator <= 0:
+        return -1.0
+    return numerator / denominator
 
 
 def calculate_stats(scores_list: list[float], default_val: float = 0.0) -> tuple[float, float]:
@@ -94,6 +126,130 @@ class CandidatePerformance:
 
     @property
     def time_std(self) -> float: return calculate_stats(self.times, default_val=0.0)[1]
+
+    @property
+    def reasoning_cost_per_point(self) -> float:
+        """Thinking tokens spent per point of task score. Lower is better.
+
+        The ratio of the pooled means: mean(reasoning_tokens) / mean(scores).
+        See mean_cost_per_point for the mean of each repetition's OWN ratio,
+        a different statistic that need not agree with this one.
+
+        Read it as a diagnostic, never as a ranking key. The task score floors
+        at 1 rather than 0 and spans only 10x, while reasoning tokens span far
+        more, so the ratio is largely a token count in disguise: a candidate
+        that thinks little and fails scores WELL on it.
+
+        Returns:
+            The ratio, or -1.0 ("not measured") when there is no thinking to
+            price or no score to price it against. Zero is not used, since a
+            real ratio can legitimately round towards it.
+        """
+        return compute_cost_per_point(self.reasoning_tokens_mean, self.score_mean)
+
+    def _cost_ratios(self) -> list[float]:
+        """This record's own reasoning-tokens/score ratio, one per repetition.
+
+        Safe to zip by index despite tokens and scores being appended in two
+        separate phases (generation.py, then evaluator.py): evaluate_with_judge()
+        never lets an exception escape (its own try/except degrades to a
+        sentinel score instead), so every generated repetition gets exactly one
+        score appended, in the same relative order tokens were appended. An
+        interrupted run leaves scores as a PREFIX of tokens, never a mismatch in
+        the middle, so zip()'s truncation to the shorter list is the correct
+        degradation rather than a silent misalignment.
+
+        Returns:
+            One ratio per repetition that has both a token count and a score,
+            via compute_cost_per_point (so unmeasurable pairs are already -1.0).
+        """
+        return [
+            compute_cost_per_point(tokens, score)
+            for tokens, score in zip(self.reasoning_tokens, self.scores)
+        ]
+
+    @property
+    def mean_cost_per_point(self) -> float:
+        """Mean of each repetition's OWN cost ratio. Lower is cheaper.
+
+        Not the ratio of the means: see reasoning_cost_per_point for that. The
+        "mean_" prefix (unlike this class's usual _mean suffix) is deliberate,
+        to keep the two visually distinct at every call site. They diverge
+        whenever the score varies across whatever this record spans (one
+        test's repetitions, or an entire candidate pooled): a repetition that
+        failed cheaply pulls this figure UP without pulling
+        reasoning_cost_per_point down nearly as much, since that repetition's
+        own ratio (tokens over a low score) is large on its own.
+
+        Needs only reasoning_tokens and scores, both always recorded
+        regardless of whether judge_config.reasoning_analysis is enabled.
+
+        Returns:
+            The mean ratio, or -1.0 ("not measured") when no repetition has
+            both a positive token count and a positive score.
+        """
+        return calculate_stats(self._cost_ratios(), default_val=-1.0)[0]
+
+    @property
+    def std_cost_per_point(self) -> float:
+        """Standard deviation of mean_cost_per_point. See its docstring."""
+        return calculate_stats(self._cost_ratios(), default_val=-1.0)[1]
+
+    @property
+    def combined_avg(self) -> float:
+        """Task and global score averaged, or the task score alone.
+
+        A global score of -1 means global scoring is disabled for the project,
+        so it must not be averaged in as if it were a low mark.
+
+        Returns:
+            The combined figure used to rank candidates in the report header.
+        """
+        global_score = self.global_score_mean
+        if global_score < 0:
+            return self.score_mean
+        return (self.score_mean + global_score) / 2 if (self.score_mean or global_score) else 0.0
+
+
+def pool_by_candidate(
+    candidates: list[Candidate],
+    rows: list[TestCaseResult],
+) -> dict[str, CandidatePerformance]:
+    """Pool each candidate's per-test-case performance into a single record.
+
+    The one aggregation of its kind: the verdict payload, the HTML report and
+    the winner_only shortcut all read from here, so a candidate cannot be
+    described differently depending on which surface you look at. It lives in
+    models.py rather than in either consumer because both would otherwise have
+    to import a private symbol from the other.
+
+    Args:
+        candidates: Resolved candidate configurations.
+        rows: Test case results to pool over.
+
+    Returns:
+        Mapping of candidate name to a CandidatePerformance holding every
+        repetition of every test case, so its mean/std properties describe the
+        candidate's run as a whole. Candidates with no data map to an empty
+        record, whose means fall back to the usual defaults.
+    """
+    pooled: dict[str, CandidatePerformance] = {}
+    for cand in candidates:
+        agg = CandidatePerformance()
+        for row in rows:
+            perf = row.candidates_perf.get(cand.name)
+            if not perf:
+                continue
+            agg.scores.extend(perf.scores)
+            agg.global_scores.extend(perf.global_scores)
+            agg.times.extend(perf.times)
+            agg.tokens.extend(perf.tokens)
+            agg.reasoning_tokens.extend(perf.reasoning_tokens)
+            # Without this the reasoning profile cannot reach the pooled view
+            # at all, which is why the verdict's OVERALL AGGREGATE had none.
+            agg.reasoning_analyses.extend(perf.reasoning_analyses)
+        pooled[cand.name] = agg
+    return pooled
 
 
 @dataclass
@@ -464,6 +620,37 @@ def _settings_from_dict(cls: type, data: dict):
     return cls(**{f.name: data.get(f.name, f.default) for f in fields(cls)})
 
 
+def _parse_reasoning_scope(value) -> str:
+    """Read the reasoning_analysis setting, rejecting values that are not scopes.
+
+    An unknown string must not fall through to a truthiness test: "none" is a
+    truthy string, so a silent pass-through would switch the phase on exactly
+    where the author meant to switch it off.
+
+    Args:
+        value: Raw value from judge_config.json. Booleans are accepted as the
+            transitional spelling of the two extremes.
+
+    Returns:
+        One of REASONING_SCOPES.
+    """
+    if isinstance(value, bool):
+        scope = REASONING_SCOPE_ALL if value else REASONING_SCOPE_NONE
+        logger.log_warning(
+            f"judge_config.json: 'reasoning_analysis: {str(value).lower()}' is the old "
+            f"boolean spelling. Use \"{scope}\" instead (\"best\" analyses only the "
+            "highest-scoring repetition, at a fraction of the cost)."
+        )
+        return scope
+    if isinstance(value, str) and value.lower() in REASONING_SCOPES:
+        return value.lower()
+    logger.log_warning(
+        f"judge_config.json: unknown reasoning_analysis '{value}'. "
+        f"Expected one of {', '.join(REASONING_SCOPES)}. Disabling reasoning analysis."
+    )
+    return REASONING_SCOPE_NONE
+
+
 @dataclass
 class JudgeConfig:
     """Top-level configuration for a benchmark project's judge settings."""
@@ -474,12 +661,21 @@ class JudgeConfig:
     max_response_timeout_seconds: float = 240.0
     pass_media_to_judge: bool = False
     group_verdicts: bool = False
-    reasoning_analysis: bool = False
+    reasoning_analysis: str = REASONING_SCOPE_NONE
     global_criteria: GlobalCriteria = field(default_factory=GlobalCriteria)
     test_judge: TestJudgeSettings = field(default_factory=TestJudgeSettings)
     similarity_judge: SimilarityJudgeSettings = field(default_factory=SimilarityJudgeSettings)
     verdict_judge: VerdictJudgeSettings = field(default_factory=VerdictJudgeSettings)
     reasoning_judge: ReasoningJudgeSettings = field(default_factory=ReasoningJudgeSettings)
+
+    @property
+    def reasoning_enabled(self) -> bool:
+        """Whether the reasoning-analysis phase should run at all.
+
+        Every caller must go through this rather than testing the field
+        directly: reasoning_analysis is a string now, and "none" is truthy.
+        """
+        return self.reasoning_analysis != REASONING_SCOPE_NONE
 
     @classmethod
     def from_dict(cls, data: dict) -> JudgeConfig:
@@ -525,7 +721,9 @@ class JudgeConfig:
             max_response_timeout_seconds=data.get("max_response_timeout_seconds", 240.0),
             pass_media_to_judge=data.get("pass_media_to_judge", False),
             group_verdicts=data.get("group_verdicts", False),
-            reasoning_analysis=data.get("reasoning_analysis", False),
+            reasoning_analysis=_parse_reasoning_scope(
+                data.get("reasoning_analysis", REASONING_SCOPE_NONE)
+            ),
             global_criteria=global_criteria,
             test_judge=test_judge,
             similarity_judge=similarity_judge,

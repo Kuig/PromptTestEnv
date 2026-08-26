@@ -10,9 +10,9 @@ import jinja2
 from prompttestenv.config import get_app_config
 from prompttestenv.models import (
     REASONING_DIMENSIONS,
-    calculate_stats,
     Candidate,
     CandidatePerformance,
+    pool_by_candidate,
     JudgeConfig,
     TestCaseResult,
     GlobalCriteria,
@@ -126,22 +126,20 @@ def build_trace_segments(perf: CandidatePerformance) -> list[dict]:
     return segments
 
 
-def reasoning_efficiency(score_mean: float, reasoning_tokens_mean: float) -> str:
-    """Format thinking tokens spent per point of task score.
+def format_cost_per_point(cost: float) -> str:
+    """Format CandidatePerformance.reasoning_cost_per_point for display.
 
-    Answers the question the raw token count does not: whether a candidate is
-    getting anything back for the thinking it is billed for.
+    Formatting only: the arithmetic and the -1 "not measured" sentinel belong
+    to the record, so the verdict payload and the report cannot disagree about
+    what a candidate cost.
 
     Args:
-        score_mean: Mean task score.
-        reasoning_tokens_mean: Mean reasoning tokens per response.
+        cost: The ratio, or -1.0 when it was not measurable.
 
     Returns:
-        A formatted figure, or "N/A" when it would not be meaningful.
+        The rounded figure, or "N/A".
     """
-    if reasoning_tokens_mean <= 0 or score_mean <= 0:
-        return "N/A"
-    return f"{reasoning_tokens_mean / score_mean:.0f}"
+    return "N/A" if cost < 0 else f"{cost:.0f}"
 
 
 def md_to_html(md_text):
@@ -198,52 +196,15 @@ def generate_html_report(project_dir: str, results: list[TestCaseResult], candid
     else:
         verdict_html = md_to_html(verdict_text)
     
-    stats = {}
-    for cand in candidates:
-        cand_id = cand.name
-        task_scores = []
-        global_scores = []
-        token_counts = []
-        reasoning_counts = []
-        time_counts = []
-        for row in results:
-            perf = row.candidates_perf.get(cand_id)
-            if perf:
-                task_scores.extend(perf.scores)
-                global_scores.extend(perf.global_scores)
-                token_counts.extend(perf.tokens)
-                reasoning_counts.extend(perf.reasoning_tokens)
-                time_counts.extend(perf.times)
-        
-        t_mean, t_std = calculate_stats(task_scores)
-        g_mean, g_std = calculate_stats(global_scores, default_val=-1.0)
-        tok_mean, tok_std = calculate_stats(token_counts)
-        r_mean, r_std = calculate_stats(reasoning_counts)
-        time_mean, time_std = calculate_stats(time_counts)
-        
-        if g_mean < 0:
-            combined_avg = t_mean
-        else:
-            combined_avg = (t_mean + g_mean) / 2 if (t_mean or g_mean) else 0.0
-        
-        stats[cand_id] = {
-            "task_mean": t_mean, "task_std": t_std,
-            "global_mean": g_mean, "global_std": g_std,
-            "token_mean": tok_mean, "token_std": tok_std,
-            "reasoning_mean": r_mean, "reasoning_std": r_std,
-            "time_mean": time_mean, "time_std": time_std,
-            "combined_avg": combined_avg
-        }
-
-    reasoning_stats: dict[str, dict] = {}
-    for cand in candidates:
-        cand_id = cand.name
-        all_analyses: list[dict] = []
-        for row in results:
-            perf = row.candidates_perf.get(cand_id)
-            if perf:
-                all_analyses.extend(perf.reasoning_analyses)
-        reasoning_stats[cand_id] = aggregate_reasoning_stats(all_analyses)
+    # One aggregation for every surface: the same pooled records the verdict
+    # payload reads. This used to be a second, hand-rolled copy returning raw
+    # dicts, which is why the cost-per-point figure could only live in the
+    # template instead of on the record it describes.
+    stats = pool_by_candidate(candidates, results)
+    reasoning_stats = {
+        name: aggregate_reasoning_stats(perf.reasoning_analyses)
+        for name, perf in stats.items()
+    }
 
     template_text = importlib.resources.files("prompttestenv").joinpath("templates/report_template.html").read_text(encoding="utf-8")
     template = jinja2.Template(template_text, autoescape=True)
@@ -256,12 +217,12 @@ def generate_html_report(project_dir: str, results: list[TestCaseResult], candid
         global_criteria=global_criteria,
         judge_config=judge_config,
         reasoning_stats=reasoning_stats,
-        reasoning_analysis_enabled=judge_config.reasoning_analysis,
+        reasoning_analysis_enabled=judge_config.reasoning_enabled,
         reasoning_dimensions=get_app_config().reasoning_schema.dimensions,
         get_badge_class=get_badge_class,
         format_thinking_value=format_thinking_value,
         build_trace_segments=build_trace_segments,
-        reasoning_efficiency=reasoning_efficiency,
+        format_cost_per_point=format_cost_per_point,
     )
     report_dir = os.path.join(project_dir, "Report")
     os.makedirs(report_dir, exist_ok=True)

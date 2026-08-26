@@ -7,13 +7,22 @@ import unittest
 from pathlib import Path
 
 from prompttestenv.models import (
+    REASONING_SCOPE_ALL,
+    REASONING_SCOPE_NONE,
     Candidate,
     CandidatePerformance,
     GlobalCriteria,
     JudgeConfig,
+    ReasoningStats,
     TestCaseResult,
 )
-from prompttestenv.reporting import format_thinking_value, generate_html_report, get_badge_class, md_to_html
+from prompttestenv.reporting import (
+    format_cost_per_point,
+    format_thinking_value,
+    generate_html_report,
+    get_badge_class,
+    md_to_html,
+)
 
 
 class TestGetBadgeClass(unittest.TestCase):
@@ -143,6 +152,104 @@ class TestGenerateHtmlReport(unittest.TestCase):
         self.assertIn("Verdict for Group: G1", content)
         self.assertIn("Global Verdict", content)
         self.assertIn("Overall verdict text", content)
+
+
+
+class TestFormatCostPerPoint(unittest.TestCase):
+    def test_rounds_to_a_whole_number(self):
+        self.assertEqual(format_cost_per_point(25.4), "25")
+
+    def test_sentinel_renders_as_not_available(self):
+        self.assertEqual(format_cost_per_point(-1.0), "N/A")
+
+    def test_zero_is_a_real_value_not_a_sentinel(self):
+        self.assertEqual(format_cost_per_point(0.0), "0")
+
+
+class TestReportStatsSurviveTheTemplate(unittest.TestCase):
+    """A stale key in report_template.html must not pass silently.
+
+    Whether Jinja raises or renders nothing depends on how the value is used:
+    a formatted figure blows up, a bare interpolation quietly renders empty.
+    Only the second case is silent, and it is the one a "the file was written"
+    assertion would miss, so these check the figures themselves.
+    """
+
+    def setUp(self):
+        self.project_dir = tempfile.mkdtemp(prefix="prompttestenv_test_")
+        self.addCleanup(shutil.rmtree, self.project_dir, ignore_errors=True)
+        self.candidates = [Candidate(name="Baseline", provider="google", model="gemini")]
+        row = TestCaseResult(test_id="t1", prompt="p", criteria="c")
+        perf = CandidatePerformance()
+        perf.scores.append(8.0)
+        perf.global_scores.append(6.0)
+        perf.times.append(1.25)
+        perf.tokens.append(150)
+        perf.reasoning_tokens.append(200)
+        perf.best_output = "hello"
+        perf.best_reason = "good"
+        row.candidates_perf["Baseline"] = perf
+        self.results = [row]
+        self.judge_config = JudgeConfig()
+        self.global_criteria = GlobalCriteria(mode="none")
+
+    def _render(self) -> str:
+        html_file = generate_html_report(
+            self.project_dir, self.results, self.candidates, "Plain verdict text.",
+            self.global_criteria, self.judge_config, filename="stats.html",
+        )
+        return Path(html_file).read_text(encoding="utf-8")
+
+    def test_every_pooled_figure_reaches_the_html(self):
+        content = self._render()
+        for figure in ("8.00", "6.00", "1.25", "150", "200"):
+            self.assertIn(figure, content, f"{figure} did not survive the template")
+
+    def test_combined_average_reaches_the_header_badge(self):
+        self.assertIn("7.0", self._render())
+
+    def test_cost_per_point_is_shown_when_analysis_is_enabled(self):
+        self.judge_config.reasoning_analysis = REASONING_SCOPE_ALL
+        self.results[0].candidates_perf["Baseline"].reasoning_analyses.append(
+            ReasoningStats(density=1.5).to_dict()
+        )
+        content = self._render()
+        self.assertIn("lower is cheaper", content)
+        self.assertIn("25/point", content, "200 thinking tokens at a score of 8 is 25 per point")
+
+    def test_cost_per_point_is_shown_with_the_analysis_switched_off(self):
+        """It needs thinking tokens, not the analysis phase.
+
+        PaperReviewer runs with reasoning_analysis "none" and still bills over a
+        thousand thinking tokens per generation; the figure used to reach the
+        verdict judge but not the project's own report.
+        """
+        self.judge_config.reasoning_analysis = REASONING_SCOPE_NONE
+        content = self._render()
+        self.assertIn("25/point", content)
+
+    def test_per_test_case_row_carries_its_own_mean_of_ratios_cost(self):
+        """Distinct from the pooled STATS-row figure, and shown regardless of analysis.
+
+        Two repetitions with the same tokens but very different scores: the
+        pooled ratio-of-means (STATS row, Think/point) and the per-test-case
+        mean-of-ratios (this row's own Cost figure) must diverge and both be
+        visible in the same render, proving neither line is silently reusing
+        the other's number.
+        """
+        self.judge_config.reasoning_analysis = REASONING_SCOPE_NONE
+        perf = self.results[0].candidates_perf["Baseline"]
+        perf.reasoning_tokens.clear()
+        perf.scores.clear()
+        perf.reasoning_tokens.extend([300, 300])
+        perf.scores.extend([10.0, 1.0])
+        content = self._render()
+        self.assertIn("55/point", content, "STATS row: ratio of the pooled means (300/5.5, rounded)")
+        self.assertIn("165.0", content, "per-test-case row: mean of each repetition's own ratio")
+
+    def test_cost_per_point_is_omitted_without_thinking_tokens(self):
+        self.results[0].candidates_perf["Baseline"].reasoning_tokens.clear()
+        self.assertNotIn("/point", self._render())
 
 
 if __name__ == "__main__":
