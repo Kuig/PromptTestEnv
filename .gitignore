@@ -19,4 +19,4 @@ Projects/
 tests/fixtures/*/Report/
 tests/fixtures/*/progress.jsonl
 tests/fixtures/*/progress.jsonl.bak
-tests/fixtures/*/verdict_prompt_debug.txt
+tests/fixtures/*/verdict_prompt_debug*.txt

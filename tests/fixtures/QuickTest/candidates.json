@@ -10,7 +10,7 @@
     {
         "name": "Pirate Call Center",
         "provider": "google",
-        "model": "gemini-3-flash-preview",
+        "model": "gemini-3.1-flash-lite",
         "temperature": 0.8,
         "disable_safety": true,
         "thinking": false,

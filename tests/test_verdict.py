@@ -24,8 +24,11 @@ from prompttestenv.models import (
 from prompttestenv.config import get_app_config
 from prompttestenv.runner import _generate_output
 from prompttestenv.verdict import (
+    DEFAULT_DEBUG_FILENAME,
     MetadataError,
     _build_summary_data,
+    _format_reasoning_profile,
+    _sanitize_filename_part,
     evaluate_best_candidate_fast,
     generate_verdict,
     save_verdict_debug_file,
@@ -97,13 +100,17 @@ class _SummaryFixture:
             row.candidates_perf[cand.name] = perf
         return row
 
-    def _aggregate(self, rows=None, **config) -> str:
-        """Return just the OVERALL AGGREGATE section of the payload."""
+    def _payload(self, rows=None, **config) -> tuple[str, str]:
+        """Return (metadata_text, summary_data) for one call, applying overrides."""
         for key, value in config.items():
             setattr(self.judge_config, key, value)
-        out = _build_summary_data(
+        return _build_summary_data(
             rows if rows is not None else [self._row()], self.candidates, self.judge_config
         )
+
+    def _aggregate(self, rows=None, **config) -> str:
+        """Return just the OVERALL AGGREGATE section of the results half."""
+        _metadata, out = self._payload(rows, **config)
         return out[out.index("# OVERALL AGGREGATE"):out.index("# TEST RESULTS")]
 
     def _table_rows(self, aggregate: str) -> list[str]:
@@ -115,17 +122,21 @@ class _SummaryFixture:
 
 
 class TestBuildSummaryData(_SummaryFixture, unittest.TestCase):
+    """Tests below assert against whichever half of the payload the content in
+    question now lives in: `metadata` (appended to the SYSTEM prompt) or `out`
+    aka summary_data (interpolated into {summary_data} in the USER prompt)."""
+
     def test_metadata_header_declares_the_repetition_count(self):
-        out = _build_summary_data([self._row()], self.candidates, self.judge_config)
-        self.assertIn("# BENCHMARK METADATA", out)
-        self.assertIn("Repetitions per candidate x test case: 7", out)
+        metadata, _out = self._payload()
+        self.assertIn("# BENCHMARK METADATA", metadata)
+        self.assertIn("Repetitions per candidate x test case: 7", metadata)
 
     def test_metadata_explains_only_the_judge_types_in_use(self):
         """7 of 9 real projects use llm-judge alone and used to read all three."""
-        out = _build_summary_data([self._row()], self.candidates, self.judge_config)
-        self.assertIn("llm-judge", out)
-        self.assertNotIn("similarity: cosine similarity", out)
-        self.assertNotIn("assert: a user-authored", out)
+        metadata, _out = self._payload()
+        self.assertIn("llm-judge", metadata)
+        self.assertNotIn("similarity: cosine similarity", metadata)
+        self.assertNotIn("assert: a user-authored", metadata)
 
     def test_metadata_explains_every_judge_type_actually_present(self):
         rows = [
@@ -133,37 +144,35 @@ class TestBuildSummaryData(_SummaryFixture, unittest.TestCase):
             self._row(test_id="t2", judge_type="similarity"),
             self._row(test_id="t3", judge_type="assert"),
         ]
-        out = _build_summary_data(rows, self.candidates, self.judge_config)
+        metadata, _out = self._payload(rows)
         for judge_type in ("llm-judge", "similarity", "assert"):
-            self.assertIn(judge_type, out)
+            self.assertIn(judge_type, metadata)
 
     def test_scores_are_declared_incomparable_only_across_mixed_judges(self):
-        single = _build_summary_data([self._row()], self.candidates, self.judge_config)
+        single, _out = self._payload()
         self.assertNotIn("not comparable across test cases", single)
 
-        mixed = _build_summary_data(
-            [self._row(), self._row(test_id="t2", judge_type="assert")],
-            self.candidates,
-            self.judge_config,
+        mixed, _out = self._payload(
+            [self._row(), self._row(test_id="t2", judge_type="assert")]
         )
         self.assertIn("not comparable across test cases", mixed)
 
     def test_score_scale_note_survives_with_the_reasoning_section_off(self):
         """It used to be glued to the end of the reasoning paragraph."""
-        out = _build_summary_data([self._row()], self.candidates, self.judge_config)
-        self.assertNotIn("SHAPE of a thinking trace", out)
-        self.assertIn("'N/A' means not computed", out)
+        metadata, _out = self._payload()
+        self.assertNotIn("SHAPE of a thinking trace", metadata)
+        self.assertIn("'N/A' means not computed", metadata)
 
     def test_cost_section_appears_with_thinking_tokens_and_no_analysis(self):
-        out = _build_summary_data([self._row()], self.candidates, self.judge_config)
-        self.assertIn("'Think/point'", out)
+        metadata, _out = self._payload()
+        self.assertIn("'Think/point'", metadata)
 
     def test_cost_section_is_omitted_without_thinking_tokens(self):
         row = self._row()
         for perf in row.candidates_perf.values():
             perf.reasoning_tokens.clear()
-        out = _build_summary_data([row], self.candidates, self.judge_config)
-        self.assertNotIn("'Think/point'", out)
+        metadata, _out = self._payload([row])
+        self.assertNotIn("'Think/point'", metadata)
 
     def test_an_empty_section_is_refused_rather_than_skipped(self):
         """Dropping a caveat while keeping its figures is the failure to avoid."""
@@ -186,7 +195,7 @@ class TestBuildSummaryData(_SummaryFixture, unittest.TestCase):
 
     def test_test_case_block_declares_judge_type_prompt_and_criteria(self):
         row = self._row(judge_type="similarity")
-        out = _build_summary_data([row], self.candidates, self.judge_config)
+        _metadata, out = self._payload([row])
         self.assertIn("JUDGE TYPE: similarity", out)
         self.assertIn("PROMPT:\nSummarize the attached report.", out)
         self.assertIn(
@@ -196,27 +205,20 @@ class TestBuildSummaryData(_SummaryFixture, unittest.TestCase):
         )
 
     def test_metadata_header_states_what_the_candidate_could_see(self):
-        out = _build_summary_data([self._row()], self.candidates, self.judge_config)
-        # Scope to the header: the per-test-case CRITERIA label carries the same
-        # wording, so asserting over the whole payload would pass without it.
-        header = out.split("# OVERALL AGGREGATE")[0]
-        self.assertIn("NOT shown to the candidate", header)
-        self.assertIn("its own system prompt", header)
+        metadata, _out = self._payload()
+        self.assertIn("NOT shown to the candidate", metadata)
+        self.assertIn("its own system prompt", metadata)
 
     def test_prompt_and_criteria_are_not_truncated(self):
         long_prompt = "x" * 5000
-        out = _build_summary_data(
-            [self._row(prompt=long_prompt)], self.candidates, self.judge_config
-        )
+        _metadata, out = self._payload([self._row(prompt=long_prompt)])
         self.assertIn(long_prompt, out)
 
     def test_attachment_is_declared_when_present_and_when_absent(self):
-        with_file = _build_summary_data(
-            [self._row(file_used="paper.pdf")], self.candidates, self.judge_config
-        )
+        _metadata, with_file = self._payload([self._row(file_used="paper.pdf")])
         self.assertIn("ATTACHMENT: paper.pdf", with_file)
 
-        without_file = _build_summary_data([self._row()], self.candidates, self.judge_config)
+        _metadata, without_file = self._payload()
         self.assertIn("ATTACHMENT: none", without_file)
 
     def test_aggregate_block_lists_each_candidate_exactly_once(self):
@@ -251,16 +253,16 @@ class TestBuildSummaryData(_SummaryFixture, unittest.TestCase):
         alpha_row = next(line for line in rows if "Alpha" in line)
         self.assertIn("n/a", alpha_row)
 
-    def test_global_criteria_legend_precedes_overall_aggregate(self):
-        """Living in the payload's own metadata, not the template preamble, keeps
-        it from reading as an instruction that outranks the data."""
+    def test_global_criteria_legend_is_part_of_the_metadata(self):
+        """Living in metadata_text (appended to the system prompt), not a
+        verdict_template preamble, keeps it from reading as an instruction
+        that outranks the data."""
         self.judge_config.global_criteria = GlobalCriteria(
             mode="llm-judge", llm_judge_criteria="Be polite."
         )
-        out = _build_summary_data([self._row()], self.candidates, self.judge_config)
-        header = out.split("# OVERALL AGGREGATE")[0]
-        self.assertIn("How the global score was produced:", header)
-        self.assertIn("Be polite.", header)
+        metadata, _out = self._payload()
+        self.assertIn("How the global score was produced:", metadata)
+        self.assertIn("Be polite.", metadata)
 
     def test_global_criteria_legend_matches_the_active_mode(self):
         cases = {
@@ -271,22 +273,19 @@ class TestBuildSummaryData(_SummaryFixture, unittest.TestCase):
         for mode, (field, text, bullet) in cases.items():
             with self.subTest(mode=mode):
                 self.judge_config.global_criteria = GlobalCriteria(mode=mode, **{field: text})
-                out = _build_summary_data([self._row()], self.candidates, self.judge_config)
-                header = out.split("# OVERALL AGGREGATE")[0]
-                self.assertIn(bullet, header)
-                self.assertIn(text, header)
+                metadata, _out = self._payload()
+                self.assertIn(bullet, metadata)
+                self.assertIn(text, metadata)
 
     def test_global_criteria_legend_reports_disabled_mode(self):
         self.judge_config.global_criteria = GlobalCriteria(mode="none")
-        out = _build_summary_data([self._row()], self.candidates, self.judge_config)
-        header = out.split("# OVERALL AGGREGATE")[0]
-        self.assertIn("Global scoring is disabled", header)
+        metadata, _out = self._payload()
+        self.assertIn("Global scoring is disabled", metadata)
 
     def test_global_criteria_legend_falls_back_when_criteria_text_is_blank(self):
         self.judge_config.global_criteria = GlobalCriteria(mode="llm-judge", llm_judge_criteria="")
-        out = _build_summary_data([self._row()], self.candidates, self.judge_config)
-        header = out.split("# OVERALL AGGREGATE")[0]
-        self.assertIn("(none set)", header)
+        metadata, _out = self._payload()
+        self.assertIn("(none set)", metadata)
 
     def test_global_criteria_legend_reindents_multiline_criteria(self):
         """Only the first line inherits the template's leading indent by default;
@@ -294,9 +293,8 @@ class TestBuildSummaryData(_SummaryFixture, unittest.TestCase):
         self.judge_config.global_criteria = GlobalCriteria(
             mode="llm-judge", llm_judge_criteria="1. Be polite.\n2. No harmful content."
         )
-        out = _build_summary_data([self._row()], self.candidates, self.judge_config)
-        header = out.split("# OVERALL AGGREGATE")[0]
-        self.assertIn("  1. Be polite.\n  2. No harmful content.", header)
+        metadata, _out = self._payload()
+        self.assertIn("  1. Be polite.\n  2. No harmful content.", metadata)
 
 
 class TestPerTestCaseCostIsAlwaysShown(_SummaryFixture, unittest.TestCase):
@@ -309,7 +307,7 @@ class TestPerTestCaseCostIsAlwaysShown(_SummaryFixture, unittest.TestCase):
 
     def test_cost_appears_with_reasoning_analysis_disabled(self):
         self.judge_config.reasoning_analysis = REASONING_SCOPE_NONE
-        out = _build_summary_data([self._row()], self.candidates, self.judge_config)
+        _metadata, out = self._payload()
         self.assertIn("Cost: 25.0", out, "200 thinking tokens at a score of 8 is 25 per point")
 
     def test_cost_is_the_mean_of_each_repetitions_own_ratio(self):
@@ -321,7 +319,7 @@ class TestPerTestCaseCostIsAlwaysShown(_SummaryFixture, unittest.TestCase):
         perf.reasoning_tokens.extend([300, 300])
         perf.scores.extend([10.0, 1.0])
         self.judge_config.reasoning_analysis = REASONING_SCOPE_NONE
-        out = _build_summary_data([row], self.candidates, self.judge_config)
+        _metadata, out = self._payload([row])
         self.assertIn("Cost: 165.0", out)
 
     def test_cost_is_absent_without_thinking_tokens(self):
@@ -329,7 +327,7 @@ class TestPerTestCaseCostIsAlwaysShown(_SummaryFixture, unittest.TestCase):
         for perf in row.candidates_perf.values():
             perf.reasoning_tokens.clear()
         self.judge_config.reasoning_analysis = REASONING_SCOPE_NONE
-        out = _build_summary_data([row], self.candidates, self.judge_config)
+        _metadata, out = self._payload([row])
         self.assertNotIn("Cost:", out)
 
     def test_cost_carries_a_standard_deviation(self):
@@ -339,7 +337,7 @@ class TestPerTestCaseCostIsAlwaysShown(_SummaryFixture, unittest.TestCase):
         perf.scores.clear()
         perf.reasoning_tokens.extend([300, 300])
         perf.scores.extend([10.0, 1.0])
-        out = _build_summary_data([row], self.candidates, self.judge_config)
+        _metadata, out = self._payload([row])
         self.assertIn("Cost: 165.0 ± ", out)
         self.assertNotIn("Cost: 165.0 ± 0.0", out)
 
@@ -421,34 +419,67 @@ class TestAggregateReasoningProfile(_SummaryFixture, unittest.TestCase):
         self.assertNotIn("DIFFERENT analysis schemas", aggregate)
 
     def test_candidate_label_replaces_the_ambiguous_system_label(self):
-        out = _build_summary_data([self._row()], self.candidates, self.judge_config)
+        _metadata, out = self._payload()
         self.assertIn("> CANDIDATE: Alpha", out)
         self.assertNotIn("> SYSTEM:", out)
 
     def test_missing_performance_renders_as_not_available(self):
         row = self._row()
         del row.candidates_perf["Beta"]
-        out = _build_summary_data([row], self.candidates, self.judge_config)
+        _metadata, out = self._payload([row])
         self.assertIn("> CANDIDATE: Beta\n    N/A (no completed repetitions)", out)
 
     def test_global_score_renders_as_not_available_when_never_scored(self):
         row = self._row()
         row.candidates_perf["Alpha"].global_scores.clear()
-        out = _build_summary_data([row], self.candidates, self.judge_config)
+        _metadata, out = self._payload([row])
         self.assertIn("Global Score: N/A", out)
 
     def test_task_score_renders_as_not_available_when_never_scored(self):
         row = self._row()
         row.candidates_perf["Alpha"].scores.clear()
-        out = _build_summary_data([row], self.candidates, self.judge_config)
+        _metadata, out = self._payload([row])
         self.assertIn("Task Score: N/A", out)
 
-    def test_reasoning_profile_reports_every_dimension_and_metric(self):
-        row = self._row()
-        row.candidates_perf["Alpha"].reasoning_analyses.append(_reasoning_analysis())
-        self.judge_config.reasoning_analysis = REASONING_SCOPE_ALL
-        out = _build_summary_data([row], self.candidates, self.judge_config)
+    def test_profile_states_that_coverages_are_not_shares_of_a_whole(self):
+        """Three percentages that do not add up invite a judge to explain the gap."""
+        aggregate = self._aggregate(
+            [self._row_with_analyses()], reasoning_analysis=REASONING_SCOPE_ALL
+        )
+        self.assertIn("NOT shares of a whole", aggregate)
 
+    def test_metadata_warns_against_inferring_causality_when_a_profile_is_shown(self):
+        self.judge_config.reasoning_analysis = REASONING_SCOPE_ALL
+        metadata, _out = self._payload([self._row_with_analyses()])
+        self.assertIn("Do not infer that a profile caused a score", metadata)
+
+    def test_the_profile_guidance_is_absent_when_no_profile_is_shown(self):
+        """Explaining a table the judge will never see is noise in the prompt."""
+        metadata, _out = self._payload()
+        self.assertNotIn("Do not infer that a profile caused a score", metadata)
+
+    def test_multiline_notes_stay_indented_and_keep_record_boundaries_intact(self):
+        row = self._row()
+        row.candidates_perf["Alpha"].best_reason = "First line.\nSecond line."
+        _metadata, out = self._payload([row])
+
+        # The continuation is indented under Notes, so it cannot be mistaken for
+        # a new field, and the next candidate still opens its own record.
+        self.assertIn("    Notes: First line.\n      Second line.\n", out)
+        self.assertIn("\n  > CANDIDATE: Beta\n", out)
+
+
+class TestFormatReasoningProfile(unittest.TestCase):
+    """Direct coverage of _format_reasoning_profile().
+
+    Its call site (rendering a profile per candidate per test case) is
+    deliberately commented out in _build_summary_data — kept for later, too
+    heavy for the payload in the meantime — so these cases test the function
+    itself rather than through that now-unreachable integration path.
+    """
+
+    def test_reports_every_dimension_and_metric(self):
+        out = _format_reasoning_profile([_reasoning_analysis()])
         self.assertIn("framing 20.0%", out)
         self.assertIn("solving 40.0%", out)
         self.assertIn("presentation 30.0%", out)
@@ -458,90 +489,48 @@ class TestAggregateReasoningProfile(_SummaryFixture, unittest.TestCase):
         self.assertIn("Response/reasoning alignment: 9.0", out)
         self.assertIn("Trace/response similarity: 0.8", out)
 
-    def test_profile_states_that_coverages_are_not_shares_of_a_whole(self):
+    def test_states_that_coverages_are_not_shares_of_a_whole(self):
         """Three percentages that do not add up invite a judge to explain the gap."""
-        row = self._row()
-        row.candidates_perf["Alpha"].reasoning_analyses.append(_reasoning_analysis())
-        self.judge_config.reasoning_analysis = REASONING_SCOPE_ALL
-        out = _build_summary_data([row], self.candidates, self.judge_config)
-
+        out = _format_reasoning_profile([_reasoning_analysis()])
         self.assertIn("NOT shares of a whole", out)
 
     def test_unmeasured_metrics_say_so_instead_of_reporting_a_number(self):
-        row = self._row()
-        row.candidates_perf["Alpha"].reasoning_analyses.append(
-            _reasoning_analysis(alt_path=-1, coverage_solving=-1.0)
+        out = _format_reasoning_profile(
+            [_reasoning_analysis(alt_path=-1, coverage_solving=-1.0)]
         )
-        self.judge_config.reasoning_analysis = REASONING_SCOPE_ALL
-        out = _build_summary_data([row], self.candidates, self.judge_config)
-
         self.assertIn("solving not measured", out)
         self.assertIn("Alternatives explored: not measured", out)
 
-    def test_summary_traces_are_flagged_in_the_payload(self):
-        row = self._row()
-        row.candidates_perf["Alpha"].reasoning_analyses.append(
-            _reasoning_analysis(reasoning_is_summary=True)
-        )
-        self.judge_config.reasoning_analysis = REASONING_SCOPE_ALL
-        out = _build_summary_data([row], self.candidates, self.judge_config)
-
+    def test_flags_a_provider_summary(self):
+        out = _format_reasoning_profile([_reasoning_analysis(reasoning_is_summary=True)])
         self.assertIn("provider SUMMARY", out)
 
-    def test_metadata_warns_against_inferring_causality_when_a_profile_is_shown(self):
-        self.judge_config.reasoning_analysis = REASONING_SCOPE_ALL
-        out = _build_summary_data(
-            [self._row_with_analyses()], self.candidates, self.judge_config
-        )
-        self.assertIn("Do not infer that a profile caused a score", out)
+    def test_does_not_flag_a_raw_trace_as_a_summary(self):
+        out = _format_reasoning_profile([_reasoning_analysis(reasoning_is_summary=False)])
+        self.assertIn("raw thinking trace", out)
+        self.assertNotIn("provider SUMMARY", out)
 
-    def test_the_profile_guidance_is_absent_when_no_profile_is_shown(self):
-        """Explaining a table the judge will never see is noise in the prompt."""
-        out = _build_summary_data([self._row()], self.candidates, self.judge_config)
-        self.assertNotIn("Do not infer that a profile caused a score", out)
-
-    def test_reasoning_profile_drops_the_misleading_cognitive_framing(self):
-        row = self._row()
-        row.candidates_perf["Alpha"].reasoning_analyses.append(_reasoning_analysis())
-        self.judge_config.reasoning_analysis = REASONING_SCOPE_ALL
-        out = _build_summary_data([row], self.candidates, self.judge_config)
-
+    def test_drops_the_misleading_cognitive_framing(self):
+        out = _format_reasoning_profile([_reasoning_analysis()])
         self.assertNotIn("cognitive resources", out)
         self.assertNotIn("interacting with the user", out)
 
-    def test_reasoning_profile_omitted_when_analysis_is_disabled(self):
-        row = self._row()
-        row.candidates_perf["Alpha"].reasoning_analyses.append(_reasoning_analysis())
-        self.judge_config.reasoning_analysis = REASONING_SCOPE_NONE
-        out = _build_summary_data([row], self.candidates, self.judge_config)
-        self.assertNotIn("Reasoning profile over the", out)
+    def test_scope_best_is_declared_in_the_heading(self):
+        out = _format_reasoning_profile([_reasoning_analysis()], scope=REASONING_SCOPE_BEST)
+        self.assertIn("WHEN IT SUCCEEDS", out)
 
-    def test_reasoning_profile_omitted_when_no_trace_was_analysed(self):
-        self.judge_config.reasoning_analysis = REASONING_SCOPE_ALL
-        out = _build_summary_data([self._row()], self.candidates, self.judge_config)
-        self.assertNotIn("Reasoning profile over the", out)
 
-    def test_multiline_notes_stay_indented_and_keep_record_boundaries_intact(self):
-        row = self._row()
-        row.candidates_perf["Alpha"].best_reason = "First line.\nSecond line."
-        out = _build_summary_data([row], self.candidates, self.judge_config)
+class TestSanitizeFilenamePart(unittest.TestCase):
+    def test_spaces_and_special_characters_become_underscores(self):
+        self.assertEqual(_sanitize_filename_part("Default group"), "Default_group")
+        self.assertEqual(_sanitize_filename_part("Coding / Writing!"), "Coding_Writing")
 
-        # The continuation is indented under Notes, so it cannot be mistaken for
-        # a new field, and the next candidate still opens its own record.
-        self.assertIn("    Notes: First line.\n      Second line.\n", out)
-        self.assertIn("\n  > CANDIDATE: Beta\n", out)
+    def test_alphanumerics_dashes_and_underscores_pass_through(self):
+        self.assertEqual(_sanitize_filename_part("Group-1_ok"), "Group-1_ok")
 
-    def test_notes_are_the_last_field_of_a_candidate_record(self):
-        row = self._row()
-        row.candidates_perf["Alpha"].reasoning_analyses.append(_reasoning_analysis())
-        self.judge_config.reasoning_analysis = REASONING_SCOPE_ALL
-        out = _build_summary_data([row], self.candidates, self.judge_config)
-
-        results_section = out.split("# TEST RESULTS")[1]
-        alpha_block = results_section.split("> CANDIDATE: Alpha")[1].split("> CANDIDATE: Beta")[0]
-        self.assertLess(
-            alpha_block.index("Reasoning profile"), alpha_block.index("Notes:")
-        )
+    def test_empty_or_all_special_falls_back_to_group(self):
+        self.assertEqual(_sanitize_filename_part(""), "group")
+        self.assertEqual(_sanitize_filename_part("///"), "group")
 
 
 class TestSaveVerdictDebugFile(LoggerResetTestCase):
@@ -551,7 +540,7 @@ class TestSaveVerdictDebugFile(LoggerResetTestCase):
 
     def test_writes_expected_content(self):
         save_verdict_debug_file(self.project_dir, "sys prompt", "user prompt", "google", "gemini", 0.5)
-        debug_file = Path(self.project_dir) / "verdict_prompt_debug.txt"
+        debug_file = Path(self.project_dir) / DEFAULT_DEBUG_FILENAME
         content = debug_file.read_text(encoding="utf-8")
         self.assertIn("sys prompt", content)
         self.assertIn("user prompt", content)
@@ -563,6 +552,13 @@ class TestSaveVerdictDebugFile(LoggerResetTestCase):
             save_verdict_debug_file(self.project_dir, "s", "u", "google", "gemini", 0.5)
         mock_warn.assert_called_once()
 
+    def test_filename_argument_controls_the_output_path(self):
+        save_verdict_debug_file(
+            self.project_dir, "s", "u", "google", "gemini", 0.5, filename="custom.txt"
+        )
+        self.assertFalse((Path(self.project_dir) / DEFAULT_DEBUG_FILENAME).exists())
+        self.assertTrue((Path(self.project_dir) / "custom.txt").exists())
+
 
 class TestGenerateVerdict(unittest.TestCase):
     def setUp(self):
@@ -573,8 +569,11 @@ class TestGenerateVerdict(unittest.TestCase):
 
     def _judge_config(self, **overrides):
         jc = JudgeConfig()
-        jc.verdict_judge.verdict_template = "SUMMARY:\n{summary_data}"
-        jc.verdict_judge.global_verdict_template = "GROUPS:\n{group_verdicts_data}"
+        # No {summary_data}/{group_verdicts_data} placeholders: both are
+        # prepended by the framework now, so a template is just the trailer
+        # text that follows them.
+        jc.verdict_judge.verdict_template = "INSTRUCTIONS"
+        jc.verdict_judge.global_verdict_template = "GLOBAL INSTRUCTIONS"
         jc.global_criteria = GlobalCriteria(mode="none")
         for key, value in overrides.items():
             setattr(jc.verdict_judge, key, value)
@@ -622,6 +621,72 @@ class TestGenerateVerdict(unittest.TestCase):
         self.assertTrue(data["is_grouped"])
         self.assertEqual(len(data["groups"]), 2)
         self.assertEqual(data["global_verdict"], "Global verdict text")
+
+    def test_grouped_path_writes_separate_debug_files_per_group_and_global(self):
+        """Every call used to overwrite the same file, so group_verdicts: true
+        left only the last payload on disk. Each call now gets its own."""
+        jc = self._judge_config()
+        jc.group_verdicts = True
+        results = [_make_result("A", 8.0), _make_result("A", 4.0)]
+        results[0].group = "G1"
+        results[1].group = "G2"
+
+        with patch("prompttestenv.verdict.get_llm_response") as mock_llm:
+            mock_llm.side_effect = [
+                LlmResult(text="Group 1 verdict"),
+                LlmResult(text="Group 2 verdict"),
+                LlmResult(text="Global verdict text"),
+            ]
+            generate_verdict(self.candidates, results, self.project_dir, jc)
+
+        project = Path(self.project_dir)
+        g1 = (project / "verdict_prompt_debug_group_G1.txt").read_text(encoding="utf-8")
+        g2 = (project / "verdict_prompt_debug_group_G2.txt").read_text(encoding="utf-8")
+        glob = (project / "verdict_prompt_debug_global.txt").read_text(encoding="utf-8")
+        self.assertFalse((project / DEFAULT_DEBUG_FILENAME).exists())
+        self.assertNotEqual(g1, g2)
+        self.assertIn("# GROUP VERDICTS:", glob)
+        self.assertIn("GLOBAL INSTRUCTIONS", glob)
+
+    def test_save_payload_debug_files_false_writes_nothing(self):
+        jc = self._judge_config()
+        with patch("prompttestenv.verdict.SAVE_PAYLOAD_DEBUG_FILES", False), \
+                patch("prompttestenv.verdict.get_llm_response") as mock_llm:
+            mock_llm.return_value = LlmResult(text="Verdict text")
+            generate_verdict(self.candidates, self.results, self.project_dir, jc)
+        self.assertFalse((Path(self.project_dir) / DEFAULT_DEBUG_FILENAME).exists())
+
+    def test_summary_data_is_prepended_and_the_template_used_verbatim(self):
+        """No more {summary_data} placeholder: verdict_template is plain
+        trailer text, appended after the payload, and may contain literal
+        braces (e.g. a JSON example) without needing to double them up."""
+        jc = self._judge_config(verdict_template='Analyze. Example: {"score": 1}')
+        with patch("prompttestenv.verdict.get_llm_response") as mock_llm:
+            mock_llm.return_value = LlmResult(text="Verdict text")
+            generate_verdict(self.candidates, self.results, self.project_dir, jc)
+        debug = (Path(self.project_dir) / DEFAULT_DEBUG_FILENAME).read_text(encoding="utf-8")
+        self.assertLess(debug.index("# OVERALL AGGREGATE"), debug.index("Analyze. Example:"))
+        self.assertIn('{"score": 1}', debug)
+
+    def test_group_verdicts_data_is_prepended_and_the_global_template_used_verbatim(self):
+        """Same treatment for global_verdict_template: no {group_verdicts_data}
+        placeholder, "# GROUP VERDICTS:" is code-owned, and literal braces in
+        the template survive."""
+        jc = self._judge_config(global_verdict_template='Summarize. Example: {"winner": "A"}')
+        jc.group_verdicts = True
+        results = [_make_result("A", 8.0), _make_result("A", 4.0)]
+        results[0].group = "G1"
+        results[1].group = "G2"
+        with patch("prompttestenv.verdict.get_llm_response") as mock_llm:
+            mock_llm.side_effect = [
+                LlmResult(text="Group 1 verdict"),
+                LlmResult(text="Group 2 verdict"),
+                LlmResult(text="Global verdict text"),
+            ]
+            generate_verdict(self.candidates, results, self.project_dir, jc)
+        debug = (Path(self.project_dir) / "verdict_prompt_debug_global.txt").read_text(encoding="utf-8")
+        self.assertLess(debug.index("# GROUP VERDICTS:"), debug.index("Summarize. Example:"))
+        self.assertIn('{"winner": "A"}', debug)
 
     def test_grouped_path_missing_global_template_short_circuits_after_group_calls(self):
         jc = self._judge_config(global_verdict_template="")
@@ -704,7 +769,7 @@ class TestVerdictReadsTheClientResult(unittest.TestCase):
         self.candidates = [Candidate(name="A", provider="google", model="m")]
         self.results = [_make_result("A", 8.0)]
         self.judge_config = JudgeConfig()
-        self.judge_config.verdict_judge.verdict_template = "SUMMARY:\n{summary_data}"
+        self.judge_config.verdict_judge.verdict_template = "INSTRUCTIONS"
         self.judge_config.global_criteria = GlobalCriteria(mode="none")
 
     def test_the_models_text_reaches_the_verdict(self):

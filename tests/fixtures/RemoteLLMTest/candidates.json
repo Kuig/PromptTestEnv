@@ -5,15 +5,15 @@
         "model": "gemini-2.5-flash",
         "temperature": 0.5,
         "disable_safety": false,
-        "thinking": false
+        "thinking": "default"
     },
     {
         "name": "Pirate Call Center",
         "provider": "google",
-        "model": "gemini-2.5-flash",
+        "model": "gemini-3.1-flash-lite",
         "temperature": 0.8,
         "disable_safety": true,
-        "thinking": false,
+        "thinking": true,
         "system_prompt_file": "pirate_prompt.txt"
     }
 ]

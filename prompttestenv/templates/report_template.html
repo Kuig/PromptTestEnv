@@ -101,10 +101,6 @@
                                         <span class="dim-val">{% if cov >= 0 %}{{ "{:.0f}".format(cov * 100) }}&plusmn;{{ "{:.0f}".format(cstd * 100) }}%{% else %}n/a{% endif %}</span>
                                     </div>
                                 {% endfor %}
-                                <div class="density-note" title="Scope 'best' profiles only each test's highest-scoring repetition, so these figures describe the model's reasoning when it succeeds. Scope 'all' profiles every repetition. Do not compare figures across the two.">
-                                    scope <b>{{ judge_config.reasoning_analysis }}</b>
-                                    ({{ rs.n }} trace{% if rs.n != 1 %}s{% endif %} analysed{% if judge_config.reasoning_analysis == 'best' %}, best repetition only{% endif %})
-                                </div>
                             </div>
                             {% endif %}
                         {% endif %}
@@ -284,11 +280,21 @@
         </div>
         <div style="margin-top:10px; border-top:1px dashed #ccc; padding-top:10px;">
             <b>Verdict Judge Configuration:</b><br>
-            Model: <b>{{ judge_config.verdict_judge.model }}</b> | 
-            Temp: <b>{{ judge_config.verdict_judge.temperature }}</b> | 
-            Safety: <b>{{ "🔴 Disabled" if judge_config.verdict_judge.disable_safety else "🟢 Default" }}</b> | 
+            Model: <b>{{ judge_config.verdict_judge.model }}</b> |
+            Temp: <b>{{ judge_config.verdict_judge.temperature }}</b> |
+            Safety: <b>{{ "🔴 Disabled" if judge_config.verdict_judge.disable_safety else "🟢 Default" }}</b> |
             Thinking: <b>{{ format_thinking_value(judge_config.verdict_judge.thinking) }}</b>
         </div>
+        {% if reasoning_analysis_enabled %}
+        <div style="margin-top:10px; border-top:1px dashed #ccc; padding-top:10px;">
+            <b>Reasoning Analyzer Configuration:</b><br>
+            Scope: <b>{{ judge_config.reasoning_analysis }}</b> |
+            Model: <b>{{ judge_config.reasoning_judge.model }}</b> |
+            Temp: <b>{{ judge_config.reasoning_judge.temperature }}</b> |
+            Thinking: <b>{{ format_thinking_value(judge_config.reasoning_judge.thinking) }}</b> |
+            Dimension Mode: <b>{{ judge_config.reasoning_judge.dimension_mode or "default" }}</b>
+        </div>
+        {% endif %}
     </div>
 </body>
 </html>

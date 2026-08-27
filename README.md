@@ -67,7 +67,7 @@ prompttestenv run tests/fixtures/QuickTest --output-mode winner_only
 prompttestenv run tests/fixtures/QuickTest --output-mode html
 ```
 
-Either form leaves the fixture's own JSON config untouched: a real run only adds `progress.jsonl`, `Report/`, and `verdict_prompt_debug.txt` inside the project directory, and those are gitignored, so running one for a local check never shows up in your diff.
+Either form leaves the fixture's own JSON config untouched: a real run only adds `progress.jsonl`, `Report/`, and one or more `verdict_prompt_debug*.txt` files (one per group plus one for the global verdict, when `group_verdicts` is enabled) inside the project directory, and those are gitignored, so running one for a local check never shows up in your diff.
 
 ---
 
@@ -76,7 +76,7 @@ Either form leaves the fixture's own JSON config untouched: a real run only adds
 | File | Purpose |
 |---|---|
 | `secrets.json` | Provider API keys, read by `unified_ai_client` from the working directory. Copy `secrets.json.example` to get started. |
-| `config.json` | Cross-project settings: the reasoning-analysis taxonomy and its judge prompts, the sentence-splitting parameters, the list of locally served providers, and the metadata header the verdict payload opens with. |
+| `config.json` | Cross-project settings: the reasoning-analysis taxonomy and its judge prompts, the sentence-splitting parameters, the list of locally served providers, and the metadata block appended to the verdict judge's system prompt. |
 
 Everything that describes a single benchmark lives in `Projects/<name>/` and nothing else needs to. `config.json` holds the opposite kind of setting: the definition of the *measurement instrument*. The reasoning dimensions, their definitions and the prompts that apply them have to be identical everywhere, otherwise two reports are not comparable, so they are deliberately not per-project and not editable from `judge_config.json`.
 

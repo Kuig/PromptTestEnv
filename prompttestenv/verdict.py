@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 
 import prompttestenv.logger as logger
 from prompttestenv.api import get_llm_response
@@ -23,6 +24,30 @@ from prompttestenv.models import (
 )
 from prompttestenv.reasoning import aggregate_reasoning_stats
 
+# Set to False to skip writing verdict_prompt_debug*.txt entirely — e.g. on a
+# shared machine, or once payload inspection is no longer needed. A plain module
+# constant rather than a judge_config.json knob: it controls a local debugging
+# side effect, not anything about the benchmark itself.
+SAVE_PAYLOAD_DEBUG_FILES = True
+
+DEFAULT_DEBUG_FILENAME = "verdict_prompt_debug.txt"
+
+
+def _sanitize_filename_part(text: str) -> str:
+    """Turn arbitrary text (a group name) into a safe filename fragment.
+
+    Group names are free text (e.g. the default "Default group", with a space),
+    not guaranteed filesystem-safe, so every character outside [A-Za-z0-9_-] is
+    folded to "_" rather than passed through.
+
+    Args:
+        text: Raw text to sanitize.
+
+    Returns:
+        A non-empty filename-safe fragment; "group" if nothing safe survives.
+    """
+    return re.sub(r"[^A-Za-z0-9_-]+", "_", text).strip("_") or "group"
+
 
 def save_verdict_debug_file(
     project_dir: str,
@@ -31,6 +56,7 @@ def save_verdict_debug_file(
     provider: str,
     model: str,
     temp: float,
+    filename: str = DEFAULT_DEBUG_FILENAME,
 ) -> None:
     """Save verdict judge payload and configuration to a debug file.
 
@@ -41,8 +67,13 @@ def save_verdict_debug_file(
         provider: LLM provider name.
         model: Model identifier.
         temp: Sampling temperature.
+        filename: Debug file name, relative to project_dir. Defaults to the
+            single shared name; generate_verdict() picks a distinct one per
+            group (plus one for the global synthesis call) so that
+            group_verdicts: true does not leave every call but the last
+            overwritten on disk.
     """
-    debug_path = os.path.join(project_dir, "verdict_prompt_debug.txt")
+    debug_path = os.path.join(project_dir, filename)
     debug_content = (
         "=" * 72 + "\nVERDICT JUDGE DEBUG INFO\n" + "=" * 72 + "\n\n"
         f"PROVIDER: {provider}\nMODEL:    {model}\nTEMP:     {temp}\n\n"
@@ -303,11 +334,12 @@ def _build_global_criteria_legend(metadata, gc: GlobalCriteria) -> str:
     Styled after the per-test judge_type legend just above it (judge_types_intro
     / judge_llm / ...): a code-owned "how this figure is produced" line from
     config.json, immediately followed by the project's own rubric text via
-    {criteria_text}. It is the last thing _build_metadata emits, so it lands
-    right before OVERALL AGGREGATE rather than in the verdict_template's own
-    preamble ahead of the whole payload — which is what let it read as an
-    instruction that outranks the data, when it is exactly as much "the rubric"
-    as the per-test-case EVALUATION CRITERIA already is.
+    {criteria_text}. It is the last thing _build_metadata emits, and the whole
+    metadata block it belongs to is appended to the verdict judge's SYSTEM
+    prompt (see _run_verdict_call), not placed ahead of the data in the user
+    payload — which is what let it read as an instruction that outranks the
+    data, when it is exactly as much "the rubric" as the per-test-case
+    EVALUATION CRITERIA already is.
 
     Args:
         metadata: VerdictMetadata carrying the section texts.
@@ -547,13 +579,16 @@ def _build_summary_data(
     rows: list[TestCaseResult],
     candidates: list[Candidate],
     judge_config: JudgeConfig,
-) -> str:
-    """Build the self-describing results payload for a verdict prompt.
+) -> tuple[str, str]:
+    """Build the two halves of a verdict prompt: metadata and results.
 
-    The payload carries its own metadata header (repetition count, metric
-    semantics, judge-type legend) so that whoever authors a verdict template
-    only needs to interpolate {summary_data} to get data the judge can read
-    without knowing anything about this codebase.
+    Split so metadata_text — the code-owned "how to read these figures" text
+    (repetition count, metric semantics, judge-type legend) — can be appended
+    to the verdict judge's SYSTEM prompt by _run_verdict_call instead of
+    sitting inside the USER prompt every call re-sends: with group_verdicts,
+    the same explanatory text (only its conditional sections vary) used to be
+    regenerated and resent verbatim once per group. summary_data stays pure
+    data: the OVERALL AGGREGATE table, then the per-test-case results.
 
     Args:
         rows: Test case results to summarize (one group's rows, or all rows).
@@ -562,13 +597,15 @@ def _build_summary_data(
             reasoning_analysis scope).
 
     Returns:
-        Formatted summary text ready to interpolate into a verdict template.
+        (metadata_text, summary_data): metadata_text is ready to append to
+        verdict_system_prompt; summary_data is ready to interpolate into
+        {summary_data} in verdict_template.
     """
     pooled = pool_by_candidate(candidates, rows)
     aggregate, profile_shown = _build_overall_aggregate(pooled, judge_config)
-    parts = [_build_metadata(rows, pooled, judge_config, profile_shown), aggregate]
+    metadata_text = _build_metadata(rows, pooled, judge_config, profile_shown)
 
-    parts.append("\n# TEST RESULTS\n")
+    parts = [aggregate, "\n# TEST RESULTS\n"]
     for row in rows:
         parts.append(
             f"\n## TEST ID: {row.test_id}\n"
@@ -591,12 +628,17 @@ def _build_summary_data(
                 f"Reasoning Tokens: {perf.reasoning_tokens_mean:.0f} ± {perf.reasoning_tokens_std:.0f}"
                 f"{_format_cost_suffix(perf)}\n"
             )
-            if judge_config.reasoning_enabled and perf.reasoning_analyses:
-                parts.append(
-                    _format_reasoning_profile(
-                        perf.reasoning_analyses, judge_config.reasoning_analysis
-                    )
-                )
+
+            # EXCLUDED reasoning profile per-test-case to save context. Only kept in the AGGREGATE table.
+            # DO NOT DELETE THE FOLLOWING COMMENTED BLOCK! It's a reminder in case I want to put it back in later.
+            #
+            # if judge_config.reasoning_enabled and perf.reasoning_analyses:
+            #     parts.append(
+            #         _format_reasoning_profile(
+            #             perf.reasoning_analyses, judge_config.reasoning_analysis
+            #         )
+            #     )
+
             # Notes go last: best_reason is free-form judge prose that may span
             # several lines, so indenting its continuations keeps them visibly
             # subordinate and leaves the blank line before the next candidate as
@@ -604,9 +646,80 @@ def _build_summary_data(
             notes = perf.best_reason.replace("\n", "\n      ")
             parts.append(f"    Notes: {notes}\n")
 
-    # No trailing blank line: the surrounding verdict template owns the spacing
-    # between {summary_data} and whatever follows it.
-    return "".join(parts).rstrip()
+    # .strip(), not .rstrip(): aggregate (now the first element) opens with its
+    # own leading "\n", and no trailing blank line either — the surrounding
+    # verdict template owns the spacing between {summary_data} and whatever
+    # follows it.
+    summary_data = "".join(parts).strip()
+    return metadata_text, summary_data
+
+
+def _run_verdict_call(
+    rows: list[TestCaseResult],
+    candidates: list[Candidate],
+    judge_config: JudgeConfig,
+    verdict_template: str,
+    sys_prompt: str,
+    project_dir: str,
+    debug_filename: str = DEFAULT_DEBUG_FILENAME,
+) -> str:
+    """Build one verdict payload, call the verdict judge, return its response text.
+
+    Shared by generate_verdict()'s per-group and ungrouped paths: both build a
+    payload from a set of rows and a verdict_template the same way, differing
+    only in which rows they cover and which debug file they write to.
+
+    Both halves of the call are built by prepending/appending code-owned
+    boilerplate rather than through str.format() placeholders — nothing else
+    was ever interpolated into either piece, and a project's own template text
+    can now contain literal braces (e.g. a JSON example in its analysis
+    instructions) without needing to escape them:
+      - system_instruction is sys_prompt with metadata_text appended: the
+        BENCHMARK METADATA block follows the project's own standing
+        instructions instead of sitting ahead of the data in the user prompt
+        (see _build_summary_data / _build_metadata).
+      - the user prompt is summary_data with verdict_template appended: the
+        project's own template is just the trailer (typically ANALYSIS
+        INSTRUCTIONS) that follows the data, not a wrapper around it.
+
+    Args:
+        rows: Test case results this call covers (one group's rows, or every row).
+        candidates: Resolved candidate configurations.
+        judge_config: JudgeConfig instance.
+        verdict_template: Text appended after summary_data — the project's own
+            instructions to the verdict judge, used verbatim (no placeholders).
+        sys_prompt: The project's own verdict_system_prompt, before the
+            metadata tail is appended.
+        project_dir: Benchmark project directory path, for the debug file.
+        debug_filename: Name of the debug file to write, relative to
+            project_dir. Callers pass a distinct name per group (and for the
+            global synthesis call) so group_verdicts: true does not leave
+            every payload but the last overwritten on disk.
+
+    Returns:
+        The judge's response text, with any wrapping code fence stripped.
+    """
+    vj = judge_config.verdict_judge
+    metadata_text, summary_data = _build_summary_data(rows, candidates, judge_config)
+    call_sys_prompt = f"{sys_prompt}\n\n{metadata_text}"
+    prompt = f"{summary_data}\n\n---\n\n{verdict_template}"
+
+    if SAVE_PAYLOAD_DEBUG_FILES:
+        save_verdict_debug_file(
+            project_dir, call_sys_prompt, prompt, vj.provider, vj.model, vj.temperature,
+            filename=debug_filename,
+        )
+
+    result = get_llm_response(
+        provider=vj.provider,
+        model_name=vj.model,
+        system_instruction=call_sys_prompt,
+        user_prompt=prompt,
+        temp=vj.temperature,
+        thinking=vj.thinking,
+        disable_safety=vj.disable_safety,
+    )
+    return _strip_code_fence(result.text.strip())
 
 
 def generate_verdict(
@@ -643,36 +756,24 @@ def generate_verdict(
         if not verdict_template:
             logger.log_error("No verdict template provided in judge_config.json.")
             return None
-            
+
         if judge_config.group_verdicts:
             groups = {}
             for row in results:
                 g = row.group or DEFAULT_GROUP
                 groups.setdefault(g, []).append(row)
-                
+
             group_verdicts_list = []
-            
+
             for group_name, group_results in groups.items():
                 logger.log_ai(f"Generating verdict for group: {group_name}...")
-                summary_data = _build_summary_data(group_results, candidates, judge_config)
-
-                prompt = verdict_template.format(summary_data=summary_data)
-
-                save_verdict_debug_file(project_dir, sys_prompt, prompt, v_provider, v_model, v_judge_temp)
-
-                result = get_llm_response(
-                    provider=v_provider,
-                    model_name=v_model,
-                    system_instruction=sys_prompt,
-                    user_prompt=prompt,
-                    temp=v_judge_temp,
-                    thinking=thinking,
-                    disable_safety=disable_safety,
+                response_text = _run_verdict_call(
+                    group_results, candidates, judge_config, verdict_template,
+                    sys_prompt, project_dir,
+                    debug_filename=f"verdict_prompt_debug_group_{_sanitize_filename_part(group_name)}.txt",
                 )
-                response_text = _strip_code_fence(result.text.strip())
-
                 group_verdicts_list.append({"group_name": group_name, "verdict": response_text})
-                
+
             logger.log_ai("Generating global verdict...")
             global_verdict_template = judge_config.verdict_judge.global_verdict_template
             if not global_verdict_template:
@@ -680,17 +781,26 @@ def generate_verdict(
                     "No global verdict template provided in judge_config.json."
                 )
                 return None
-                
+
             group_verdicts_data = ""
             for g in group_verdicts_list:
                 group_verdicts_data += f"## GROUP: {g['group_name']}\n{g['verdict']}\n\n"
-                
-            global_prompt = global_verdict_template.format(
-                group_verdicts_data=group_verdicts_data
-            )
-            
-            save_verdict_debug_file(project_dir, sys_prompt, global_prompt, v_provider, v_model, v_judge_temp)
-            
+
+            # "# GROUP VERDICTS:" is code-owned, like "---" above: it is the
+            # same heading in every project, so global_verdict_template is
+            # just the trailer text (typically ANALYSIS INSTRUCTIONS) that
+            # follows it, used verbatim rather than through str.format().
+            global_prompt = f"# GROUP VERDICTS:\n{group_verdicts_data}\n\n---\n\n{global_verdict_template}"
+
+            # No metadata tail here: the global call never sees {summary_data},
+            # only the prose of the already-written group verdicts, so there is
+            # nothing left for the metadata to explain.
+            if SAVE_PAYLOAD_DEBUG_FILES:
+                save_verdict_debug_file(
+                    project_dir, sys_prompt, global_prompt, v_provider, v_model, v_judge_temp,
+                    filename="verdict_prompt_debug_global.txt",
+                )
+
             global_result = get_llm_response(
                 provider=v_provider,
                 model_name=v_model,
@@ -710,21 +820,9 @@ def generate_verdict(
             return json.dumps(final_json)
 
         else:
-            summary_data = _build_summary_data(results, candidates, judge_config)
-
-            prompt = verdict_template.format(summary_data=summary_data)
-            save_verdict_debug_file(project_dir, sys_prompt, prompt, v_provider, v_model, v_judge_temp)
-
-            result = get_llm_response(
-                provider=v_provider,
-                model_name=v_model,
-                system_instruction=sys_prompt,
-                user_prompt=prompt,
-                temp=v_judge_temp,
-                thinking=thinking,
-                disable_safety=disable_safety,
+            response_text = _run_verdict_call(
+                results, candidates, judge_config, verdict_template, sys_prompt, project_dir,
             )
-            response_text = _strip_code_fence(result.text.strip())
             return response_text
     except Exception as exc:
         logger.log_error(f"Verdict generation failed: {exc}")
