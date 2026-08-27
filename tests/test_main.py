@@ -3,7 +3,11 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from prompttestenv.__main__ import build_parser, cmd_init, cmd_render, cmd_run
+from pathlib import Path
+
+from prompttestenv.__main__ import (
+    build_parser, cmd_editor, cmd_init, cmd_render, cmd_run,
+)
 from testutils import LoggerResetTestCase
 
 
@@ -41,9 +45,27 @@ class TestBuildParser(unittest.TestCase):
         self.assertEqual(args_mcp.command, "mcp")
         self.assertEqual(args_gui.command, "gui")
 
+    def test_editor_subcommand_needs_no_project_dir(self):
+        args = self.parser.parse_args(["editor"])
+        self.assertEqual(args.command, "editor")
+        self.assertIs(args.func, cmd_editor)
+        self.assertFalse(hasattr(args, "project_dir"))
+
     def test_no_subcommand_is_rejected(self):
         with self.assertRaises(SystemExit):
             self.parser.parse_args([])
+
+
+class TestCmdEditor(unittest.TestCase):
+    @patch("prompttestenv.__main__.subprocess.run")
+    def test_launches_streamlit_on_an_existing_script(self, mock_run):
+        cmd_editor(build_parser().parse_args(["editor"]))
+
+        mock_run.assert_called_once()
+        argv = mock_run.call_args.args[0]
+        self.assertEqual(argv[1:4], ["-m", "streamlit", "run"])
+        self.assertTrue(Path(argv[4]).is_file(), f"{argv[4]} does not exist")
+        self.assertEqual(Path(argv[4]).name, "editor.py")
 
 
 class TestCmdHandlers(LoggerResetTestCase):

@@ -126,8 +126,11 @@ prompttestenv render Projects/MyBenchmark
 # Start the MCP server (stdio)
 prompttestenv mcp
 
-# Launch the Streamlit GUI
+# Launch the Streamlit GUI (runs benchmarks)
 prompttestenv gui
+
+# Launch the Streamlit project editor (creates and modifies projects)
+prompttestenv editor
 ```
 
 ### MCP (Claude Desktop / AI agents)
@@ -167,6 +170,15 @@ Public surface exposed by `from prompttestenv import ...` (see `prompttestenv/__
 | `JudgeConfig` | dataclass | `JudgeConfig.load(project_dir) -> JudgeConfig` | Loads `judge_config.json`. Raises `FileNotFoundError` if the file is missing. |
 | `GlobalCriteria` | dataclass | `GlobalCriteria.load(project_dir) -> GlobalCriteria` | Loads `global_criteria.json`. Falls back to `mode="none"` if the file is missing or unreadable, does not raise. |
 
+Each of the four also has a writer, used by the project editor:
+`Candidate.save_all(project_dir, data)`, `TestCase.save_all(project_dir, data)`,
+`JudgeConfig.save(project_dir, data)`, `GlobalCriteria.save(project_dir, data)`.
+They take **raw dicts, not instances** — the loaders drop unknown keys and fill
+in every omitted default, so round-tripping through the dataclasses would
+rewrite far more of a project's file than its author changed, and these files
+are hashed byte-for-byte. Writes are atomic, and `trailing_newline=` /
+`newline=` let a caller reproduce the file's existing formatting exactly.
+
 All names are re-exported lazily (only imported on first access), so `import prompttestenv` alone stays lightweight even when the underlying modules pull in `unified_ai_client` or `jinja2`.
 
 ### Streamlit GUI
@@ -174,6 +186,46 @@ All names are re-exported lazily (only imported on first access), so `import pro
 ```powershell
 prompttestenv gui
 ```
+
+Sidebar for the project path and run options, four actions in the main area
+(Initialize / Run / Analyze Reasoning / Render), and the module log streamed
+inline. It runs benchmarks; it does not edit them.
+
+### Streamlit project editor
+
+```powershell
+prompttestenv editor
+```
+
+A second Streamlit app for **creating and modifying** projects: typed forms over
+`candidates.json`, `test_cases.json`, `judge_config.json` and
+`global_criteria.json`, plus editing the `system_prompts/*.txt` files and
+uploading attachments into `test_files/`. **New** scaffolds a project from the
+packaged templates. It never runs a benchmark — that is what `gui` is for.
+
+Two behaviours worth knowing:
+
+- **Saving is byte-faithful.** Three of the four config files feed the resume
+  hash as raw bytes, so opening a project and saving it unchanged writes
+  nothing at all: key order, numeric form (an on-disk `2` stays `2`, not `2.0`),
+  trailing newline and line endings are all preserved, along with any keys the
+  editor does not know about. If a save *would* invalidate an existing
+  `progress.jsonl`, the editor says so and asks for confirmation first, and
+  never deletes the log itself. Editing only `reasoning_analysis` or the
+  `reasoning_judge` block never triggers that, because those are excluded from
+  the hash (see [Resume Policy](#resume-policy)).
+- **`system_prompts/` and `test_files/` are *not* hashed.** Changing a system
+  prompt or replacing an attachment does not invalidate a run, so a resumed run
+  would mix responses produced under the old and the new version into one
+  report. The editor warns about this where it can happen.
+
+> **Note:** CONVENTIONS.md §2 mandates exactly four interfaces (CLI, MCP,
+> library, GUI) and §2.4 names a single `gui/app.py`. A fifth `editor`
+> subcommand with a second app deviates from both, deliberately: running a
+> benchmark and authoring one are disjoint jobs, and folding the editor's six
+> tabs of forms into the run GUI would make the common case — press Run, watch
+> the log — markedly heavier for no benefit. The two apps share their helpers
+> through `prompttestenv/gui/common.py`.
 
 ---
 
@@ -271,7 +323,9 @@ The Python package `prompttestenv` is organized as follows:
 - `api.py`: routing LLM calls to `UnifiedAiClient`.
 - `reasoning.py`: trace segmentation, the per-dimension judge calls, and the reasoning metrics.
 - `mcp_tools.py`: MCP tool registration.
-- `gui/`: Streamlit web interface.
+- `gui/`: the two Streamlit apps — `app.py` (runs benchmarks) and `editor.py`
+  (creates and modifies projects) — over `common.py` (shared helpers) and
+  `projectio.py` (byte-faithful load/serialise of the config files).
 
 ---
 

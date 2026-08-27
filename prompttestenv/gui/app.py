@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import subprocess
 import sys
+import webbrowser
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -10,6 +10,7 @@ import streamlit as st
 
 import prompttestenv.logger as logger
 from prompttestenv.config import init_project
+from prompttestenv.gui.common import pick_directory, report_path, status_of
 from prompttestenv.runner import analyze_project, run_project, render_from_progress
 
 logger.set_backend("streamlit")
@@ -21,58 +22,6 @@ st.session_state.setdefault("project_dir", "")
 st.session_state.setdefault("pending_action", None)
 st.session_state.setdefault("last_result", None)
 
-_ERROR_PREFIXES = ("Error:", "ERROR:")
-_INCOMPLETE_PREFIXES = (
-    "No progress found",
-    "No generated responses found",
-    "Partial progress:",
-)
-
-
-def _status_of(result: str) -> str:
-    """Classify a runner return string into a Streamlit banner level.
-
-    ``run_project`` / ``analyze_project`` / ``render_from_progress`` never raise:
-    they return a descriptive string. Error strings start with ``Error:`` /
-    ``ERROR:``; no-op or partial outcomes start with one of
-    ``_INCOMPLETE_PREFIXES``; anything else is a real success (report path,
-    winner summary, ...).
-    """
-    if result.startswith(_ERROR_PREFIXES):
-        return "error"
-    if result.startswith(_INCOMPLETE_PREFIXES):
-        return "warning"
-    return "success"
-
-
-_PICKER_SNIPPET = """
-import sys, tkinter as tk
-from tkinter import filedialog
-root = tk.Tk(); root.withdraw(); root.wm_attributes("-topmost", 1)
-path = filedialog.askdirectory(initialdir=sys.argv[1] or None)
-root.destroy()
-sys.stdout.write(path or "")
-"""
-
-
-def _pick_directory(initialdir: str) -> str | None:
-    """Open a native folder picker and return the chosen path.
-
-    Run in a child process: Streamlit executes this script on a ``ScriptRunner``
-    thread, and Tkinter must own the process's main thread ("main thread is not
-    in main loop"). The subprocess gets its own. Raises if no GUI is available.
-    """
-    proc = subprocess.run(
-        [sys.executable, "-c", _PICKER_SNIPPET, initialdir],
-        capture_output=True,
-        text=True,
-        timeout=300,
-    )
-    if proc.returncode != 0:
-        raise RuntimeError(proc.stderr.strip() or f"exit code {proc.returncode}")
-    return proc.stdout.strip() or None
-
-
 with st.sidebar:
     st.header("⚙️ Project")
     project_dir = st.text_input(
@@ -82,14 +31,14 @@ with st.sidebar:
     )
     st.session_state.project_dir = project_dir
 
-    if st.button("📁 Browse...", use_container_width=True):
+    if st.button("📁 Browse...", width="stretch"):
         init_dir = st.session_state.project_dir or str(Path.cwd())
         if not Path(init_dir).is_absolute():
             init_dir = str(Path.cwd() / init_dir)
 
         picked = None
         try:
-            picked = _pick_directory(init_dir)
+            picked = pick_directory(init_dir)
         except Exception as exc:
             st.warning(f"Folder picker unavailable: {exc}. Type the path manually.")
 
@@ -117,19 +66,19 @@ def _request(action: str) -> None:
 col1, col2, col3, col4 = st.columns(4)
 
 with col1:
-    if st.button("📁 Initialize Project", use_container_width=True):
+    if st.button("📁 Initialize Project", width="stretch"):
         _request("init")
 
 with col2:
-    if st.button("▶️ Run Benchmark", type="primary", use_container_width=True):
+    if st.button("▶️ Run Benchmark", type="primary", width="stretch"):
         _request("run")
 
 with col3:
-    if st.button("🧠 Analyze Reasoning", use_container_width=True):
+    if st.button("🧠 Analyze Reasoning", width="stretch"):
         _request("analyze")
 
 with col4:
-    if st.button("📊 Render from Progress", use_container_width=True):
+    if st.button("📊 Render from Progress", width="stretch"):
         _request("render")
 
 # ── Full-width execution + result area ────────────────────────────────────────
@@ -156,13 +105,13 @@ if pending:
                 st.session_state.last_result = ("success", f"Initialized: {pdir}")
             elif action == "run":
                 result = run_project(pdir, output_mode, force_restart)
-                st.session_state.last_result = (_status_of(result), result)
+                st.session_state.last_result = (status_of(result), result)
             elif action == "analyze":
                 result = analyze_project(pdir, force_reanalyze)
-                st.session_state.last_result = (_status_of(result), result)
+                st.session_state.last_result = (status_of(result), result)
             elif action == "render":
                 result = render_from_progress(pdir)
-                st.session_state.last_result = (_status_of(result), result)
+                st.session_state.last_result = (status_of(result), result)
         except Exception as exc:
             st.session_state.last_result = ("error", f"Error: {exc}")
 
@@ -175,4 +124,12 @@ if last:
         st.warning(text)
     else:
         st.success(text)
-        st.code(text)
+        report = report_path(text)
+        if report is not None:
+            # Opened server-side rather than as a link: browsers refuse to
+            # navigate to a file:// URL from an http page, so a markdown link
+            # would look clickable and do nothing. This GUI is local by
+            # construction — the folder picker already assumes it — so the
+            # server's browser is the user's own.
+            if st.button(f"🔗 Open {report.name}", key="open_report"):
+                webbrowser.open(report.resolve().as_uri())

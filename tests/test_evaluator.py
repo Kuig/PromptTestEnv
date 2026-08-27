@@ -8,7 +8,10 @@ from prompttestenv.evaluator import run_evaluation_phase
 from prompttestenv.models import CandidatePerformance, JudgeConfig, ProgressState, TestCaseResult
 
 
-def _judge_config(timeout=5.0, eval_delay=0.0, reasoning_analysis=False):
+def _judge_config(timeout=5.0, eval_delay=0.0, reasoning_analysis="none"):
+    # Scope strings, not booleans: the field is assigned directly here (bypassing
+    # _parse_reasoning_scope), and reasoning_enabled is `!= "none"` — so a bare
+    # False would read as ENABLED, the opposite of how it looks.
     jc = JudgeConfig()
     jc.max_response_timeout_seconds = timeout
     jc.evaluation_delay_seconds = eval_delay
@@ -103,7 +106,7 @@ class TestRunEvaluationPhaseReasoning(unittest.TestCase):
     """
 
     def test_evaluation_phase_does_not_analyze_reasoning(self):
-        jc = _judge_config(reasoning_analysis=True)
+        jc = _judge_config(reasoning_analysis="all")
         task, cand_perf = _pending_eval(reasoning_text="the model thought a lot")
 
         with patch("prompttestenv.evaluator.evaluate_with_judge") as mock_eval, \
@@ -117,7 +120,7 @@ class TestRunEvaluationPhaseReasoning(unittest.TestCase):
         self.assertEqual(cand_perf.reasoning_analyses, [])
 
     def test_eval_event_carries_no_reasoning_payload(self):
-        jc = _judge_config(reasoning_analysis=True)
+        jc = _judge_config(reasoning_analysis="all")
         task, _ = _pending_eval(reasoning_text="the model thought a lot")
 
         with patch("prompttestenv.evaluator.evaluate_with_judge") as mock_eval, \

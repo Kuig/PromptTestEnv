@@ -6,7 +6,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from prompttestenv.progress import append_event, calculate_config_hash
+from prompttestenv.progress import (
+    HASHED_FILENAMES,
+    append_event,
+    calculate_config_hash,
+    config_hash_from_bytes,
+    hashable_bytes,
+    read_stored_hash,
+)
 
 
 class TestCalculateConfigHash(unittest.TestCase):
@@ -42,6 +49,118 @@ class TestCalculateConfigHash(unittest.TestCase):
         for _ in range(4):
             hasher.update(b"missing")
         self.assertEqual(h_missing, hasher.hexdigest())
+
+
+class TestConfigHashFromBytes(unittest.TestCase):
+    """The in-memory hash predictor an editor uses before writing anything."""
+
+    def setUp(self):
+        self.project_dir = tempfile.mkdtemp(prefix="prompttestenv_test_")
+        self.addCleanup(shutil.rmtree, self.project_dir, ignore_errors=True)
+
+    def _write(self, name, text):
+        (Path(self.project_dir) / name).write_text(text, encoding="utf-8")
+
+    def _disk_bytes(self):
+        out = {}
+        for name in HASHED_FILENAMES:
+            path = Path(self.project_dir) / name
+            out[name] = path.read_bytes() if path.exists() else None
+        return out
+
+    def test_matches_calculate_config_hash_on_the_same_content(self):
+        self._write("candidates.json", '[{"name": "A"}]')
+        self._write("judge_config.json", '{"repetitions": 3, "reasoning_analysis": "best"}')
+        self._write("test_cases.json", '[{"id": "t1"}]')
+        self._write("global_criteria.json", '{"mode": "none"}')
+
+        self.assertEqual(
+            config_hash_from_bytes(self._disk_bytes()),
+            calculate_config_hash(self.project_dir),
+        )
+
+    def test_absent_file_is_none_and_matches_a_genuinely_missing_one(self):
+        self._write("candidates.json", "[]")
+        self._write("test_cases.json", "[]")
+        self._write("global_criteria.json", "{}")
+        # judge_config.json deliberately not written.
+        self.assertEqual(
+            config_hash_from_bytes(self._disk_bytes()),
+            calculate_config_hash(self.project_dir),
+        )
+
+    def test_missing_key_is_treated_as_absent(self):
+        self.assertEqual(
+            config_hash_from_bytes({}),
+            config_hash_from_bytes({name: None for name in HASHED_FILENAMES}),
+        )
+
+
+class TestHashableBytes(unittest.TestCase):
+    """judge_config.json is canonicalised; the other three are hashed raw."""
+
+    def test_judge_config_ignores_reasoning_keys(self):
+        base = hashable_bytes("judge_config.json", b'{"repetitions": 2}')
+        with_reasoning = hashable_bytes(
+            "judge_config.json",
+            b'{"repetitions": 2, "reasoning_analysis": "all", '
+            b'"reasoning_judge": {"provider": "google", "temperature": 0.9}}',
+        )
+        self.assertEqual(base, with_reasoning)
+
+    def test_judge_config_ignores_key_order_and_indentation(self):
+        compact = hashable_bytes("judge_config.json", b'{"b": 2, "a": 1}')
+        pretty = hashable_bytes("judge_config.json", b'{\n    "a": 1,\n    "b": 2\n}\n')
+        self.assertEqual(compact, pretty)
+
+    def test_judge_config_still_sees_a_real_change(self):
+        self.assertNotEqual(
+            hashable_bytes("judge_config.json", b'{"repetitions": 2}'),
+            hashable_bytes("judge_config.json", b'{"repetitions": 3}'),
+        )
+
+    def test_judge_config_degrades_to_raw_when_unparseable(self):
+        raw = b'{"repetitions": 2,,,'
+        self.assertEqual(hashable_bytes("judge_config.json", raw), raw)
+
+    def test_other_files_are_byte_sensitive(self):
+        """Whitespace-only edits DO invalidate a run for the raw-hashed files.
+
+        This is what the editor's byte-faithful writer exists to avoid.
+        """
+        self.assertNotEqual(
+            hashable_bytes("candidates.json", b'[{"name": "A"}]'),
+            hashable_bytes("candidates.json", b'[\n    {\n        "name": "A"\n    }\n]'),
+        )
+
+    def test_none_is_the_missing_marker(self):
+        self.assertEqual(hashable_bytes("candidates.json", None), b"missing")
+
+
+class TestReadStoredHash(unittest.TestCase):
+    def setUp(self):
+        self.project_dir = tempfile.mkdtemp(prefix="prompttestenv_test_")
+        self.addCleanup(shutil.rmtree, self.project_dir, ignore_errors=True)
+
+    def test_returns_none_without_a_log(self):
+        self.assertIsNone(read_stored_hash(self.project_dir))
+
+    def test_does_not_create_the_log(self):
+        read_stored_hash(self.project_dir)
+        self.assertFalse((Path(self.project_dir) / "progress.jsonl").exists())
+
+    def test_reads_the_hash_off_the_meta_line(self):
+        append_event(self.project_dir, {"type": "meta", "config_hash": "abc123"})
+        append_event(self.project_dir, {"type": "gen", "cand_id": "A"})
+        self.assertEqual(read_stored_hash(self.project_dir), "abc123")
+
+    def test_returns_none_when_the_first_line_is_not_meta(self):
+        append_event(self.project_dir, {"type": "gen", "cand_id": "A"})
+        self.assertIsNone(read_stored_hash(self.project_dir))
+
+    def test_returns_none_on_a_corrupt_first_line(self):
+        (Path(self.project_dir) / "progress.jsonl").write_text("not json\n", encoding="utf-8")
+        self.assertIsNone(read_stored_hash(self.project_dir))
 
 
 class TestAppendEvent(unittest.TestCase):

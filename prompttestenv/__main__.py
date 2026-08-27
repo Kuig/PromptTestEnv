@@ -8,6 +8,7 @@ Usage examples:
     prompttestenv render Projects/MyBenchmark
     prompttestenv mcp
     prompttestenv gui
+    prompttestenv editor
 """
 
 from __future__ import annotations
@@ -75,6 +76,11 @@ def cmd_gui(args: argparse.Namespace) -> None:
     subprocess.run([sys.executable, "-m", "streamlit", "run", str(Path(__file__).parent / "gui" / "app.py")])
 
 
+def cmd_editor(args: argparse.Namespace) -> None:
+    """Handle the ``editor`` subcommand — launch the Streamlit project editor."""
+    subprocess.run([sys.executable, "-m", "streamlit", "run", str(Path(__file__).parent / "gui" / "editor.py")])
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the CLI argument parser."""
     parser = argparse.ArgumentParser(
@@ -126,6 +132,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_gui = subparsers.add_parser("gui", help="Launch Streamlit web interface.")
     p_gui.set_defaults(func=cmd_gui)
+
+    p_editor = subparsers.add_parser(
+        "editor", help="Launch the Streamlit project editor (create/modify projects)."
+    )
+    p_editor.set_defaults(func=cmd_editor)
 
     return parser
 

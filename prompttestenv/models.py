@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import statistics
+import tempfile
 from dataclasses import dataclass, field, fields, asdict
 from pathlib import Path
 
@@ -26,6 +28,53 @@ REASONING_SCOPES = (REASONING_SCOPE_NONE, REASONING_SCOPE_BEST, REASONING_SCOPE_
 # tuple is a code change, not a config change: config.json may reword a
 # dimension's definition or colour, but not invent a new one.
 REASONING_DIMENSIONS: tuple[str, ...] = ("framing", "solving", "presentation")
+
+
+def _write_json_atomic(
+    path: Path, data, *, trailing_newline: bool = True, newline: str = "\n"
+) -> None:
+    """Write JSON to `path` atomically, byte-faithfully.
+
+    Three of the four project config files feed the run hash as RAW BYTES (see
+    progress.hashable_bytes), so rewriting a file whose content did not change
+    is enough to make a finished run refuse to resume. Every formatting choice
+    here is therefore explicit rather than left to a default:
+
+    - ``newline`` is never left to the platform. Python would otherwise turn
+      every ``\\n`` into ``\\r\\n`` on Windows. Callers pass whatever the file
+      already used (a repo checked out with ``core.autocrlf`` genuinely holds
+      CRLF), and ``"\\n"`` for a file being created.
+    - ``ensure_ascii=False`` matches the canonicalisation in progress.py and
+      keeps non-ASCII prompts readable instead of escaping them.
+    - ``trailing_newline`` is likewise preserved from what the file had:
+      ``json.dump`` writes none, and the shipped templates disagree among
+      themselves.
+
+    The temp file is created in the target's own directory so ``os.replace``
+    stays within one volume, which is what makes it atomic.
+
+    Args:
+        path: Destination file.
+        data: Any JSON-serialisable value.
+        trailing_newline: Whether to end the file with a newline.
+        newline: Line terminator to write, ``"\\n"`` or ``"\\r\\n"``.
+
+    Raises:
+        OSError: If the file cannot be written or replaced (a locked target, as
+            OneDrive and some antivirus products can produce, arrives here as
+            PermissionError).
+    """
+    path = Path(path)
+    fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline=newline) as f:
+            json.dump(data, f, indent=4, ensure_ascii=False)
+            if trailing_newline:
+                f.write("\n")
+        os.replace(tmp_path, path)
+    finally:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
 
 
 def compute_cost_per_point(numerator: float, denominator: float) -> float:
@@ -326,6 +375,30 @@ class Candidate:
             ))
         return candidates
 
+    @staticmethod
+    def save_all(
+        project_dir: str, data: list[dict], *,
+        trailing_newline: bool = True, newline: str = "\n",
+    ) -> None:
+        """Write candidates.json from raw dicts.
+
+        Takes plain dicts rather than Candidate instances, unlike load_all()'s
+        counterpart shape, and deliberately so: load_all() drops keys it does not
+        know and materialises every key it does, so round-tripping through the
+        dataclass would silently delete a project's extra keys, add every omitted
+        default, and persist the derived `resolved_system_instruction`. Callers
+        that need that fidelity (the editor GUI) own the dict shape themselves.
+
+        Args:
+            project_dir: Path to the benchmark project directory.
+            data: The list to serialise, already in its on-disk shape.
+            trailing_newline: Whether to end the file with a newline.
+            newline: Line terminator to write, preserved from the existing file.
+        """
+        _write_json_atomic(
+            Path(project_dir) / "candidates.json", data, trailing_newline=trailing_newline, newline=newline,
+        )
+
 
 @dataclass
 class TestCase:
@@ -366,6 +439,25 @@ class TestCase:
             )
             for tc in raw_cases
         ]
+
+    @staticmethod
+    def save_all(
+        project_dir: str, data: list[dict], *,
+        trailing_newline: bool = True, newline: str = "\n",
+    ) -> None:
+        """Write test_cases.json from raw dicts.
+
+        Takes plain dicts for the same fidelity reason as Candidate.save_all().
+
+        Args:
+            project_dir: Path to the benchmark project directory.
+            data: The list to serialise, already in its on-disk shape.
+            trailing_newline: Whether to end the file with a newline.
+            newline: Line terminator to write, preserved from the existing file.
+        """
+        _write_json_atomic(
+            Path(project_dir) / "test_cases.json", data, trailing_newline=trailing_newline, newline=newline,
+        )
 
 
 @dataclass
@@ -594,6 +686,25 @@ class GlobalCriteria:
             logger.log_error(f"Error reading {path}: {exc}")
             return cls(mode=GLOBAL_MODE_NONE)
 
+    @staticmethod
+    def save(
+        project_dir: str, data: dict, *,
+        trailing_newline: bool = True, newline: str = "\n",
+    ) -> None:
+        """Write global_criteria.json from a raw dict.
+
+        Takes a plain dict for the same fidelity reason as Candidate.save_all().
+
+        Args:
+            project_dir: Path to the benchmark project directory.
+            data: The mapping to serialise, already in its on-disk shape.
+            trailing_newline: Whether to end the file with a newline.
+            newline: Line terminator to write, preserved from the existing file.
+        """
+        _write_json_atomic(
+            Path(project_dir) / "global_criteria.json", data, trailing_newline=trailing_newline, newline=newline,
+        )
+
 
 def _settings_from_dict(cls: type, data: dict):
     """Populate a settings dataclass from a dict, using its own field defaults for missing keys.
@@ -617,23 +728,16 @@ def _parse_reasoning_scope(value) -> str:
 
     An unknown string must not fall through to a truthiness test: "none" is a
     truthy string, so a silent pass-through would switch the phase on exactly
-    where the author meant to switch it off.
+    where the author meant to switch it off. Booleans are rejected the same way
+    as any other non-scope: nothing on disk has ever used that spelling, so
+    silently reading `true` as "all" would only hide a typo.
 
     Args:
-        value: Raw value from judge_config.json. Booleans are accepted as the
-            transitional spelling of the two extremes.
+        value: Raw value from judge_config.json.
 
     Returns:
         One of REASONING_SCOPES.
     """
-    if isinstance(value, bool):
-        scope = REASONING_SCOPE_ALL if value else REASONING_SCOPE_NONE
-        logger.log_warning(
-            f"judge_config.json: 'reasoning_analysis: {str(value).lower()}' is the old "
-            f"boolean spelling. Use \"{scope}\" instead (\"best\" analyses only the "
-            "highest-scoring repetition, at a fraction of the cost)."
-        )
-        return scope
     if isinstance(value, str) and value.lower() in REASONING_SCOPES:
         return value.lower()
     logger.log_warning(
@@ -742,6 +846,29 @@ class JudgeConfig:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
         return cls.from_dict(data)
+
+    @staticmethod
+    def save(
+        project_dir: str, data: dict, *,
+        trailing_newline: bool = True, newline: str = "\n",
+    ) -> None:
+        """Write judge_config.json from a raw dict.
+
+        Takes a plain dict for the same fidelity reason as Candidate.save_all():
+        from_dict() drops unknown keys inside every judge block (see
+        _settings_from_dict) and fills in every omitted default, so a round-trip
+        through the dataclass would rewrite far more of the file than the author
+        changed.
+
+        Args:
+            project_dir: Path to the benchmark project directory.
+            data: The mapping to serialise, already in its on-disk shape.
+            trailing_newline: Whether to end the file with a newline.
+            newline: Line terminator to write, preserved from the existing file.
+        """
+        _write_json_atomic(
+            Path(project_dir) / "judge_config.json", data, trailing_newline=trailing_newline, newline=newline,
+        )
 
 
 @dataclass(frozen=True)

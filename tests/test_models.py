@@ -168,12 +168,15 @@ class TestReasoningScopeParsing(unittest.TestCase):
         self.assertFalse(jc.reasoning_enabled)
         mock_warning.assert_called_once()
 
-    def test_old_boolean_spelling_still_loads_and_warns(self):
-        for raw, expected in ((True, "all"), (False, "none")):
+    def test_boolean_is_rejected_like_any_other_non_scope(self):
+        """The old boolean spelling is gone: nothing on disk ever used it, so
+        reading `true` as "all" would only hide a typo."""
+        for raw in (True, False):
             with self.subTest(raw=raw):
                 with patch("prompttestenv.logger.log_warning") as mock_warning:
                     jc = JudgeConfig.from_dict({"reasoning_analysis": raw})
-                self.assertEqual(jc.reasoning_analysis, expected)
+                self.assertEqual(jc.reasoning_analysis, "none")
+                self.assertFalse(jc.reasoning_enabled)
                 mock_warning.assert_called_once()
 
 
@@ -491,6 +494,100 @@ class TestPoolByCandidate(unittest.TestCase):
         pool_by_candidate(self.candidates, rows)
         pool_by_candidate(self.candidates, rows)
         self.assertEqual(len(rows[0].candidates_perf["A"].scores), 1)
+
+
+class TestConfigWriters(unittest.TestCase):
+    """The four save() writers: atomic, LF-only, byte-faithful.
+
+    Three of the four config files feed the run hash as raw bytes, so these
+    details are load-bearing, not cosmetic.
+    """
+
+    def setUp(self):
+        self.project_dir = tempfile.mkdtemp(prefix="prompttestenv_test_")
+        self.addCleanup(shutil.rmtree, self.project_dir, ignore_errors=True)
+
+    def _raw(self, name):
+        return (Path(self.project_dir) / name).read_bytes()
+
+    def test_each_writer_round_trips_through_its_loader(self):
+        Candidate.save_all(self.project_dir, [
+            {"name": "A", "provider": "ollama", "model": "m", "temperature": 0.3},
+        ])
+        TestCase.save_all(self.project_dir, [
+            {"id": "t1", "prompt": "p", "criteria": "c", "judge_type": "assert"},
+        ])
+        JudgeConfig.save(self.project_dir, {"repetitions": 3, "test_judge": {"model": "j"}})
+        GlobalCriteria.save(self.project_dir, {"mode": "similarity", "similarity_criteria": "x"})
+
+        cands = Candidate.load_all(self.project_dir)
+        self.assertEqual([c.name for c in cands], ["A"])
+        self.assertEqual(cands[0].temperature, 0.3)
+
+        tests = TestCase.load_all(self.project_dir)
+        self.assertEqual(tests[0].judge_type, "assert")
+
+        jc = JudgeConfig.load(self.project_dir)
+        self.assertEqual(jc.repetitions, 3)
+        self.assertEqual(jc.test_judge.model, "j")
+
+        gc = GlobalCriteria.load(self.project_dir)
+        self.assertEqual((gc.mode, gc.similarity_criteria), ("similarity", "x"))
+
+    def test_defaults_to_lf_even_on_windows(self):
+        """Left to the platform, Python would write CRLF and change every byte."""
+        TestCase.save_all(self.project_dir, [{"id": "t1", "prompt": "p", "criteria": "c"}])
+        self.assertNotIn(b"\r\n", self._raw("test_cases.json"))
+
+    def test_crlf_is_reproduced_when_asked(self):
+        """A checkout made with git's core.autocrlf really does hold CRLF, and
+        these files are hashed byte-for-byte."""
+        TestCase.save_all(
+            self.project_dir, [{"id": "t1", "prompt": "p", "criteria": "c"}], newline="\r\n",
+        )
+        raw = self._raw("test_cases.json")
+        self.assertIn(b"\r\n", raw)
+        # No bare LF survives: every newline is part of a CRLF pair.
+        self.assertNotIn(b"\n", raw.replace(b"\r\n", b""))
+
+    def test_trailing_newline_is_controllable_in_both_directions(self):
+        Candidate.save_all(self.project_dir, [], trailing_newline=True)
+        self.assertTrue(self._raw("candidates.json").endswith(b"\n"))
+        Candidate.save_all(self.project_dir, [], trailing_newline=False)
+        self.assertFalse(self._raw("candidates.json").endswith(b"\n"))
+
+    def test_uses_indent_four_and_does_not_escape_non_ascii(self):
+        GlobalCriteria.save(self.project_dir, {"mode": "llm-judge", "llm_judge_criteria": "però"})
+        text = self._raw("global_criteria.json").decode("utf-8")
+        self.assertIn('\n    "mode"', text)
+        self.assertIn("però", text)
+        self.assertNotIn("\\u", text)
+
+    def test_leaves_no_temp_file_behind(self):
+        Candidate.save_all(self.project_dir, [{"name": "A"}])
+        leftovers = [p for p in os.listdir(self.project_dir) if p.endswith(".tmp")]
+        self.assertEqual(leftovers, [])
+
+    def test_failed_serialization_leaves_the_original_intact_and_no_temp(self):
+        Candidate.save_all(self.project_dir, [{"name": "original"}])
+        before = self._raw("candidates.json")
+
+        class Unserialisable:
+            pass
+
+        with self.assertRaises(TypeError):
+            Candidate.save_all(self.project_dir, [{"name": Unserialisable()}])
+
+        self.assertEqual(self._raw("candidates.json"), before)
+        self.assertEqual([p for p in os.listdir(self.project_dir) if p.endswith(".tmp")], [])
+
+    def test_a_no_op_rewrite_is_byte_identical(self):
+        """The invariant the editor depends on: same data in, same bytes out."""
+        data = [{"name": "A", "provider": "google", "model": "m"}]
+        Candidate.save_all(self.project_dir, data)
+        first = self._raw("candidates.json")
+        Candidate.save_all(self.project_dir, json.loads(first))
+        self.assertEqual(self._raw("candidates.json"), first)
 
 
 if __name__ == "__main__":
