@@ -72,8 +72,8 @@ This is the core engine configuration file. It dictates how the framework behave
 *Configures the LLM that writes the final markdown/HTML report.*
 - `provider`, `model`, `temperature`, `disable_safety`, `thinking`: Standard LLM parameters.
 - `verdict_system_prompt`: The system persona for the analyst writing the report.
-- `verdict_template`: The template used to generate a single global verdict (if `group_verdicts` is false) or the individual group verdicts. **Must include the variables:** `{summary_data}` and `{global_criteria}`.
-- `global_verdict_template`: The template used to generate the final overarching conclusion when `group_verdicts` is true. **Must include the variables:** `{group_verdicts_data}` and `{global_criteria}`.
+- `verdict_template`: The template used to generate a single global verdict (if `group_verdicts` is false) or the individual group verdicts. **Must include the variable** `{summary_data}` — it already opens with a "How the global score was produced" section (styled after the per-test judge-type legend), followed by the criteria text itself, positioned right before the data it governs rather than as a preamble that could read as an instruction outranking everything else. `{global_criteria}` is no longer passed to this template.
+- `global_verdict_template`: The template used to generate the final overarching conclusion when `group_verdicts` is true. **Must include the variable** `{group_verdicts_data}`. `{global_criteria}` is no longer passed to this template either.
 
 ### D. `global_criteria.json`
 A structured JSON file that defines the global rules applied to all test cases, with support for the different evaluation modes.

@@ -144,13 +144,6 @@ class TestGlobalCriteriaLoad(LoggerResetTestCase):
         self.assertEqual(gc.mode, "assert")
         self.assertEqual(gc.assert_criteria, "s: (10,'ok') if s else (1,'no')")
 
-    def test_to_verdict_string_branches(self):
-        self.assertIn("Cosine similarity", GlobalCriteria(mode="similarity", similarity_criteria="X").to_verdict_string())
-        self.assertIn("assertion", GlobalCriteria(mode="assert", assert_criteria="X").to_verdict_string())
-        self.assertEqual(GlobalCriteria(mode="llm-judge", llm_judge_criteria="be nice").to_verdict_string(), "be nice")
-        self.assertEqual(GlobalCriteria(mode="none").to_verdict_string(), "Global evaluation disabled.")
-
-
 class TestReasoningScopeParsing(unittest.TestCase):
     """reasoning_analysis is a three-way scope, and a bad value must not enable it."""
 

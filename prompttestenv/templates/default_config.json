@@ -63,6 +63,11 @@
         "judge_llm": "- llm-judge: graded 1-10 by an LLM against the test's criteria.",
         "judge_similarity": "- similarity: cosine similarity to a target text, rescaled to 1-10.",
         "judge_assert": "- assert: a user-authored Python expression; it may use the full 1-10 range or just a\n  pass/fail pair, and which one is never declared.",
-        "judge_types_mixed": "These are DIFFERENT judges, so their scores are not comparable across test cases, and the\naggregate above pools all of them: read it as an indication, not a measurement."
+        "judge_types_mixed": "These are DIFFERENT judges, so their scores are not comparable across test cases, and the\naggregate above pools all of them: read it as an indication, not a measurement.",
+        "global_criteria_intro": "How the global score was produced:",
+        "global_criteria_llm": "- llm-judge: graded 1-10 by an LLM against these criteria:\n  {criteria_text}",
+        "global_criteria_similarity": "- similarity: cosine similarity (scale 1-10) to this target response:\n  {criteria_text}",
+        "global_criteria_assert": "- assert: a user-authored Python expression evaluated against the response:\n  {criteria_text}",
+        "global_criteria_none": "Global scoring is disabled for this project."
     }
 }

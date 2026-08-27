@@ -20,7 +20,7 @@
         "disable_safety": true,
         "thinking": false,
         "verdict_system_prompt": "You are a Senior AI Analyst. Your task is to analyze the results of a comparative benchmark across different models given a set of criteria, metrics and test results. Be direct and concise. Do not use pleasantries, only provide the requested report.",
-        "verdict_template": "# GLOBAL EVALUATION CRITERIA:\n{global_criteria}\n\n# TESTS RESULTS:\n{summary_data}\n\n---\n\nAnalyze the results and create a Markdown report.",
+        "verdict_template": "{summary_data}\n\n---\n\nAnalyze the results and create a Markdown report.",
         "global_verdict_template": "# GROUP VERDICTS:\n{group_verdicts_data}\n\n---\n\nAnalyze the verdicts from all groups and provide a final overall conclusion."
     }
 }

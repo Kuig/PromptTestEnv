@@ -560,16 +560,6 @@ class GlobalCriteria:
     similarity_criteria: str = ""
     assert_criteria: str = ""
 
-    def to_verdict_string(self) -> str:
-        if self.mode == JUDGE_TYPE_LLM:
-            return self.llm_judge_criteria
-        elif self.mode == JUDGE_TYPE_SIMILARITY:
-            return f"Cosine similarity (scale 1-10) between candidate response and target response: {self.similarity_criteria}"
-        elif self.mode == JUDGE_TYPE_ASSERT:
-            return f"Global evaluation via programmatic assertion: {self.assert_criteria}"
-        else:
-            return "Global evaluation disabled."
-
     @classmethod
     def load(cls, project_dir: str | Path) -> GlobalCriteria:
         """Load global evaluation criteria from a project directory.

@@ -184,6 +184,11 @@ class VerdictMetadata:
     judge_similarity: str = ""
     judge_assert: str = ""
     judge_types_mixed: str = ""
+    global_criteria_intro: str = ""
+    global_criteria_llm: str = ""
+    global_criteria_similarity: str = ""
+    global_criteria_assert: str = ""
+    global_criteria_none: str = ""
 
 
 @dataclass

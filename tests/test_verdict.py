@@ -251,6 +251,53 @@ class TestBuildSummaryData(_SummaryFixture, unittest.TestCase):
         alpha_row = next(line for line in rows if "Alpha" in line)
         self.assertIn("n/a", alpha_row)
 
+    def test_global_criteria_legend_precedes_overall_aggregate(self):
+        """Living in the payload's own metadata, not the template preamble, keeps
+        it from reading as an instruction that outranks the data."""
+        self.judge_config.global_criteria = GlobalCriteria(
+            mode="llm-judge", llm_judge_criteria="Be polite."
+        )
+        out = _build_summary_data([self._row()], self.candidates, self.judge_config)
+        header = out.split("# OVERALL AGGREGATE")[0]
+        self.assertIn("How the global score was produced:", header)
+        self.assertIn("Be polite.", header)
+
+    def test_global_criteria_legend_matches_the_active_mode(self):
+        cases = {
+            "llm-judge": ("llm_judge_criteria", "Be polite.", "llm-judge:"),
+            "similarity": ("similarity_criteria", "Target text.", "similarity:"),
+            "assert": ("assert_criteria", "s: (10, 'ok')", "assert:"),
+        }
+        for mode, (field, text, bullet) in cases.items():
+            with self.subTest(mode=mode):
+                self.judge_config.global_criteria = GlobalCriteria(mode=mode, **{field: text})
+                out = _build_summary_data([self._row()], self.candidates, self.judge_config)
+                header = out.split("# OVERALL AGGREGATE")[0]
+                self.assertIn(bullet, header)
+                self.assertIn(text, header)
+
+    def test_global_criteria_legend_reports_disabled_mode(self):
+        self.judge_config.global_criteria = GlobalCriteria(mode="none")
+        out = _build_summary_data([self._row()], self.candidates, self.judge_config)
+        header = out.split("# OVERALL AGGREGATE")[0]
+        self.assertIn("Global scoring is disabled", header)
+
+    def test_global_criteria_legend_falls_back_when_criteria_text_is_blank(self):
+        self.judge_config.global_criteria = GlobalCriteria(mode="llm-judge", llm_judge_criteria="")
+        out = _build_summary_data([self._row()], self.candidates, self.judge_config)
+        header = out.split("# OVERALL AGGREGATE")[0]
+        self.assertIn("(none set)", header)
+
+    def test_global_criteria_legend_reindents_multiline_criteria(self):
+        """Only the first line inherits the template's leading indent by default;
+        continuation lines must be re-indented to match, not left flush left."""
+        self.judge_config.global_criteria = GlobalCriteria(
+            mode="llm-judge", llm_judge_criteria="1. Be polite.\n2. No harmful content."
+        )
+        out = _build_summary_data([self._row()], self.candidates, self.judge_config)
+        header = out.split("# OVERALL AGGREGATE")[0]
+        self.assertIn("  1. Be polite.\n  2. No harmful content.", header)
+
 
 class TestPerTestCaseCostIsAlwaysShown(_SummaryFixture, unittest.TestCase):
     """The per-test-case Cost figure needs only tokens and a score.
@@ -526,8 +573,8 @@ class TestGenerateVerdict(unittest.TestCase):
 
     def _judge_config(self, **overrides):
         jc = JudgeConfig()
-        jc.verdict_judge.verdict_template = "SUMMARY:\n{summary_data}\nCRITERIA:{global_criteria}"
-        jc.verdict_judge.global_verdict_template = "GROUPS:\n{group_verdicts_data}\nCRITERIA:{global_criteria}"
+        jc.verdict_judge.verdict_template = "SUMMARY:\n{summary_data}"
+        jc.verdict_judge.global_verdict_template = "GROUPS:\n{group_verdicts_data}"
         jc.global_criteria = GlobalCriteria(mode="none")
         for key, value in overrides.items():
             setattr(jc.verdict_judge, key, value)
@@ -657,9 +704,7 @@ class TestVerdictReadsTheClientResult(unittest.TestCase):
         self.candidates = [Candidate(name="A", provider="google", model="m")]
         self.results = [_make_result("A", 8.0)]
         self.judge_config = JudgeConfig()
-        self.judge_config.verdict_judge.verdict_template = (
-            "SUMMARY:\n{summary_data}\nCRITERIA:{global_criteria}"
-        )
+        self.judge_config.verdict_judge.verdict_template = "SUMMARY:\n{summary_data}"
         self.judge_config.global_criteria = GlobalCriteria(mode="none")
 
     def test_the_models_text_reaches_the_verdict(self):

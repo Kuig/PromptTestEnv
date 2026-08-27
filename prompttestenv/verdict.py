@@ -10,6 +10,7 @@ from prompttestenv.models import (
     TestCaseResult,
     Candidate,
     CandidatePerformance,
+    GlobalCriteria,
     JudgeConfig,
     DEFAULT_GROUP,
     JUDGE_TYPE_ASSERT,
@@ -43,10 +44,10 @@ def save_verdict_debug_file(
     """
     debug_path = os.path.join(project_dir, "verdict_prompt_debug.txt")
     debug_content = (
-        "=" * 72 + "\nVERDICT JUDGE DEBUG INFO\n" + "=" * 72 + "\n"
-        f"PROVIDER: {provider}\nMODEL:    {model}\nTEMP:     {temp}\n"
-        + "-" * 72 + "\nSYSTEM INSTRUCTION:\n" + "-" * 72 + f"\n{sys_prompt}\n"
-        + "=" * 72 + "\nUSER PROMPT (PAYLOAD):\n" + "=" * 72 + f"\n{prompt}\n"
+        "=" * 72 + "\nVERDICT JUDGE DEBUG INFO\n" + "=" * 72 + "\n\n"
+        f"PROVIDER: {provider}\nMODEL:    {model}\nTEMP:     {temp}\n\n"
+        + "-" * 72 + "\nSYSTEM INSTRUCTION:\n" + "-" * 72 + f"\n\n{sys_prompt}\n\n"
+        + "-" * 72 + "\nUSER PROMPT (PAYLOAD):\n" + "-" * 72 + f"\n\n{prompt}\n"
     )
     try:
         with open(debug_path, "w", encoding="utf-8") as f:
@@ -284,7 +285,51 @@ def _build_metadata(
         legend.append(_section(metadata, "judge_types_mixed"))
     parts.append("\n".join(legend))
 
+    parts.append(_build_global_criteria_legend(metadata, judge_config.global_criteria))
+
     return "\n\n".join(parts) + "\n"
+
+
+_GLOBAL_CRITERIA_FIELDS = {
+    JUDGE_TYPE_LLM: ("global_criteria_llm", "llm_judge_criteria"),
+    JUDGE_TYPE_SIMILARITY: ("global_criteria_similarity", "similarity_criteria"),
+    JUDGE_TYPE_ASSERT: ("global_criteria_assert", "assert_criteria"),
+}
+
+
+def _build_global_criteria_legend(metadata, gc: GlobalCriteria) -> str:
+    """Render how the global score was produced, plus the criteria text itself.
+
+    Styled after the per-test judge_type legend just above it (judge_types_intro
+    / judge_llm / ...): a code-owned "how this figure is produced" line from
+    config.json, immediately followed by the project's own rubric text via
+    {criteria_text}. It is the last thing _build_metadata emits, so it lands
+    right before OVERALL AGGREGATE rather than in the verdict_template's own
+    preamble ahead of the whole payload — which is what let it read as an
+    instruction that outranks the data, when it is exactly as much "the rubric"
+    as the per-test-case EVALUATION CRITERIA already is.
+
+    Args:
+        metadata: VerdictMetadata carrying the section texts.
+        gc: The project's resolved GlobalCriteria.
+
+    Returns:
+        The intro line plus the mode-specific body.
+
+    Raises:
+        MetadataError: If the needed section is missing or malformed.
+    """
+    if gc.mode not in _GLOBAL_CRITERIA_FIELDS:
+        body = _section(metadata, "global_criteria_none")
+    else:
+        field_name, criteria_attr = _GLOBAL_CRITERIA_FIELDS[gc.mode]
+        criteria_text = getattr(gc, criteria_attr).strip() or "(none set)"
+        # Every global_criteria_* section puts "  " ahead of {criteria_text}, so a
+        # multi-line criteria (e.g. a numbered list) needs its own continuation
+        # lines re-indented to match — otherwise only the first line lines up.
+        criteria_text = criteria_text.replace("\n", "\n  ")
+        body = _section(metadata, field_name, criteria_text=criteria_text)
+    return _section(metadata, "global_criteria_intro") + "\n" + body
 
 
 def _render_table(headers: list[str], rows: list[list[str]]) -> str:
@@ -599,8 +644,6 @@ def generate_verdict(
             logger.log_error("No verdict template provided in judge_config.json.")
             return None
             
-        global_criteria = judge_config.global_criteria.to_verdict_string()
-
         if judge_config.group_verdicts:
             groups = {}
             for row in results:
@@ -613,13 +656,10 @@ def generate_verdict(
                 logger.log_ai(f"Generating verdict for group: {group_name}...")
                 summary_data = _build_summary_data(group_results, candidates, judge_config)
 
-                prompt = verdict_template.format(
-                    summary_data=summary_data,
-                    global_criteria=global_criteria
-                )
-                
+                prompt = verdict_template.format(summary_data=summary_data)
+
                 save_verdict_debug_file(project_dir, sys_prompt, prompt, v_provider, v_model, v_judge_temp)
-                
+
                 result = get_llm_response(
                     provider=v_provider,
                     model_name=v_model,
@@ -646,8 +686,7 @@ def generate_verdict(
                 group_verdicts_data += f"## GROUP: {g['group_name']}\n{g['verdict']}\n\n"
                 
             global_prompt = global_verdict_template.format(
-                group_verdicts_data=group_verdicts_data,
-                global_criteria=global_criteria
+                group_verdicts_data=group_verdicts_data
             )
             
             save_verdict_debug_file(project_dir, sys_prompt, global_prompt, v_provider, v_model, v_judge_temp)
@@ -673,10 +712,7 @@ def generate_verdict(
         else:
             summary_data = _build_summary_data(results, candidates, judge_config)
 
-            prompt = verdict_template.format(
-                summary_data=summary_data,
-                global_criteria=global_criteria
-            )
+            prompt = verdict_template.format(summary_data=summary_data)
             save_verdict_debug_file(project_dir, sys_prompt, prompt, v_provider, v_model, v_judge_temp)
 
             result = get_llm_response(
