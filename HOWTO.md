@@ -146,7 +146,7 @@ The dimensions, their definitions, their colours and the prompts that apply them
 
 Counts are derived from the sentence ids the judge cites, so every one of them is traceable to a sentence in the report rather than being an unverifiable number.
 
-- `alt_path` *(int)*: distinct alternative approaches introduced.
+- `alt_path` *(int)*: distinct alternatives to the path in progress — a different approach or a different version of the answer. In an up-front enumeration the first option is the baseline, so N options count as N−1.
 - `autocorrect` *(int)*: explicit retractions or revisions.
 - `alignment_score` *(int, 1-10)*: how faithfully the final response follows the conclusions the trace reached. Below 8, the judge must cite the sentences the response failed to honour, and those are flagged in the trace view.
 - `repetition_rate` *(float)*: share of repeated word trigrams, computed without an LLM. Catches the rumination that raw local traces are prone to.

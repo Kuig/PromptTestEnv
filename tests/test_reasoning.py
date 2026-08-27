@@ -110,6 +110,41 @@ class TestSplitIntoUnits(unittest.TestCase):
     def test_empty_text_yields_no_units(self):
         self.assertEqual(split_into_units("   \n\n  ", SPLITTING), [])
 
+    def test_numbered_list_marker_opens_its_unit_not_the_previous_one(self):
+        text = (
+            "1.  **Understand the Goal:** State the question in one line.\n\n"
+            "2.  **Identify the Given:** The revenue figure is right there in the prompt.\n\n"
+            "3.  **Answer:** Repeat it back with no extra work."
+        )
+        spans = self.assert_invariants(text)
+        units = [text[a:b] for a, b in spans]
+        for unit in units:
+            self.assertNotRegex(
+                unit,
+                r"\n\s*\d+[.)]\s*$",
+                "a step number must not be glued to the tail of the previous unit",
+            )
+        given = next(u for u in units if "Identify the Given" in u)
+        self.assertTrue(given.lstrip().startswith("2."), "the marker opens its own step")
+
+    def test_short_line_opener_merges_into_the_following_unit(self):
+        text = (
+            "This is the first full sentence of the trace here.\n\n"
+            "OK.\n\n"
+            "And now a second longer sentence to absorb it."
+        )
+        spans = self.assert_invariants(text)
+        units = [text[a:b] for a, b in spans]
+        host = next(u for u in units if "OK." in u)
+        self.assertIn("And now a second", host, "a line-opening fragment joins what follows")
+        self.assertNotIn("first full sentence", host, "not what precedes it")
+
+    def test_trailing_short_line_opener_folds_back(self):
+        text = "A long enough opening sentence to be its own unit here.\n\n3."
+        spans = self.assert_invariants(text)
+        self.assertEqual(len(spans), 1, "nothing follows the '3.', so it folds back")
+        self.assertIn("3.", text[spans[0][0]:spans[0][1]])
+
 
 class TestComputeCoverages(unittest.TestCase):
     def test_coverage_is_length_weighted_and_density_is_their_sum(self):

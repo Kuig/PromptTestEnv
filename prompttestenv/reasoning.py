@@ -165,10 +165,14 @@ def _merge_short(
     """Absorb spans too short to score into their neighbour.
 
     A three-word fragment carries no scorable signal on its own but does inflate
-    the unit count, so it is folded into the preceding unit (or the following
-    one, when it is the very first span). Titles such as a trace's opening bold
-    line are absorbed this way instead of being dropped, which is what the old
-    verbatim segmentation did to them.
+    the unit count, so it is folded into a neighbour. The direction depends on
+    where the fragment sits: one that **opens its own line** (a list marker such
+    as ``2.``, an indented bullet, a short lead-in) is folded into the *following*
+    unit, since it introduces what comes after rather than trailing what came
+    before; any other short span is folded into the *preceding* unit. A trailing
+    line-opener with nothing after it still folds back. Titles such as a trace's
+    opening bold line are absorbed this way instead of being dropped, which is
+    what the old verbatim segmentation did to them.
 
     Args:
         text: The full reasoning trace.
@@ -180,12 +184,30 @@ def _merge_short(
     """
     if not spans:
         return []
-    merged: list[list[int]] = [list(spans[0])]
-    for start, end in spans[1:]:
-        if end - start < min_chars or merged[-1][1] - merged[-1][0] < min_chars:
+
+    def opens_line(start: int) -> bool:
+        nl = text.rfind("\n", 0, start)
+        return not text[nl + 1:start].strip()
+
+    merged: list[list[int]] = []
+    pending: list[int] | None = None
+    last = len(spans) - 1
+    for i, (start, end) in enumerate(spans):
+        if pending is not None:
+            start, pending = pending[0], None
+        short = end - start < min_chars
+        if short and i < last and opens_line(start):
+            pending = [start, end]
+            continue
+        if merged and (short or merged[-1][1] - merged[-1][0] < min_chars):
             merged[-1][1] = end
         else:
             merged.append([start, end])
+    if pending is not None:
+        if merged:
+            merged[-1][1] = pending[1]
+        else:
+            merged.append(pending)
     return [(a, b) for a, b in merged]
 
 
