@@ -114,9 +114,9 @@
                         <strong>ID:</strong> {{ row.test_id }}<br>
                         <strong>Group:</strong> {{ row.group }}<br>
                         <strong>Type:</strong> <span style="font-family: monospace; font-size: 0.9em; background: #e9ecef; padding: 2px 4px; border-radius: 4px;">{{ row.judge_type }}</span>
-                        {% if row.file_used %}
-                            <br><a href="../{{ row.file_used }}" target="_blank"><span class="file-badge">📎 {{ row.file_used }}</span></a>
-                        {% endif %}
+                        {% for attachment in row.files_used %}
+                            <br><a href="../{{ attachment }}" target="_blank"><span class="file-badge">📎 {{ attachment }}</span></a>
+                        {% endfor %}
                         <br><br>
                         <details>
                             <summary><strong>Prompt & Criteria</strong></summary>

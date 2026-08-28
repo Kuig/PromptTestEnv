@@ -138,6 +138,24 @@ class TestGenerateHtmlReport(unittest.TestCase):
         # score 9.0 -> get_badge_class() renders "high-score" as the badge's CSS class
         self.assertIn('class="score-val high-score"', content)
 
+    def test_every_attachment_gets_its_own_link(self):
+        self.results[0].files_used = ["test_files/a.txt", "test_files/b.md"]
+        html_file = generate_html_report(
+            self.project_dir, self.results, self.candidates, "Plain verdict text.",
+            self.global_criteria, self.judge_config, filename="attachments.html",
+        )
+        content = Path(html_file).read_text(encoding="utf-8")
+        self.assertIn('href="../test_files/a.txt"', content)
+        self.assertIn('href="../test_files/b.md"', content)
+
+    def test_no_attachment_renders_no_link(self):
+        html_file = generate_html_report(
+            self.project_dir, self.results, self.candidates, "Plain verdict text.",
+            self.global_criteria, self.judge_config, filename="none.html",
+        )
+        # .file-badge is a stylesheet rule, always present — the link is not.
+        self.assertNotIn('<span class="file-badge">', Path(html_file).read_text(encoding="utf-8"))
+
     def test_grouped_json_verdict_renders_details_blocks(self):
         grouped_verdict = json.dumps({
             "is_grouped": True,

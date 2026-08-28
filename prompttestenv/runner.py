@@ -17,9 +17,9 @@ from prompttestenv.progress import append_event
 def _initialize_test_results(test_cases: list[TestCase], project_dir: str) -> list[TestCaseResult]:
     """Create TestCaseResult objects and attach media file paths.
 
-    For each test case that references a file, stores the local path. The
-    actual file upload (for Google) or inline encoding (for Ollama) is handled
-    by get_llm_response() / UnifiedAiClient at call time.
+    For each test case that references one or more files, stores the local
+    paths. The actual file upload (for Google) or inline encoding (for Ollama)
+    is handled by get_llm_response() / UnifiedAiClient at call time.
 
     Args:
         test_cases: List of TestCase instances.
@@ -38,12 +38,40 @@ def _initialize_test_results(test_cases: list[TestCase], project_dir: str) -> li
             group=test.group,
             judge_type=test.judge_type,
         )
-        if test.file:
-            media_file_path = os.path.join(project_dir, test.file)
-            test_result.file_used = test.file
-            test_result.media_file_path = media_file_path
+        # Normalised paths, not the raw `file` value: they are what the report
+        # links to and what the verdict payload names.
+        attachments = test.attachments()
+        test_result.files_used = attachments
+        test_result.media_file_paths = [
+            os.path.join(project_dir, path) for path in attachments
+        ]
         results.append(test_result)
     return results
+
+
+def _missing_attachments(
+    test_cases: list[TestCase], project_dir: str
+) -> list[tuple[str, str]]:
+    """Every declared attachment that is not a file on disk.
+
+    A typo'd path is otherwise invisible: UnifiedAiClient inlines an unreadable
+    text file as the literal "[File could not be read as text]" and the
+    benchmark runs on a phantom attachment, while a binary one raises halfway
+    through generation, after the API calls have already been paid for.
+
+    Args:
+        test_cases: List of TestCase instances.
+        project_dir: Path to the benchmark project directory.
+
+    Returns:
+        (test_id, path) pairs, in declaration order. Empty when all exist.
+    """
+    return [
+        (test.id, path)
+        for test in test_cases
+        for path in test.attachments()
+        if not os.path.isfile(os.path.join(project_dir, path))
+    ]
 
 
 def _generate_output(
@@ -146,6 +174,15 @@ def run_project(
 
     if not test_cases:
         return f"Error: No test cases found in {project_dir}"
+
+    # Before ProgressState.load, so a typo'd path does not even create an empty
+    # progress.jsonl, and before any LLM call is made. analyze_project and
+    # render_from_progress deliberately skip this: they only consume results
+    # already stored, and must keep working if an attachment moved since.
+    missing = _missing_attachments(test_cases, project_dir)
+    if missing:
+        listed = "; ".join(f"{test_id} -> {path}" for test_id, path in missing)
+        return f"Error: missing attachment(s): {listed}"
 
     global_criteria = GlobalCriteria.load(project_dir)
     judge_config.global_criteria = global_criteria

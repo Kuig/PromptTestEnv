@@ -27,6 +27,12 @@ So the editor edits RAW DICTS, and this module holds the rules that keep
    differs from its effective default
 5. identical bytes are not written at all
 
+The one deliberate exception is a test case's ``file``: its path separators are
+normalised to ``/`` on save (see ``attachment_value``), so a project authored on
+Windows runs on POSIX too. That does change bytes, and therefore the run hash,
+on a project holding backslashes — which the editor already surfaces as an
+invalidation warning before the user saves.
+
 The dataclasses stay the source of truth for defaults — but only where they
 actually hold one. See _LOADER_DEFAULTS.
 
@@ -49,6 +55,7 @@ from prompttestenv.models import (
     TestCase,
     TestJudgeSettings,
     VerdictJudgeSettings,
+    attachment_paths,
 )
 from prompttestenv.progress import HASHED_FILENAMES
 
@@ -177,6 +184,27 @@ def preserve_thinking(original, new):
         if new.strip().lower() == str(original).lower():
             return original
     return new
+
+
+def attachment_value(paths: list[str]) -> str | list[str] | None:
+    """The on-disk shape for a test case's chosen attachments.
+
+    None for zero, a plain string for one, a list for two or more. Writing a
+    single-element list where the file held a plain string would rewrite every
+    existing single-attachment project on a save that changed nothing.
+
+    Args:
+        paths: The attachment paths currently selected, in order.
+
+    Returns:
+        The value to store under the ``file`` key, or None to drop the key.
+    """
+    normalised = [path.replace("\\", "/") for path in paths if path]
+    if not normalised:
+        return None
+    if len(normalised) == 1:
+        return normalised[0]
+    return normalised
 
 
 def merge_preserving_shape(original: dict, new_values: dict, cls: type) -> dict:
@@ -532,11 +560,18 @@ def validate(draft: ProjectDraft) -> tuple[list[str], list[str]]:
             problem = check_assert_criteria(str(test.get("criteria", "")))
             if problem:
                 errors.append(f"Test case '{label}' criteria {problem}")
-        attachment = test.get("file")
-        if attachment and attachment.replace("\\", "/") not in attachments:
-            warnings.append(
-                f"Test case '{label}' refers to attachment '{attachment}', which is missing."
-            )
+        try:
+            declared = attachment_paths(test.get("file"))
+        except ValueError as exc:
+            # A shape the run itself would reject, so it must block the save
+            # rather than be reported as a missing file.
+            errors.append(f"Test case '{label}': {exc}")
+            declared = []
+        for path in declared:
+            if path not in attachments:
+                warnings.append(
+                    f"Test case '{label}' refers to attachment '{path}', which is missing."
+                )
 
     # Judge config.
     test_judge = draft.judge.get("test_judge") or {}
@@ -569,7 +604,12 @@ def validate(draft: ProjectDraft) -> tuple[list[str], list[str]]:
     used_prompts = {c.get("system_prompt_file") for c in draft.candidates}
     for name in sorted(prompts - {p for p in used_prompts if p}):
         warnings.append(f"System prompt '{name}' is not used by any candidate.")
-    used_files = {str(t.get("file", "")).replace("\\", "/") for t in draft.tests}
+    used_files = set()
+    for test in draft.tests:
+        try:
+            used_files.update(attachment_paths(test.get("file")))
+        except ValueError:
+            continue  # already reported as an error above
     for path in sorted(attachments - used_files):
         warnings.append(f"Attachment '{path}' is not used by any test case.")
 

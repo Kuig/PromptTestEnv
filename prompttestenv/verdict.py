@@ -610,7 +610,7 @@ def _build_summary_data(
         parts.append(
             f"\n## TEST ID: {row.test_id}\n"
             f"JUDGE TYPE: {row.judge_type}\n"
-            f"ATTACHMENT: {row.file_used or 'none'}\n"
+            f"ATTACHMENT: {', '.join(row.files_used) or 'none'}\n"
             f"PROMPT:\n{row.prompt}\n"
             f"EVALUATION CRITERIA (rubric, NOT shown to the candidate):\n{row.criteria}\n"
         )

@@ -213,7 +213,10 @@ Two behaviours worth knowing:
   `progress.jsonl`, the editor says so and asks for confirmation first, and
   never deletes the log itself. Editing only `reasoning_analysis` or the
   `reasoning_judge` block never triggers that, because those are excluded from
-  the hash (see [Resume Policy](#resume-policy)).
+  the hash (see [Resume Policy](#resume-policy)). The one deliberate exception
+  to byte fidelity is an attachment path: its separators are normalised to `/`
+  on save, so a project authored on Windows also runs on Linux. On a project
+  holding backslashes that *is* a change, and the editor flags it as one.
 - **`system_prompts/` and `test_files/` are *not* hashed.** Changing a system
   prompt or replacing an attachment does not invalidate a run, so a resumed run
   would mix responses produced under the old and the new version into one
@@ -277,7 +280,7 @@ Projects/<benchmark>/
         "group": "Data extraction",
         "prompt": "What was the Q3 revenue?",
         "criteria": "The Q3 revenue was 150,000 euros, with a 15% increase.",
-        "file": "test_files/report.txt",
+        "file": ["test_files/report.txt", "test_files/q3_chart.png"],
         "judge_type": "similarity"
     },
     {

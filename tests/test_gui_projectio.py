@@ -182,6 +182,39 @@ class TestPreserveForm(unittest.TestCase):
         self.assertNotIn(b"2.0", payload)
 
 
+class TestAttachmentValue(unittest.TestCase):
+    """0 -> absent, 1 -> plain string, N -> list.
+
+    A single-element list would rewrite every existing single-attachment
+    project on a save that changed nothing.
+    """
+
+    def test_no_selection_drops_the_key(self):
+        self.assertIsNone(pio.attachment_value([]))
+        self.assertIsNone(pio.attachment_value([""]))
+
+    def test_one_selection_stays_a_plain_string(self):
+        self.assertEqual(pio.attachment_value(["test_files/a.txt"]), "test_files/a.txt")
+
+    def test_several_selections_become_a_list(self):
+        self.assertEqual(
+            pio.attachment_value(["test_files/a.txt", "test_files/b.md"]),
+            ["test_files/a.txt", "test_files/b.md"],
+        )
+
+    def test_separators_are_normalised_on_save(self):
+        """The one deliberate exception to byte fidelity — see the module docstring."""
+        self.assertEqual(pio.attachment_value(["test_files\\a.txt"]), "test_files/a.txt")
+
+    def test_a_single_attachment_survives_a_serialisation_round_trip(self):
+        merged = pio.merge_preserving_shape(
+            {"id": "t", "prompt": "p", "criteria": "c", "file": "test_files/a.txt"},
+            {"file": pio.attachment_value(["test_files/a.txt"])},
+            TestCase,
+        )
+        self.assertEqual(merged["file"], "test_files/a.txt")
+
+
 class TestTrailingNewline(unittest.TestCase):
     def setUp(self):
         self.project_dir = tempfile.mkdtemp(prefix="prompttestenv_test_")
@@ -281,6 +314,46 @@ class TestValidation(unittest.TestCase):
         errors, warnings = pio.validate(draft)
         self.assertEqual([e for e in errors if "nope.txt" in e], [])
         self.assertTrue(any("nope.txt" in w for w in warnings))
+
+    def test_missing_attachment_is_only_a_warning(self):
+        draft = self._draft(tests=[
+            {"id": "t", "prompt": "p", "criteria": "c", "file": "test_files/nope.txt"},
+        ])
+        errors, warnings = pio.validate(draft)
+        self.assertEqual([e for e in errors if "nope.txt" in e], [])
+        self.assertTrue(any("nope.txt" in w for w in warnings))
+
+    def test_every_missing_attachment_of_a_list_is_warned_about(self):
+        draft = self._draft(tests=[
+            {"id": "t", "prompt": "p", "criteria": "c",
+             "file": ["test_files/sample.txt", "test_files/one.txt", "test_files/two.txt"]},
+        ])
+        warnings = self._warnings(draft)
+        self.assertTrue(any("one.txt" in w for w in warnings))
+        self.assertTrue(any("two.txt" in w for w in warnings))
+        self.assertEqual([w for w in warnings if "sample.txt" in w], [])
+
+    def test_malformed_attachment_value_is_an_error(self):
+        draft = self._draft(tests=[
+            {"id": "t", "prompt": "p", "criteria": "c", "file": 7},
+        ])
+        self.assertTrue(any("must be a string or a list" in e for e in self._errors(draft)))
+
+    def test_attachment_used_by_a_list_is_not_reported_as_an_orphan(self):
+        draft = self._draft(tests=[
+            {"id": "t", "prompt": "p", "criteria": "c",
+             "file": ["test_files/sample.txt"]},
+        ])
+        self.assertEqual(
+            [w for w in self._warnings(draft) if "not used by any test case" in w], []
+        )
+
+    def test_backslash_attachment_matches_the_file_on_disk(self):
+        draft = self._draft(tests=[
+            {"id": "t", "prompt": "p", "criteria": "c", "file": "test_files\\sample.txt"},
+        ])
+        warnings = self._warnings(draft)
+        self.assertEqual([w for w in warnings if "sample.txt" in w], [])
 
     def test_broken_assert_lambda_is_an_error(self):
         draft = self._draft(tests=[

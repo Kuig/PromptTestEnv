@@ -303,14 +303,51 @@ def pool_by_candidate(
     return pooled
 
 
+def attachment_paths(value: str | list[str] | None) -> list[str]:
+    """Normalise a test case's ``file`` value into an ordered list of paths.
+
+    The single string is the legacy spelling and stays valid forever; a list
+    attaches several files to the same test case, in the order written.
+
+    Backslashes become forward slashes so a project authored on Windows also
+    runs on POSIX (``os.path.join`` would otherwise hand ``test_files\\x.py``
+    to open() as one literal filename). No legal Windows filename contains a
+    backslash, so the substitution cannot lose information — and it is what
+    makes the report's ``../<path>`` links valid HTML too.
+
+    Args:
+        value: The raw ``file`` value as it appears in test_cases.json.
+
+    Returns:
+        Relative paths, empty when nothing is attached.
+
+    Raises:
+        ValueError: On any other shape, so a malformed test_cases.json is
+            reported before the run rather than silently attaching nothing.
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value.replace("\\", "/")] if value.strip() else []
+    if isinstance(value, list):
+        if not all(isinstance(item, str) for item in value):
+            raise ValueError(
+                f"'file' list must hold only strings, got: {value!r}"
+            )
+        return [item.replace("\\", "/") for item in value if item.strip()]
+    raise ValueError(
+        f"'file' must be a string or a list of strings, got: {value!r}"
+    )
+
+
 @dataclass
 class TestCaseResult:
     test_id: str
     prompt: str
     criteria: str
     group: str = DEFAULT_GROUP
-    file_used: str | None = None
-    media_file_path: str | None = None
+    files_used: list[str] = field(default_factory=list)
+    media_file_paths: list[str] = field(default_factory=list)
     candidates_perf: dict[str, CandidatePerformance] = field(default_factory=dict)
     judge_type: str = JUDGE_TYPE_LLM
 
@@ -405,9 +442,17 @@ class TestCase:
     id: str
     prompt: str
     criteria: str
-    file: str | None = None
+    file: str | list[str] | None = None
     group: str = DEFAULT_GROUP
     judge_type: str = JUDGE_TYPE_LLM
+
+    def attachments(self) -> list[str]:
+        """This test case's attachments as normalised relative paths.
+
+        The raw ``file`` value is kept as authored; this is the only reading
+        of it the run uses.
+        """
+        return attachment_paths(self.file)
 
     @classmethod
     def load_all(cls, project_dir: str | Path) -> list[TestCase]:
@@ -421,6 +466,10 @@ class TestCase:
 
         Raises:
             FileNotFoundError: If test_cases.json does not exist in project_dir.
+            ValueError: If a test case's `file` is neither a string, a list of
+                strings, nor absent. Checked here, at load time, so the caller
+                converting exceptions to an error string sees it before the run
+                starts rather than mid-generation.
         """
         test_file = Path(project_dir) / "test_cases.json"
         if not test_file.exists():
@@ -428,7 +477,7 @@ class TestCase:
 
         with open(test_file, "r", encoding="utf-8") as f:
             raw_cases = json.load(f)
-        return [
+        cases = [
             cls(
                 id=tc.get("id", "N/A"),
                 prompt=tc.get("prompt", ""),
@@ -439,6 +488,12 @@ class TestCase:
             )
             for tc in raw_cases
         ]
+        for case in cases:
+            try:
+                case.attachments()
+            except ValueError as exc:
+                raise ValueError(f"Test case '{case.id}': {exc}") from exc
+        return cases
 
     @staticmethod
     def save_all(

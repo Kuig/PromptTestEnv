@@ -92,7 +92,7 @@ def run_generation_phase(
                         model_name=cand.model,
                         system_instruction=sys_instr,
                         user_prompt=test_result.prompt,
-                        local_media_path=test_result.media_file_path,
+                        local_media_paths=test_result.media_file_paths or None,
                         temp=cand.temperature,
                         thinking=thinking,
                         disable_safety=cand.disable_safety,

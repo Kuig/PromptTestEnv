@@ -387,6 +387,51 @@ class TestFiltering(EditorTestCase):
         self.assertEqual(ids, ["keepme", "edited"])
 
 
+class TestAttachments(EditorTestCase):
+    """The attachment picker is multi-select, and writes 0/1/N shapes."""
+
+    def _picker(self, at: AppTest):
+        pickers = [w for w in at.multiselect if w.proto.id.endswith(":file:pick")]
+        self.assertTrue(pickers, "no attachment multiselect rendered")
+        return pickers
+
+    def test_existing_single_attachment_shows_as_selected(self):
+        at = self._app()
+        selected = [p.value for p in self._picker(at)]
+        self.assertIn(["test_files/sample.txt"], selected)
+
+    def test_selecting_a_second_file_writes_a_list(self):
+        (Path(self.project_dir) / "test_files" / "extra.md").write_text(
+            "# extra\n", encoding="utf-8",
+        )
+        at = self._app()
+        picker = [p for p in self._picker(at) if p.value][0]
+        picker.set_value(["test_files/sample.txt", "test_files/extra.md"])
+        at.run()
+
+        self._click(at, "💾 Save")
+        at.run()
+        written = json.loads(
+            (Path(self.project_dir) / "test_cases.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            written[1]["file"], ["test_files/sample.txt", "test_files/extra.md"],
+        )
+
+    def test_clearing_the_selection_writes_no_attachment(self):
+        at = self._app()
+        picker = [p for p in self._picker(at) if p.value][0]
+        picker.set_value([])
+        at.run()
+
+        self._click(at, "💾 Save")
+        at.run()
+        written = json.loads(
+            (Path(self.project_dir) / "test_cases.json").read_text(encoding="utf-8")
+        )
+        self.assertIsNone(written[1]["file"])
+
+
 class TestUntouchedArtifacts(EditorTestCase):
     def test_saving_never_touches_the_progress_log_or_reports(self):
         self._add_progress_log()

@@ -70,6 +70,48 @@ class TestEvaluateLlmJudge(unittest.TestCase):
         self.assertEqual(score, 8)
         self.assertEqual(reasoning, "good job")
 
+    def test_system_note_leads_the_prompt_and_names_the_file(self):
+        jc = self._judge_config()
+        prompt = TestCaseResult(test_id="t1", prompt="p", criteria="c")
+        with patch("prompttestenv.test_judge.get_llm_response") as mock_llm:
+            mock_llm.return_value = LlmResult(text=json.dumps({"score": 8, "reasoning": "r"}))
+            _evaluate_llm_judge(
+                prompt, "resp", jc, local_media_paths=["/proj/test_files/paper.pdf"],
+            )
+        sent = mock_llm.call_args.kwargs["user_prompt"]
+        # Head position: a text attachment is inlined AHEAD of the whole prompt,
+        # so a trailing note would arrive long after the file it announces.
+        self.assertTrue(sent.startswith("[SYSTEM NOTE]"), sent[:80])
+        self.assertIn("paper.pdf", sent)
+        self.assertIn("file for the test is attached", sent)
+        self.assertEqual(
+            mock_llm.call_args.kwargs["local_media_paths"], ["/proj/test_files/paper.pdf"],
+        )
+
+    def test_system_note_is_plural_with_several_attachments(self):
+        jc = self._judge_config()
+        prompt = TestCaseResult(test_id="t1", prompt="p", criteria="c")
+        with patch("prompttestenv.test_judge.get_llm_response") as mock_llm:
+            mock_llm.return_value = LlmResult(text=json.dumps({"score": 8, "reasoning": "r"}))
+            _evaluate_llm_judge(
+                prompt, "resp", jc,
+                local_media_paths=["/proj/test_files/a.txt", "/proj/test_files/b.md"],
+            )
+        sent = mock_llm.call_args.kwargs["user_prompt"]
+        self.assertIn("files for the test are attached", sent)
+        self.assertIn("a.txt, b.md", sent)
+        self.assertIn("Use them as ground truth", sent)
+
+    def test_no_attachment_means_no_system_note(self):
+        jc = self._judge_config()
+        prompt = TestCaseResult(test_id="t1", prompt="p", criteria="c")
+        with patch("prompttestenv.test_judge.get_llm_response") as mock_llm:
+            mock_llm.return_value = LlmResult(text=json.dumps({"score": 8, "reasoning": "r"}))
+            _evaluate_llm_judge(prompt, "resp", jc)
+        sent = mock_llm.call_args.kwargs["user_prompt"]
+        self.assertNotIn("[SYSTEM NOTE]", sent)
+        self.assertIsNone(mock_llm.call_args.kwargs["local_media_paths"])
+
     def test_response_as_json_list_uses_first_element(self):
         jc = self._judge_config()
         prompt = TestCaseResult(test_id="t1", prompt="p", criteria="c")
@@ -188,6 +230,34 @@ class TestEvaluateWithJudge(unittest.TestCase):
         result = evaluate_with_judge(self._prompt(), "response", jc)
         self.assertEqual(result["global_score"], 7)
         self.assertEqual(result["global_reasoning"], "globally fine")
+
+    def test_attachments_reach_both_the_task_and_the_global_llm_judge(self):
+        jc = JudgeConfig()
+        jc.test_judge.evaluation_template = "[{user_prompt}] [{candidate_response}] [{criteria}]"
+        jc.global_criteria = GlobalCriteria(mode="llm-judge", llm_judge_criteria="global rubric")
+        paths = ["/proj/test_files/a.txt", "/proj/test_files/b.md"]
+
+        with patch("prompttestenv.test_judge.get_llm_response") as mock_llm:
+            mock_llm.return_value = LlmResult(text=json.dumps({"score": 8, "reasoning": "r"}))
+            evaluate_with_judge(
+                self._prompt(judge_type="llm-judge", criteria="task rubric"),
+                "response", jc, local_media_paths=paths,
+            )
+
+        self.assertEqual(mock_llm.call_count, 2)
+        for call in mock_llm.call_args_list:
+            self.assertEqual(call.kwargs["local_media_paths"], paths)
+
+    def test_similarity_and_assert_never_see_the_attachments(self):
+        """By design: only the llm-judge evaluators take files."""
+        jc = JudgeConfig()
+        jc.global_criteria = GlobalCriteria(mode="none")
+        with patch("prompttestenv.test_judge.get_llm_response") as mock_llm:
+            result = evaluate_with_judge(
+                self._prompt(), "response", jc, local_media_paths=["/proj/a.txt"],
+            )
+        self.assertEqual(result["score"], 10)
+        mock_llm.assert_not_called()
 
 
 if __name__ == "__main__":

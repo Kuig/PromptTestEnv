@@ -215,11 +215,17 @@ class TestBuildSummaryData(_SummaryFixture, unittest.TestCase):
         self.assertIn(long_prompt, out)
 
     def test_attachment_is_declared_when_present_and_when_absent(self):
-        _metadata, with_file = self._payload([self._row(file_used="paper.pdf")])
+        _metadata, with_file = self._payload([self._row(files_used=["paper.pdf"])])
         self.assertIn("ATTACHMENT: paper.pdf", with_file)
 
         _metadata, without_file = self._payload()
         self.assertIn("ATTACHMENT: none", without_file)
+
+    def test_every_attachment_is_named(self):
+        _metadata, out = self._payload(
+            [self._row(files_used=["paper.pdf", "data.csv"])]
+        )
+        self.assertIn("ATTACHMENT: paper.pdf, data.csv", out)
 
     def test_aggregate_block_lists_each_candidate_exactly_once(self):
         aggregate = self._aggregate([self._row(), self._row(test_id="t2")])

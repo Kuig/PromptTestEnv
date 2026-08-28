@@ -18,6 +18,7 @@ from prompttestenv.models import (
     JudgeConfig,
     ProgressState,
     TestCase,
+    attachment_paths,
     calculate_stats,
     compute_cost_per_point,
 )
@@ -120,6 +121,63 @@ class TestTestCaseLoadAll(unittest.TestCase):
         self.assertEqual(cases[0].group, "Default group")
         self.assertEqual(cases[0].judge_type, "llm-judge")
         self.assertIsNone(cases[0].file)
+
+    def test_malformed_file_value_raises_naming_the_test_case(self):
+        test_file = Path(self.project_dir) / "test_cases.json"
+        test_file.write_text(
+            json.dumps([{"id": "t1", "prompt": "p", "criteria": "c", "file": 7}]),
+            encoding="utf-8",
+        )
+        with self.assertRaises(ValueError) as ctx:
+            TestCase.load_all(self.project_dir)
+        self.assertIn("t1", str(ctx.exception))
+
+    def test_list_of_files_survives_the_load(self):
+        test_file = Path(self.project_dir) / "test_cases.json"
+        test_file.write_text(
+            json.dumps([{
+                "id": "t1", "prompt": "p", "criteria": "c",
+                "file": ["test_files/a.txt", "test_files/b.md"],
+            }]),
+            encoding="utf-8",
+        )
+        cases = TestCase.load_all(self.project_dir)
+        self.assertEqual(
+            cases[0].attachments(), ["test_files/a.txt", "test_files/b.md"]
+        )
+
+
+class TestAttachmentPaths(unittest.TestCase):
+    def test_absent_or_empty_means_no_attachment(self):
+        self.assertEqual(attachment_paths(None), [])
+        self.assertEqual(attachment_paths(""), [])
+        self.assertEqual(attachment_paths("   "), [])
+        self.assertEqual(attachment_paths([]), [])
+        self.assertEqual(attachment_paths(["", "  "]), [])
+
+    def test_single_string_is_the_legacy_spelling(self):
+        self.assertEqual(attachment_paths("test_files/a.txt"), ["test_files/a.txt"])
+
+    def test_backslashes_are_normalised(self):
+        self.assertEqual(attachment_paths("test_files\\a.txt"), ["test_files/a.txt"])
+        self.assertEqual(
+            attachment_paths(["test_files\\a.txt", "test_files/b.md"]),
+            ["test_files/a.txt", "test_files/b.md"],
+        )
+
+    def test_list_order_is_preserved(self):
+        self.assertEqual(
+            attachment_paths(["b.md", "a.txt"]), ["b.md", "a.txt"]
+        )
+
+    def test_duplicates_are_kept(self):
+        # The author's call: UnifiedAiClient attaches what it is given.
+        self.assertEqual(attachment_paths(["a.txt", "a.txt"]), ["a.txt", "a.txt"])
+
+    def test_other_shapes_raise(self):
+        for bad in (7, 3.5, True, {"path": "a.txt"}, ["a.txt", 7], [None]):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                attachment_paths(bad)
 
 
 class TestGlobalCriteriaLoad(LoggerResetTestCase):

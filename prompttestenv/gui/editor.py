@@ -578,6 +578,18 @@ with tab_cand:
 
 # ── Test cases ────────────────────────────────────────────────────────────────
 
+def _attachments_of(data: dict) -> list[str]:
+    """A test case's attachments, tolerating a `file` the run would reject.
+
+    Rendering must not crash on a hand-written file: pio.validate() is what
+    reports the malformed value, as an error that blocks the save.
+    """
+    try:
+        return pio.attachment_paths(data.get("file"))
+    except ValueError:
+        return []
+
+
 with tab_tests:
     if st.button("➕ Add test case", key="add_test"):
         ed["tests"].append(
@@ -596,7 +608,7 @@ with tab_tests:
         st.dataframe(
             [{"id": t["data"].get("id"), "group": t["data"].get("group", "Default group"),
               "judge": t["data"].get("judge_type", "llm-judge"),
-              "attachment": t["data"].get("file") or "—"}
+              "attachments": ", ".join(_attachments_of(t["data"])) or "—"}
              for t in ed["tests"]],
             width="stretch", hide_index=True,
         )
@@ -646,18 +658,20 @@ with tab_tests:
             if judge_type == "assert":
                 _assert_panel(criteria)
 
-            current_file = data.get("file")
-            options = ["(none)"] + [f"{pio.TEST_FILES_DIR}/{n}" for n in attachments]
-            normalized = str(current_file).replace("\\", "/") if current_file else None
-            if normalized and normalized not in options:
-                options.append(normalized)
-            picked_file = st.selectbox(
-                "Attachment", options,
-                index=options.index(normalized) if normalized in options else 0,
+            current_files = _attachments_of(data)
+            options = [f"{pio.TEST_FILES_DIR}/{n}" for n in attachments]
+            # A referenced-but-absent path stays selectable, so it remains
+            # visible in the UI instead of silently dropping out of the file.
+            options += [p for p in current_files if p not in options]
+            picked_files = st.multiselect(
+                "Attachments", options, default=current_files,
+                help="Sent to the candidate, and to the judge when "
+                     "pass_media_to_judge is on. Order is the order they reach "
+                     "the model.",
                 key=f"{_wkey('test', row['uid'], 'file')}:pick",
             )
             st.session_state[_wkey("test", row["uid"], "file")] = (
-                None if picked_file == "(none)" else picked_file
+                pio.attachment_value(picked_files)
             )
 
             extras = [k for k in data if k not in _TEST_FIELDS]
@@ -964,8 +978,7 @@ with tab_files:
     for name in draft.test_file_names():
         path = draft.test_files_dir / name
         users = [t["data"].get("id") for t in ed["tests"]
-                 if str(t["data"].get("file", "")).replace("\\", "/")
-                 == f"{pio.TEST_FILES_DIR}/{name}"]
+                 if f"{pio.TEST_FILES_DIR}/{name}" in _attachments_of(t["data"])]
         left, right = st.columns([5, 1])
         left.write(
             f"**{name}** — {path.stat().st_size:,} bytes · used by: "

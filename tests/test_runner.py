@@ -34,9 +34,81 @@ class TestInitializeTestResults(unittest.TestCase):
         results = _initialize_test_results(test_cases, "/fake/project")
 
         self.assertEqual(len(results), 2)
-        self.assertIsNone(results[0].file_used)
-        self.assertEqual(results[1].file_used, "test_files/sample.txt")
-        self.assertIn("test_files", results[1].media_file_path)
+        self.assertEqual(results[0].files_used, [])
+        self.assertEqual(results[0].media_file_paths, [])
+        self.assertEqual(results[1].files_used, ["test_files/sample.txt"])
+        self.assertEqual(len(results[1].media_file_paths), 1)
+        self.assertIn("test_files", results[1].media_file_paths[0])
+
+    def test_keeps_every_attachment_of_a_multi_file_test_case(self):
+        test_cases = [
+            TestCase(
+                id="t1", prompt="p", criteria="c",
+                file=["test_files/a.txt", "test_files/b.md"],
+            ),
+        ]
+        results = _initialize_test_results(test_cases, "/fake/project")
+
+        self.assertEqual(results[0].files_used, ["test_files/a.txt", "test_files/b.md"])
+        self.assertEqual(len(results[0].media_file_paths), 2)
+
+    def test_normalises_windows_separators(self):
+        test_cases = [TestCase(id="t1", prompt="p", criteria="c",
+                               file="test_files\\sample.txt")]
+        results = _initialize_test_results(test_cases, "/fake/project")
+
+        self.assertEqual(results[0].files_used, ["test_files/sample.txt"])
+        self.assertTrue(results[0].media_file_paths[0].endswith("test_files/sample.txt"))
+
+
+class TestMissingAttachmentsAbortTheRun(LoggerResetTestCase):
+    def setUp(self):
+        self.project_dir = make_temp_project()
+        self.addCleanup(shutil.rmtree, self.project_dir, ignore_errors=True)
+
+    def _write_attachment(self, value):
+        path = Path(self.project_dir) / "test_cases.json"
+        cases = json.loads(path.read_text(encoding="utf-8"))
+        cases[1]["file"] = value
+        path.write_text(json.dumps(cases, indent=4), encoding="utf-8")
+
+    def test_run_project_refuses_and_calls_no_llm(self):
+        self._write_attachment("test_files/typo.txt")
+
+        with patch("prompttestenv.runner.run_generation_phase") as mock_gen:
+            result = run_project(self.project_dir, output_mode="winner_only")
+
+        self.assertIn("missing attachment(s)", result)
+        self.assertIn("test_files/typo.txt", result)
+        mock_gen.assert_not_called()
+        # The check runs before ProgressState.load, so a typo does not even
+        # leave an empty log behind.
+        self.assertFalse((Path(self.project_dir) / "progress.jsonl").exists())
+
+    def test_every_missing_attachment_is_listed(self):
+        self._write_attachment(["test_files/one.txt", "test_files/two.txt"])
+
+        with patch("prompttestenv.runner.run_generation_phase"):
+            result = run_project(self.project_dir, output_mode="winner_only")
+
+        self.assertIn("test_files/one.txt", result)
+        self.assertIn("test_files/two.txt", result)
+
+    def test_malformed_file_value_is_reported_as_an_error(self):
+        self._write_attachment(42)
+
+        result = run_project(self.project_dir, output_mode="winner_only")
+
+        self.assertTrue(result.startswith("Error:"), result)
+        self.assertIn("file_analysis", result)
+
+    def test_render_still_works_with_a_missing_attachment(self):
+        self._write_attachment("test_files/typo.txt")
+
+        # No progress.jsonl: render must fail on THAT, not on the attachment.
+        result = render_from_progress(self.project_dir)
+
+        self.assertIn("No progress found", result)
 
 
 class TestGenerateOutput(LoggerResetTestCase):

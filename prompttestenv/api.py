@@ -79,7 +79,7 @@ def get_llm_response(
     model_name: str,
     system_instruction: str | None,
     user_prompt: str,
-    local_media_path: str | None = None,
+    local_media_paths: list[str] | None = None,
     temp: float = 0.7,
     response_mime_type: str | None = None,
     thinking: bool | str = "default",
@@ -96,9 +96,11 @@ def get_llm_response(
         model_name: Model identifier string.
         system_instruction: Optional system prompt.
         user_prompt: The user-facing prompt text.
-        local_media_path: Optional local file path for multimodal input. The file
-            is passed directly to UnifiedAiClient, which classifies and encodes it
-            according to the provider (base64, upload, or text inline).
+        local_media_paths: Optional local file paths for multimodal input, in
+            the order they should reach the model. They are passed directly to
+            UnifiedAiClient, which classifies and encodes each one according to
+            the provider (base64, upload, or text inline). Text attachments are
+            inlined AHEAD of user_prompt, in this order.
         temp: Sampling temperature.
         response_mime_type: If 'application/json', enables JSON output mode.
         thinking: Whether to enable thinking/reasoning mode.
@@ -130,7 +132,7 @@ def get_llm_response(
         model=model_name,
         prompt=user_prompt,
         system_prompt=system_instruction,
-        file_path=local_media_path,
+        file_path=local_media_paths or None,
         temperature=temp,
         thinking=thinking,
         format_json=(response_mime_type == "application/json"),

@@ -40,7 +40,7 @@ This file contains the actual prompts (the tasks) that the candidates will execu
   - `"llm-judge"` *(default)*: Sends the response and criteria to the judge LLM.
   - `"similarity"`: Calculates the embedding cosine similarity between the response and the target criteria, scaled 1 to 10.
   - `"assert"`: Evaluates the criteria expression directly in Python.
-- `file` *(string, optional)*: A relative path to a file inside the `test_files/` folder (e.g., `"test_files/report.pdf"`). The file will be attached to the prompt.
+- `file` *(string or array of strings, optional)*: A relative path to a file inside the `test_files/` folder (e.g., `"test_files/report.pdf"`), or an array of them (e.g., `["test_files/report.pdf", "test_files/data.csv"]`) to attach several files to the same prompt, in the order written. Images, audio, PDFs and text files are all supported; the encoding each provider needs (upload, base64, or inlining the text ahead of the prompt) is handled for you. Write the path with `/` or `\` as you prefer — separators are normalised, so a project authored on Windows runs on Linux too. **A path that does not exist aborts the run before any LLM call is made**, listing every missing attachment.
 
 Every evaluator normally returns a score of 1-10, or the shared `-1` "not measured" sentinel when it failed to produce one at all (excluded from every average, never counted as a zero) — a judge LLM call that errored, or a `similarity`/`assert` evaluation that raised an exception. `assert` is the one place the framework does **not** clamp the score for you: your lambda is your own arbitrary Python, so keeping its return value in the range you intend is your job, and you may return `-1` yourself to mark a specific response "not applicable/not measured". `similarity`'s score, by contrast, is computed by the framework, so it is always clamped to 1-10 on your behalf.
 - `group` *(string, optional)*: Assigns the test case to a specific category (e.g., `"Coding"`, `"Creative Writing"`). Used in combination with `group_verdicts` (default: `"Default group"`).
@@ -53,7 +53,7 @@ This is the core engine configuration file. It dictates how the framework behave
 - `repetition_delay_seconds` *(float)*: Delay between generation requests (default: `2.0`).
 - `evaluation_delay_seconds` *(float)*: Delay between judge evaluation requests (default: `2.0`).
 - `max_response_timeout_seconds` *(float)*: Maximum wait time for the judge (default: `240.0`).
-- `pass_media_to_judge` *(boolean)*: If `true`, the media file attached in the test case is also sent to the judge as "ground truth" context.
+- `pass_media_to_judge` *(boolean)*: If `true`, every file attached in the test case is also sent to the judge as "ground truth" context, preceded by a system note naming them. It is a project-wide switch, and it only reaches the `llm-judge` evaluators: `similarity` and `assert` score the response text alone by design.
 - `group_verdicts` *(boolean)*: If `true`, the framework will generate specific verdicts for each `group` defined in `test_cases.json`, plus a global overview.
 - `reasoning_analysis` *(string)*: How much of the run the reasoning-analysis phase covers: `"none"`, `"best"` or `"all"`. See section E below.
 
