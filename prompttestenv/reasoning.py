@@ -314,7 +314,7 @@ def _format_template(template: str, **values) -> str:
 
     A template is authored data, not code, so a stray placeholder or an unbalanced
     brace must degrade to "this analysis was not measured" rather than take down
-    the run (CONVENTIONS 7).
+    the run.
 
     Args:
         template: The template from config.json.

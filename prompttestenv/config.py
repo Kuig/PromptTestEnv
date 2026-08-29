@@ -11,10 +11,11 @@ Two distinct kinds of configuration live in this project:
   what the benchmark author chooses: which judge to call and with which
   parameters.
 
-CONVENTIONS.md 4.2 wants ``config.json`` git-ignored with a ``.example``
-template alongside it. This project deviates deliberately: the file carries no
-credentials, only the definition of the measurement instrument, which must be
-the same for anyone who clones the repo. It is therefore versioned, and a copy
+``config.json`` here is versioned rather than git-ignored, and ships no
+``.example`` template, which is the opposite of the usual arrangement for a
+file of that name. It is deliberate: the file carries no credentials, only the
+definition of the measurement instrument, which must be the same for anyone who
+clones the repo. A copy
 ships inside the package as ``templates/default_config.json`` so that an
 install from ``requirements_prod.txt`` still resolves it (see ``AppConfig.load``).
 """
@@ -216,7 +217,7 @@ class AppConfig:
     """Global, cross-project application configuration.
 
     Every field has a default so the tool starts even when no config.json can be
-    found anywhere (CONVENTIONS 4.3).
+    found anywhere, so a partial or absent file degrades instead of failing.
     """
 
     reasoning_schema: ReasoningSchema = field(default_factory=ReasoningSchema)
@@ -255,7 +256,7 @@ class AppConfig:
     def load(cls, path: str | Path | None = None) -> AppConfig:
         """Load the global configuration.
 
-        Resolution order follows CONVENTIONS 4.4: the user's working directory
+        Resolution order: the user's working directory
         first, then the repo root, then the read-only copy shipped inside the
         package. The last step is what an install from requirements_prod.txt
         resolves, since there the user's working directory holds no config.json.

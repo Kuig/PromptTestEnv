@@ -24,7 +24,7 @@ REASONING_SCOPE_ALL = "all"
 REASONING_SCOPES = (REASONING_SCOPE_NONE, REASONING_SCOPE_BEST, REASONING_SCOPE_ALL)
 
 # Axes of the reasoning profile. Mirrored as fields on ReasoningUnit and
-# ReasoningStats (CONVENTIONS 5.3 rules out a dict here), so changing this
+# ReasoningStats as real fields rather than a dict, so changing this
 # tuple is a code change, not a config change: config.json may reword a
 # dimension's definition or colour, but not invent a new one.
 REASONING_DIMENSIONS: tuple[str, ...] = ("framing", "solving", "presentation")

@@ -15,6 +15,11 @@ dependencies = [
     "unified-ai-client",
 ]
 
+[project.urls]
+Homepage = "https://github.com/Kuig/PromptTestEnv"
+Repository = "https://github.com/Kuig/PromptTestEnv"
+"Bug Tracker" = "https://github.com/Kuig/PromptTestEnv/issues"
+
 [project.scripts]
 prompttestenv = "prompttestenv.__main__:main"
 

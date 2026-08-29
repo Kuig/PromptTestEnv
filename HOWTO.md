@@ -40,9 +40,9 @@ This file contains the actual prompts (the tasks) that the candidates will execu
   - `"llm-judge"` *(default)*: Sends the response and criteria to the judge LLM.
   - `"similarity"`: Calculates the embedding cosine similarity between the response and the target criteria, scaled 1 to 10.
   - `"assert"`: Evaluates the criteria expression directly in Python.
-- `file` *(string or array of strings, optional)*: A relative path to a file inside the `test_files/` folder (e.g., `"test_files/report.pdf"`), or an array of them (e.g., `["test_files/report.pdf", "test_files/data.csv"]`) to attach several files to the same prompt, in the order written. Images, audio, PDFs and text files are all supported; the encoding each provider needs (upload, base64, or inlining the text ahead of the prompt) is handled for you. Write the path with `/` or `\` as you prefer — separators are normalised, so a project authored on Windows runs on Linux too. **A path that does not exist aborts the run before any LLM call is made**, listing every missing attachment.
+- `file` *(string or array of strings, optional)*: A relative path to a file inside the `test_files/` folder (e.g., `"test_files/report.pdf"`), or an array of them (e.g., `["test_files/report.pdf", "test_files/data.csv"]`) to attach several files to the same prompt, in the order written. Images, audio, PDFs and text files are all supported; the encoding each provider needs (upload, base64, or inlining the text ahead of the prompt) is handled for you. Write the path with `/` or `\` as you prefer: separators are normalised, so a project authored on Windows runs on Linux too. **A path that does not exist aborts the run before any LLM call is made**, listing every missing attachment.
 
-Every evaluator normally returns a score of 1-10, or the shared `-1` "not measured" sentinel when it failed to produce one at all (excluded from every average, never counted as a zero) — a judge LLM call that errored, or a `similarity`/`assert` evaluation that raised an exception. `assert` is the one place the framework does **not** clamp the score for you: your lambda is your own arbitrary Python, so keeping its return value in the range you intend is your job, and you may return `-1` yourself to mark a specific response "not applicable/not measured". `similarity`'s score, by contrast, is computed by the framework, so it is always clamped to 1-10 on your behalf.
+Every evaluator normally returns a score of 1-10, or the shared `-1` "not measured" sentinel when it failed to produce one at all (excluded from every average, never counted as a zero): a judge LLM call that errored, or a `similarity`/`assert` evaluation that raised an exception. `assert` is the one place the framework does **not** clamp the score for you: your lambda is your own arbitrary Python, so keeping its return value in the range you intend is your job, and you may return `-1` yourself to mark a specific response "not applicable/not measured". `similarity`'s score, by contrast, is computed by the framework, so it is always clamped to 1-10 on your behalf.
 - `group` *(string, optional)*: Assigns the test case to a specific category (e.g., `"Coding"`, `"Creative Writing"`). Used in combination with `group_verdicts` (default: `"Default group"`).
 
 ### C. `judge_config.json`
@@ -52,7 +52,7 @@ This is the core engine configuration file. It dictates how the framework behave
 - `repetitions` *(int)*: How many times each candidate should execute each test case (default: `5`). Useful for checking consistency.
 - `repetition_delay_seconds` *(float)*: Delay between generation requests (default: `2.0`).
 - `evaluation_delay_seconds` *(float)*: Delay between judge evaluation requests (default: `2.0`).
-- `max_response_timeout_seconds` *(float)*: Maximum wait time for the judge (default: `240.0`).
+- `max_response_timeout_seconds` *(float)*: Maximum wait for any single LLM call: candidate generation, the test judge and the reasoning judge alike (default: `240.0` when the key is absent, though a scaffolded `judge_config.json` writes `300`). Overrunning it never aborts the run. A candidate that times out has its response recorded as `[TIMEOUT EXCEEDED]` and is then judged like any other response, so it earns a real low score; a *judge* that times out yields the `-1` "not measured" sentinel instead, which is excluded from the averages.
 - `pass_media_to_judge` *(boolean)*: If `true`, every file attached in the test case is also sent to the judge as "ground truth" context, preceded by a system note naming them. It is a project-wide switch, and it only reaches the `llm-judge` evaluators: `similarity` and `assert` score the response text alone by design.
 - `group_verdicts` *(boolean)*: If `true`, the framework will generate specific verdicts for each `group` defined in `test_cases.json`, plus a global overview.
 - `reasoning_analysis` *(string)*: How much of the run the reasoning-analysis phase covers: `"none"`, `"best"` or `"all"`. See section E below.
@@ -72,7 +72,7 @@ This is the core engine configuration file. It dictates how the framework behave
 *Configures the LLM that writes the final markdown/HTML report.*
 - `provider`, `model`, `temperature`, `disable_safety`, `thinking`: Standard LLM parameters.
 - `verdict_system_prompt`: The system persona for the analyst writing the report.
-- `verdict_template`: The template used to generate a single global verdict (if `group_verdicts` is false) or the individual group verdicts. **No placeholders at all** — it is plain trailer text (typically ANALYSIS INSTRUCTIONS), used verbatim, with no `.format()` call and no need to escape literal `{`/`}` (e.g. a JSON example). The framework builds the rest of the payload around it automatically: the user prompt is `{data}\n\n---\n\n{your template}`, where `{data}` opens directly with the `# OVERALL AGGREGATE` table, then the per-test-case results; the system prompt gets a BENCHMARK METADATA block appended (repetition count, metric semantics, the judge-type legend, and a "How the global score was produced" section with the criteria text itself) — nothing to do in either template for that to happen.
+- `verdict_template`: The template used to generate a single global verdict (if `group_verdicts` is false) or the individual group verdicts. **No placeholders at all**, it is plain trailer text (typically ANALYSIS INSTRUCTIONS), used verbatim, with no `.format()` call and no need to escape literal `{`/`}` (e.g. a JSON example). The framework builds the rest of the payload around it automatically: the user prompt is `{data}\n\n---\n\n{your template}`, where `{data}` opens directly with the `# OVERALL AGGREGATE` table, then the per-test-case results; the system prompt gets a BENCHMARK METADATA block appended (repetition count, metric semantics, the judge-type legend, and a "How the global score was produced" section with the criteria text itself), and there is nothing to do in either template for that to happen.
 - `global_verdict_template`: The template used to generate the final overarching conclusion when `group_verdicts` is true. Same deal, one level up: **no placeholders**, just the trailer text after `# GROUP VERDICTS:\n{the group verdicts}\n\n---\n\n`, which the framework builds for you. This call gets no metadata tail on its system prompt: it never sees the results data, only the already-written group verdicts, so there is nothing left for the metadata to explain.
 
 ### D. `global_criteria.json`
@@ -103,7 +103,7 @@ The setting chooses how much of the run gets measured, because the cost scales w
 | `"best"` | the highest-scoring repetition of each candidate x test case | 1 trace per test case |
 | `"all"` | every repetition of every test case | `repetitions` traces per test case |
 
-`"best"` is the recommended starting point once you want the profile at all: it measures exactly the repetition whose trace the report draws anyway, so nothing on screen is lost, at a fifth of the calls under the default `repetitions: 5`. A scaffolded project starts with `"none"`, since not every benchmark involves thinking-enabled candidates — switch it on explicitly when it does.
+`"best"` is the recommended starting point once you want the profile at all: it measures exactly the repetition whose trace the report draws anyway, so nothing on screen is lost, at a fifth of the calls under the default `repetitions: 5`. A scaffolded project starts with `"none"`, since not every benchmark involves thinking-enabled candidates, so switch it on explicitly when it does.
 
 Be aware of what `"best"` changes, though: the profile then describes how a model reasons **when it succeeds**, not how it reasons on a typical run. That is a legitimate question to ask, but it is a different one, so the report and the verdict payload both state which scope produced the figures, and figures from the two scopes must not be compared. Use `"all"` when you want the unfiltered picture, or when repetitions disagree with each other and you want to know why.
 
@@ -146,7 +146,7 @@ The dimensions, their definitions, their colours and the prompts that apply them
 
 Counts are derived from the sentence ids the judge cites, so every one of them is traceable to a sentence in the report rather than being an unverifiable number.
 
-- `alt_path` *(int)*: distinct alternatives to the path in progress — a different approach or a different version of the answer. In an up-front enumeration the first option is the baseline, so N options count as N−1.
+- `alt_path` *(int)*: distinct alternatives to the path in progress: a different approach or a different version of the answer. In an up-front enumeration the first option is the baseline, so N options count as N−1.
 - `autocorrect` *(int)*: explicit retractions or revisions.
 - `alignment_score` *(int, 1-10)*: how faithfully the final response follows the conclusions the trace reached. Below 8, the judge must cite the sentences the response failed to honour, and those are flagged in the trace view.
 - `repetition_rate` *(float)*: share of repeated word trigrams, computed without an LLM. Catches the rumination that raw local traces are prone to.
@@ -200,19 +200,23 @@ prompttestenv run Projects/MyNewTest --output-mode html
 The choice is **not** a choice about what gets measured. Every response, score,
 thinking trace and analysis is appended to `progress.jsonl` the moment it is
 produced, whatever mode you picked. The mode only decides what is rendered out
-of it — and you can render the others later, from the same run, for free:
+of it, and you can usually render the others later, from the same run, for free:
 
 ```powershell
 prompttestenv render Projects/MyNewTest --output-mode json
 ```
 
 `render` makes no LLM call when the run already produced its verdict, so
-changing your mind about the format costs nothing.
+changing your mind about the format costs nothing. The exception is
+`winner_only`, which skips the verdict judge and therefore writes no verdict at
+all: `render` on such a run reports the progress it found instead of a report. To
+get one, run the project again with another mode, which restores generation and
+evaluation from the log and pays only for the verdict call.
 
 | Mode | Pick it when |
 |---|---|
 | `html` | You are going to read the results yourself. This is the only view with the colour-coded traces and the per-test-case detail. The default. |
-| `md` | You want the conclusion and nothing else — to paste into a message, hand to someone who will not read a statistics table, or feed to an LLM that is orchestrating PromptTestEnv and must not spend its whole context on the report. It contains the verdict text alone, by design. |
+| `md` | You want the conclusion and nothing else: to paste into a message, hand to someone who will not read a statistics table, or feed to an LLM that is orchestrating PromptTestEnv and must not spend its whole context on the report. It contains the verdict text alone, by design. |
 | `json` | Something other than a person consumes the result: a script, a dashboard, a spreadsheet. Same content as the HTML, plus the individual per-repetition values the page averages away. The format is documented in `report.schema.json` at the repo root. |
 | `winner_only` | You just want to know whether the run worked. It prints one line and skips the verdict judge entirely, so it is the cheapest way to smoke-test a change. |
 
@@ -224,7 +228,7 @@ Two conventions will bite you if you do not know them:
   call failed, where a metric was switched off, or where there was nothing to
   compute a figure from. It is excluded from the means rather than averaged in,
   so a `values` array can be longer than the sample its `mean` describes.
-- **`0.0` is a real measurement** in the coverages and rates — a trace really can
+- **`0.0` is a real measurement** in the coverages and rates: a trace really can
   spend none of itself on a dimension. Do not fold it in with `-1`.
 
 The export carries the best-scoring repetition's response and trace, the same

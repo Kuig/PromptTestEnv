@@ -6,15 +6,15 @@ __pycache__/
 .cora/
 .claude/
 secrets.json
-# config.json is deliberately NOT ignored here, unlike in the sibling projects
-# (CONVENTIONS.md 4.2). It carries no credentials, only the definition of the
-# reasoning measurement instrument, which must be identical for anyone who
-# clones the repo. See README.md > Configuration.
+# config.json is deliberately NOT ignored here, unlike in the sibling projects.
+# It carries no credentials, only the definition of the reasoning measurement
+# instrument, which must be identical for anyone who clones the repo.
+# See README.md > Configuration and docs/configuration.md.
 CLAUDE.md
 Projects/
 # tests/fixtures/*/ configs (candidates.json, judge_config.json, ...) ARE
-# versioned, unlike Projects/ above — they're the manual smoke-test fixtures
-# documented in README.md > Testing. Only the artifacts a real run produces
+# versioned, unlike Projects/ above: they're the manual smoke-test fixtures
+# documented in CONTRIBUTING.md > Fixtures. Only the artifacts a real run produces
 # inside them are not, so running one for a local check never dirties the diff.
 tests/fixtures/*/Report/
 tests/fixtures/*/progress.jsonl

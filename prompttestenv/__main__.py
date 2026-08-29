@@ -89,7 +89,7 @@ def cmd_editor(args: argparse.Namespace) -> None:
 def build_parser() -> argparse.ArgumentParser:
     """Build the CLI argument parser."""
     parser = argparse.ArgumentParser(
-        prog="prompttest",
+        prog="prompttestenv",
         description="PromptTestEnv — LLM prompt benchmarking tool.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
