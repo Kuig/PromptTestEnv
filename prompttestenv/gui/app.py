@@ -50,7 +50,7 @@ with st.sidebar:
             st.rerun()
 
     st.divider()
-    output_mode = st.selectbox("Output mode", ["html", "md", "winner_only"])
+    output_mode = st.selectbox("Output mode", ["html", "md", "json", "winner_only"])
     force_restart = st.checkbox("Force restart (ignore progress)")
     force_reanalyze = st.checkbox("Force reanalyze (redo reasoning analysis)")
 

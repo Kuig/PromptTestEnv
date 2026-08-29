@@ -10,6 +10,7 @@ from prompttestenv.evaluator import run_evaluation_phase
 from prompttestenv.verdict import generate_verdict, evaluate_best_candidate_fast, parse_grouped_verdict
 from prompttestenv.generation import run_generation_phase
 from prompttestenv.reporting import generate_html_report
+from prompttestenv.json_report import generate_json_report
 from prompttestenv.models import TestCaseResult, CandidatePerformance, Candidate, TestCase, JudgeConfig, GlobalCriteria, ProgressState
 from prompttestenv.progress import append_event
 
@@ -86,7 +87,7 @@ def _generate_output(
     """Generate the final benchmark report.
 
     Args:
-        output_mode: Report format — 'html', 'md', or 'winner_only'.
+        output_mode: Report format — 'html', 'md', 'json' or 'winner_only'.
         candidates: Resolved candidate configurations.
         results: Completed test case results.
         project_dir: Benchmark project directory path.
@@ -127,6 +128,14 @@ def _generate_output(
         md_text += f"# GLOBAL VERDICT\n{grouped['global_verdict']}\n"
         verdict_for_md = md_text
 
+    if output_mode == "json":
+        json_file = generate_json_report(
+            project_dir, results, candidates, verdict, global_criteria, judge_config,
+            filename=f"{base_filename}.json",
+        )
+        logger.log_save(f"JSON report saved: {json_file}")
+        return f"JSON report: {json_file}"
+
     if output_mode == "md":
         report_dir = os.path.join(project_dir, "Report")
         os.makedirs(report_dir, exist_ok=True)
@@ -153,7 +162,7 @@ def run_project(
 
     Args:
         project_dir: Path to the project directory (must contain config files).
-        output_mode: Report format — 'html', 'md', or 'winner_only'.
+        output_mode: Report format — 'html', 'md', 'json' or 'winner_only'.
         force_restart: If True, deletes progress.jsonl and restarts from scratch.
 
     Returns:
@@ -296,11 +305,12 @@ def analyze_project(project_dir: str, force_reanalyze: bool = False) -> str:
         f"{done}/{len(in_scope)} traces analyzed."
     )
 
-def render_from_progress(project_dir: str) -> str:
+def render_from_progress(project_dir: str, output_mode: str = "html") -> str:
     """Regenerate the report from an existing progress.jsonl without re-running.
 
     Args:
         project_dir: Path to the benchmark project directory.
+        output_mode: Report format — 'html', 'md', 'json' or 'winner_only'.
 
     Returns:
         Report path string or partial progress summary.
@@ -369,7 +379,7 @@ def render_from_progress(project_dir: str) -> str:
 
     if progress_state.verdict:
         return _generate_output(
-            "html", candidates, results, project_dir, judge_config, global_criteria, progress_state
+            output_mode, candidates, results, project_dir, judge_config, global_criteria, progress_state
         )
 
     return (

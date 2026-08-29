@@ -35,9 +35,25 @@ class TestBuildParser(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self.parser.parse_args(["run", "Projects/Foo", "--output-mode", "bogus"])
 
+    def test_run_subcommand_accepts_json_output_mode(self):
+        args = self.parser.parse_args(["run", "Projects/Foo", "--output-mode", "json"])
+        self.assertEqual(args.output_mode, "json")
+
     def test_render_subcommand(self):
         args = self.parser.parse_args(["render", "Projects/Foo"])
         self.assertIs(args.func, cmd_render)
+        self.assertEqual(args.output_mode, "html")
+
+    def test_render_subcommand_takes_the_same_output_modes_as_run(self):
+        """Re-rendering a finished run in another format costs no LLM call."""
+        for mode in ("html", "md", "json", "winner_only"):
+            with self.subTest(mode=mode):
+                args = self.parser.parse_args(["render", "Projects/Foo", "--output-mode", mode])
+                self.assertEqual(args.output_mode, mode)
+
+    def test_render_subcommand_rejects_invalid_output_mode(self):
+        with self.assertRaises(SystemExit):
+            self.parser.parse_args(["render", "Projects/Foo", "--output-mode", "bogus"])
 
     def test_mcp_and_gui_subcommands_need_no_project_dir(self):
         args_mcp = self.parser.parse_args(["mcp"])
@@ -87,7 +103,14 @@ class TestCmdHandlers(LoggerResetTestCase):
         mock_render.return_value = "done"
         args = build_parser().parse_args(["render", "Projects/Foo"])
         cmd_render(args)
-        mock_render.assert_called_once_with("Projects/Foo")
+        mock_render.assert_called_once_with("Projects/Foo", "html")
+
+    @patch("prompttestenv.runner.render_from_progress")
+    def test_cmd_render_forwards_the_output_mode(self, mock_render):
+        mock_render.return_value = "done"
+        args = build_parser().parse_args(["render", "Projects/Foo", "--output-mode", "json"])
+        cmd_render(args)
+        mock_render.assert_called_once_with("Projects/Foo", "json")
 
 
 if __name__ == "__main__":

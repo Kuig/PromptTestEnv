@@ -64,8 +64,14 @@ class TestRegisterTools(unittest.TestCase):
     def test_get_results_delegates(self, mock_render):
         mock_render.return_value = "Report content"
         result = self.mcp.tools["prompttest_get_results"]("Projects/Foo")
-        mock_render.assert_called_once_with("Projects/Foo")
+        mock_render.assert_called_once_with("Projects/Foo", "html")
         self.assertEqual(result, "Report content")
+
+    @patch("prompttestenv.runner.render_from_progress")
+    def test_get_results_passes_the_output_mode_through(self, mock_render):
+        mock_render.return_value = "JSON report: /x/y.json"
+        self.mcp.tools["prompttest_get_results"]("Projects/Foo", "json")
+        mock_render.assert_called_once_with("Projects/Foo", "json")
 
     @patch("prompttestenv.runner.render_from_progress")
     def test_get_results_wraps_exceptions(self, mock_render):

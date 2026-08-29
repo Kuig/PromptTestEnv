@@ -40,7 +40,21 @@ def register_tools(mcp: "FastMCP") -> None:
 
         Args:
             project_dir: Path to the project directory.
-            output_mode: Report format — 'html', 'md', or 'winner_only'.
+            output_mode: Report format, one of:
+                'html' — full human-readable report under Report/: verdict,
+                    per-test-case scores, best responses and reasoning traces.
+                'md' — the verdict text alone, as a compact readable summary.
+                    Nothing is lost by choosing it: every detail stays in
+                    progress.jsonl and a later render can rebuild the HTML
+                    without any LLM call. Prefer this when you need to read the
+                    outcome yourself without filling your context.
+                'json' — the same content as 'html' in machine-readable form,
+                    plus the per-repetition raw values the page reduces to
+                    mean/std. Described by report.schema.json. Prefer this when
+                    a program, not a person, consumes the result.
+                'winner_only' — writes no file; returns one line naming the
+                    highest average task score. Cheapest: skips the verdict LLM
+                    call entirely.
             force_restart: If True, ignores previous progress and restarts from scratch.
 
         Returns:
@@ -73,17 +87,35 @@ def register_tools(mcp: "FastMCP") -> None:
             return f"Error: {exc}"
 
     @mcp.tool()
-    def prompttest_get_results(project_dir: str) -> str:
+    def prompttest_get_results(project_dir: str, output_mode: str = "html") -> str:
         """Regenerate and return the benchmark report from an existing progress.jsonl.
+
+        Makes no LLM call of any kind when the log already holds a verdict, so
+        re-rendering the same run in another format is free.
 
         Args:
             project_dir: Path to the project directory.
+            output_mode: Report format, one of:
+                'html' — full human-readable report under Report/: verdict,
+                    per-test-case scores, best responses and reasoning traces.
+                'md' — the verdict text alone, as a compact readable summary.
+                    Nothing is lost by choosing it: every detail stays in
+                    progress.jsonl and a later render can rebuild the HTML
+                    without any LLM call. Prefer this when you need to read the
+                    outcome yourself without filling your context.
+                'json' — the same content as 'html' in machine-readable form,
+                    plus the per-repetition raw values the page reduces to
+                    mean/std. Described by report.schema.json. Prefer this when
+                    a program, not a person, consumes the result.
+                'winner_only' — writes no file; returns one line naming the
+                    highest average task score. Cheapest: skips the verdict LLM
+                    call entirely.
 
         Returns:
             Report content or error description.
         """
         try:
             from prompttestenv.runner import render_from_progress
-            return render_from_progress(project_dir)
+            return render_from_progress(project_dir, output_mode)
         except Exception as exc:
             return f"Error: {exc}"

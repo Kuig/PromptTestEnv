@@ -109,6 +109,9 @@ class TestReportPath(LoggerResetTestCase):
         md = self._make_report("report.md")
         self.assertEqual(report_path(f"Markdown generated: {md}"), md)
 
+        js = self._make_report("report.json")
+        self.assertEqual(report_path(f"JSON report: {js}"), js)
+
     def test_returns_none_for_results_that_name_no_file(self):
         for result in (
             "Winner: Baseline (8.4)",

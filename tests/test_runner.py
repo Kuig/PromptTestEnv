@@ -170,6 +170,37 @@ class TestGenerateOutput(LoggerResetTestCase):
         self.assertIn("VERDICT FOR GROUP: G1", content)
         self.assertIn("GLOBAL VERDICT", content)
 
+    def test_json_mode_writes_a_parsable_report(self):
+        with patch("prompttestenv.runner.generate_verdict", return_value="Plain verdict."):
+            result = _generate_output(
+                "json", self.candidates, self.results, self.project_dir,
+                self.judge_config, self.global_criteria, ProgressState(),
+            )
+        self.assertIn("JSON report:", result)
+        json_files = list((Path(self.project_dir) / "Report").glob("*.json"))
+        self.assertEqual(len(json_files), 1)
+        payload = json.loads(json_files[0].read_text(encoding="utf-8"))
+        self.assertEqual(payload["verdict"]["text"], "Plain verdict.")
+        self.assertIn("A", payload["aggregate"])
+
+    def test_json_mode_needs_the_verdict_like_the_other_file_modes(self):
+        """It carries the verdict, so it cannot skip the judge the way winner_only does."""
+        with patch("prompttestenv.runner.generate_verdict", return_value="Plain verdict.") as mock_verdict:
+            _generate_output(
+                "json", self.candidates, self.results, self.project_dir,
+                self.judge_config, self.global_criteria, ProgressState(),
+            )
+        mock_verdict.assert_called_once()
+
+    def test_json_report_filename_matches_the_other_modes(self):
+        with patch("prompttestenv.runner.generate_verdict", return_value="Plain verdict."):
+            _generate_output(
+                "json", self.candidates, self.results, self.project_dir,
+                self.judge_config, self.global_criteria, ProgressState(),
+            )
+        name = list((Path(self.project_dir) / "Report").glob("*.json"))[0].stem
+        self.assertTrue(name.endswith("_1C_1T"), name)
+
     def test_html_mode_delegates_to_generate_html_report(self):
         with patch("prompttestenv.runner.generate_verdict", return_value="Plain verdict."), \
              patch("prompttestenv.runner.generate_html_report", return_value="/fake/report.html") as mock_html:
@@ -313,6 +344,48 @@ class TestRenderFromProgress(LoggerResetTestCase):
 
         mock_html.assert_called_once()
         self.assertIn("/fake/report.html", result)
+
+    def test_output_mode_reaches_the_renderer(self):
+        """A completed run can be re-rendered in another format at no LLM cost."""
+        from prompttestenv.progress import calculate_config_hash
+        current_hash = calculate_config_hash(self.project_dir)
+        # The candidate name must be one candidates.json actually declares: the
+        # exporter walks the configured candidates, so a log naming an unknown
+        # one contributes nothing to the payload.
+        cand = "Baseline (Flash 2.5)"
+        lines = [
+            json.dumps({"type": "meta", "config_hash": current_hash}),
+            json.dumps({"type": "gen", "cand_id": cand, "test_id": "customer_email", "rep": 0, "output": "x", "tokens": 1, "reasoning_tokens": 0, "elapsed": 0.1}),
+            json.dumps({"type": "eval", "cand_id": cand, "test_id": "customer_email", "rep": 0, "score": 8, "global_score": -1, "reason": "ok", "g_reason": "N/A"}),
+            json.dumps({"type": "verdict", "content": "Final verdict text."}),
+        ]
+        (Path(self.project_dir) / "progress.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        with patch("prompttestenv.runner.generate_verdict") as mock_verdict:
+            result = render_from_progress(self.project_dir, output_mode="json")
+
+        mock_verdict.assert_not_called()
+        self.assertIn("JSON report:", result)
+        payload = json.loads(
+            list((Path(self.project_dir) / "Report").glob("*.json"))[0].read_text(encoding="utf-8")
+        )
+        self.assertEqual(payload["verdict"]["text"], "Final verdict text.")
+        self.assertEqual(payload["test_cases"][0]["candidates"][cand]["score"]["values"], [8])
+        self.assertEqual(payload["aggregate"][cand]["score"]["mean"], 8)
+
+    def test_output_mode_defaults_to_html(self):
+        from prompttestenv.progress import calculate_config_hash
+        lines = [
+            json.dumps({"type": "meta", "config_hash": calculate_config_hash(self.project_dir)}),
+            json.dumps({"type": "verdict", "content": "Final verdict text."}),
+        ]
+        (Path(self.project_dir) / "progress.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        with patch("prompttestenv.runner.generate_html_report", return_value="/fake/report.html") as mock_html:
+            render_from_progress(self.project_dir)
+
+        mock_html.assert_called_once()
+
 
 
 if __name__ == "__main__":

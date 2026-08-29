@@ -5,7 +5,7 @@ Usage examples:
     prompttestenv run Projects/MyBenchmark --output-mode html
     prompttestenv run Projects/MyBenchmark --force-restart
     prompttestenv analyze Projects/MyBenchmark
-    prompttestenv render Projects/MyBenchmark
+    prompttestenv render Projects/MyBenchmark --output-mode json
     prompttestenv mcp
     prompttestenv gui
     prompttestenv editor
@@ -23,6 +23,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from unified_ai_client import silence_sdks
+
+# The report formats every entry point offers. "md" is a text summary of the
+# verdict alone, "json" the same content the HTML carries in machine-readable
+# form (see report.schema.json), "winner_only" writes no file at all.
+OUTPUT_MODES = ["html", "md", "json", "winner_only"]
 
 
 def cmd_init(args: argparse.Namespace) -> None:
@@ -54,7 +59,7 @@ def cmd_render(args: argparse.Namespace) -> None:
     """Handle the ``render`` subcommand."""
     from prompttestenv.runner import render_from_progress
     import prompttestenv.logger as logger
-    result = render_from_progress(args.project_dir)
+    result = render_from_progress(args.project_dir, args.output_mode)
     logger.log_info(result)
 
 
@@ -97,7 +102,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("project_dir", help="Path to the project directory.")
     p_run.add_argument(
         "--output-mode",
-        choices=["html", "md", "winner_only"],
+        choices=OUTPUT_MODES,
         default="html",
         help="Report format (default: html).",
     )
@@ -125,6 +130,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Regenerate reports from an existing progress.jsonl without re-running.",
     )
     p_render.add_argument("project_dir", help="Path to the project directory.")
+    p_render.add_argument(
+        "--output-mode",
+        choices=OUTPUT_MODES,
+        default="html",
+        help="Report format (default: html).",
+    )
     p_render.set_defaults(func=cmd_render)
 
     p_mcp = subparsers.add_parser("mcp", help="Start the MCP server on stdio.")

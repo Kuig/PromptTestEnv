@@ -43,6 +43,7 @@ def status_of(result: str) -> str:
 _REPORT_PREFIXES = (
     "Full process complete. HTML Report: ",
     "Markdown generated: ",
+    "JSON report: ",
 )
 
 

@@ -4,7 +4,7 @@ LLM prompt benchmarking tool.
 
 ## Overview
 
-Given a **project directory** containing candidate configurations and test cases, PromptTestEnv runs each prompt candidate against one or more LLM models (with optional multimodal attachments), evaluates responses with a judge LLM, and generates comparative HTML or Markdown reports. Resume is supported via `progress.jsonl`.
+Given a **project directory** containing candidate configurations and test cases, PromptTestEnv runs each prompt candidate against one or more LLM models (with optional multimodal attachments), evaluates responses with a judge LLM, and generates a comparative report — as a full HTML page, a short Markdown summary, a structured JSON export, or a single winner line (see [Output modes](#output-modes)). Resume is supported via `progress.jsonl`.
 
 > 💡 **Tip:** For a comprehensive guide on creating tests, configuring options, and using the framework for alternative use cases (like bulk document processing), see the [HOWTO Guide](HOWTO.md).
 
@@ -77,6 +77,7 @@ Either form leaves the fixture's own JSON config untouched: a real run only adds
 |---|---|
 | `secrets.json` | Provider API keys, read by `unified_ai_client` from the working directory. Copy `secrets.json.example` to get started. |
 | `config.json` | Cross-project settings: the reasoning-analysis taxonomy and its judge prompts, the sentence-splitting parameters, the list of locally served providers, whether candidates are warmed up before being timed, and the metadata block appended to the verdict judge's system prompt. |
+| `report.schema.json` | JSON Schema (draft 2020-12) of the `--output-mode json` export. Reference documentation, not something the tool reads: nothing loads it at runtime. A copy ships inside the package as `prompttestenv/templates/report.schema.json` so a wheel install has it too, and a unit test keeps the two identical. |
 
 Everything that describes a single benchmark lives in `Projects/<name>/` and nothing else needs to. `config.json` holds the opposite kind of setting: the definition of the *measurement instrument*. The reasoning dimensions, their definitions and the prompts that apply them have to be identical everywhere, otherwise two reports are not comparable, so they are deliberately not per-project and not editable from `judge_config.json`.
 
@@ -131,8 +132,9 @@ prompttestenv run Projects/MyBenchmark --force-restart
 prompttestenv analyze Projects/MyBenchmark
 prompttestenv analyze Projects/MyBenchmark --force-reanalyze
 
-# Regenerate report from existing progress without re-running
+# Regenerate report from existing progress without re-running (no LLM call)
 prompttestenv render Projects/MyBenchmark
+prompttestenv render Projects/MyBenchmark --output-mode json
 
 # Start the MCP server (stdio)
 prompttestenv mcp
@@ -144,6 +146,28 @@ prompttestenv gui
 prompttestenv editor
 ```
 
+### Output modes
+
+`run` and `render` take the same `--output-mode`. Whichever you pick, nothing is
+lost: every response, score, trace and analysis is written to `progress.jsonl`
+as it is produced, so a later `render` can rebuild any of the other formats from
+the same run **without a single LLM call**.
+
+| Mode | Writes | What it is |
+|---|---|---|
+| `html` (default) | `Report/<timestamp>_<N>C_<M>T.html` | The full report, for a human. Verdict, per-test-case scores with mean ± sd, best response per candidate, and the thinking trace colour-coded in place by the reasoning analysis. |
+| `md` | `Report/<timestamp>_<N>C_<M>T.md` | The verdict text alone, as a readable summary. Deliberately just that: it is meant for someone who wants the conclusion without the apparatus — or for an LLM driving PromptTestEnv as a tool, which needs the outcome without spending its context on four hundred rows of statistics. The detail is not gone, it is in `progress.jsonl`; `render` brings the HTML back when you want it. |
+| `json` | `Report/<timestamp>_<N>C_<M>T.json` | The same content the HTML carries, structured for a program instead of a page — **plus** the per-repetition raw values the page reduces to mean and sd. Described field by field in [`report.schema.json`](report.schema.json). Use it when something other than a person reads the result. |
+| `winner_only` | nothing | One line naming the highest average task score. The cheapest mode: it skips the verdict judge entirely, so it is the one to use for a smoke run. |
+
+Two things to know before reading a JSON export. **`-1` means "not measured"** —
+a judge call that failed, a metric switched off, a quantity with nothing to
+compute it from — and never a low score; it is excluded from the means rather
+than averaged in. But `0.0` in a coverage or a rate is a real measurement, and
+the schema says which is which per field. And the export carries only the
+**best-scoring** repetition's response and trace; the others stay in
+`progress.jsonl`.
+
 ### MCP (Claude Desktop / AI agents)
 
 Tools exposed:
@@ -153,7 +177,7 @@ Tools exposed:
 | `prompttest_init_project` | Initialize a new benchmark project directory |
 | `prompttest_run_project` | Run a benchmark project |
 | `prompttest_analyze_reasoning` | Analyze the reasoning traces stored in a project's progress log |
-| `prompttest_get_results` | Regenerate report from existing progress |
+| `prompttest_get_results` | Regenerate report from existing progress, in any output mode, with no LLM call |
 
 ### As a Library
 
@@ -173,9 +197,9 @@ Public surface exposed by `from prompttestenv import ...` (see `prompttestenv/__
 | Name | Kind | Signature | Description |
 |---|---|---|---|
 | `init_project` | function | `init_project(project_dir: str) -> None` | Scaffold a new benchmark project directory with default config files. |
-| `run_project` | function | `run_project(project_dir: str, output_mode: str = "html", force_restart: bool = False) -> str` | Run the full benchmark and return the report path (or an error string, never raises). |
+| `run_project` | function | `run_project(project_dir: str, output_mode: str = "html", force_restart: bool = False) -> str` | Run the full benchmark and return the report path (or an error string, never raises). `output_mode` is one of `html`, `md`, `json`, `winner_only` — see [Output modes](#output-modes). |
 | `analyze_project` | function | `analyze_project(project_dir: str, force_reanalyze: bool = False) -> str` | Run only the reasoning-analysis phase over the traces already in `progress.jsonl`. No generation and no judging calls. |
-| `render_from_progress` | function | `render_from_progress(project_dir: str) -> str` | Regenerate the report from an existing `progress.jsonl`, with no LLM calls. |
+| `render_from_progress` | function | `render_from_progress(project_dir: str, output_mode: str = "html") -> str` | Regenerate the report from an existing `progress.jsonl`, in any output mode, with no LLM calls. |
 | `Candidate` | dataclass | `Candidate.load_all(project_dir) -> list[Candidate]` | Loads and resolves `candidates.json` (including `system_prompt_file` content). Raises `FileNotFoundError` if the file is missing. |
 | `TestCase` | dataclass | `TestCase.load_all(project_dir) -> list[TestCase]` | Loads `test_cases.json`. Raises `FileNotFoundError` if the file is missing. |
 | `JudgeConfig` | dataclass | `JudgeConfig.load(project_dir) -> JudgeConfig` | Loads `judge_config.json`. Raises `FileNotFoundError` if the file is missing. |
@@ -253,7 +277,8 @@ Projects/<benchmark>/
 ├── global_criteria.json    ← Structured global criteria JSON (with mode selector)
 ├── system_prompts/         ← Optional system prompt files
 ├── test_files/              ← Attachments (images, text files)
-└── progress.jsonl          ← Resume-safe run log
+├── progress.jsonl          ← Resume-safe run log: every response, score and analysis
+└── Report/                 ← Generated reports, one file per run (.html / .md / .json)
 ```
 
 ### `candidates.json` example
@@ -314,7 +339,7 @@ PromptTestEnv runs each benchmark through a two-phase pipeline, orchestrated by 
 2. **Evaluation** (`evaluator.py`): for every generated response, calls the judge (per the test case's `judge_type`, plus an independent global-criteria score). Results are appended to `progress.jsonl`.
 3. **Reasoning analysis** (`analysis.py`, only when `reasoning_analysis` is `"best"` or `"all"`): splits each stored thinking trace into sentence-sized units and has a judge score every unit on each reasoning dimension. It reads only what generation already wrote, so it makes no generation and no judging calls and can be re-run on its own with `prompttestenv analyze`. `"best"` measures only the highest-scoring repetition of each test case, which is the one the report draws, so it costs `repetitions` times less than `"all"`; the report and the verdict payload both record which scope produced the figures, since the two are not comparable.
 4. **Verdict** (`verdict.py`): a verdict LLM writes the final comparative report body (per-group verdicts plus a global verdict if `group_verdicts` is enabled, otherwise a single verdict). Its payload opens with a pooled per-candidate table, plus a second table of the reasoning profile when the analysis ran, so the judge compares candidates on figures it does not have to compute itself.
-5. **Report** (`reporting.py`): renders the verdict and aggregated statistics into an HTML or Markdown report under `Report/`.
+5. **Report** (`reporting.py`): renders the verdict and aggregated statistics under `Report/`, as an HTML page, a Markdown summary or a JSON export, per `--output-mode`.
 
 Every phase resumes safely: `progress.jsonl` is an append-only JSONL log, and each run starts by comparing an MD5 hash of the project's config files against the hash stored on the first line (see [Resume Policy](#resume-policy)).
 
@@ -330,7 +355,8 @@ The Python package `prompttestenv` is organized as follows:
 - `analysis.py`: Phase 3, the reasoning-analysis pass over stored traces.
 - `test_judge.py`: judge dispatch logic for a single test case (`llm-judge`, `similarity`, `assert`).
 - `verdict.py`: aggregate group verdicts and the global comparative conclusion.
-- `reporting.py`: HTML and Markdown report compilation.
+- `reporting.py`: the Jinja2 HTML report and its presentation helpers (badges, trace colouring, the small Markdown-to-HTML converter).
+- `json_report.py`: the JSON export. A sibling renderer rather than part of `reporting.py`: it shares no code with the HTML side, and both read the same `pool_by_candidate` aggregation so the two surfaces cannot disagree.
 - `models.py`: domain dataclasses (`Candidate`, `TestCase`, `JudgeConfig`, `GlobalCriteria`, `ProgressState`, ...), each owning its own `.load()`/`.load_all()`.
 - `config.py`: global `AppConfig` (root `config.json`), project scaffolding (`init_project`) and secrets loading.
 - `progress.py`: low-level `progress.jsonl` primitives (config hashing, event appending).

@@ -189,7 +189,51 @@ Each candidate gets one horizontal bar per dimension, plus the density figure, t
 
 ---
 
-## 3. Hacking the Framework (Alternative Use Cases)
+## 3. Choosing an Output Mode
+
+When you run a benchmark you pick what it writes:
+
+```powershell
+prompttestenv run Projects/MyNewTest --output-mode html
+```
+
+The choice is **not** a choice about what gets measured. Every response, score,
+thinking trace and analysis is appended to `progress.jsonl` the moment it is
+produced, whatever mode you picked. The mode only decides what is rendered out
+of it — and you can render the others later, from the same run, for free:
+
+```powershell
+prompttestenv render Projects/MyNewTest --output-mode json
+```
+
+`render` makes no LLM call when the run already produced its verdict, so
+changing your mind about the format costs nothing.
+
+| Mode | Pick it when |
+|---|---|
+| `html` | You are going to read the results yourself. This is the only view with the colour-coded traces and the per-test-case detail. The default. |
+| `md` | You want the conclusion and nothing else — to paste into a message, hand to someone who will not read a statistics table, or feed to an LLM that is orchestrating PromptTestEnv and must not spend its whole context on the report. It contains the verdict text alone, by design. |
+| `json` | Something other than a person consumes the result: a script, a dashboard, a spreadsheet. Same content as the HTML, plus the individual per-repetition values the page averages away. The format is documented in `report.schema.json` at the repo root. |
+| `winner_only` | You just want to know whether the run worked. It prints one line and skips the verdict judge entirely, so it is the cheapest way to smoke-test a change. |
+
+### Reading a JSON export
+
+Two conventions will bite you if you do not know them:
+
+- **`-1` means "not measured"**, never "scored badly". It appears where a judge
+  call failed, where a metric was switched off, or where there was nothing to
+  compute a figure from. It is excluded from the means rather than averaged in,
+  so a `values` array can be longer than the sample its `mean` describes.
+- **`0.0` is a real measurement** in the coverages and rates — a trace really can
+  spend none of itself on a dimension. Do not fold it in with `-1`.
+
+The export carries the best-scoring repetition's response and trace, the same
+one the HTML report shows. The other repetitions' texts stay in
+`progress.jsonl`; their scores, token counts and timings are all in the export.
+
+---
+
+## 4. Hacking the Framework (Alternative Use Cases)
 
 While PromptTestEnv is designed for benchmarking, its architecture (Parallel Generation ➔ Judge Evaluation ➔ Aggregated Report) makes it an excellent engine for **bulk processing and analysis tasks**.
 

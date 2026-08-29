@@ -1,0 +1,577 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Kuig/PromptTestEnv/report.schema.json",
+  "title": "PromptTestEnv benchmark report",
+  "description": "The file written by `prompttestenv run --output-mode json` (or `render --output-mode json`) under a project's Report/ directory. It carries the same content as the HTML report, plus the per-repetition raw values the page reduces to mean and standard deviation. SENTINEL: throughout this document, -1 means 'not measured' — a judge call that failed, a metric that was switched off, or a quantity with nothing to compute it from. It is never a low measurement. Where a field says so explicitly, 0.0 is instead a real measurement and must not be conflated with -1. The responses of repetitions other than the best-scoring one are not here; they live in the project's progress.jsonl.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "generated_at",
+    "project_name",
+    "verdict",
+    "configuration",
+    "aggregate",
+    "test_cases"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "description": "Version of this report format. Bumped when the payload shape changes.",
+      "examples": ["1.0"]
+    },
+    "generated_at": {
+      "type": "string",
+      "description": "Local time the file was written, ISO 8601 to the second. This is when the report was rendered, not when the benchmark ran: a `render` re-issues it against an older progress.jsonl."
+    },
+    "project_name": {
+      "type": "string",
+      "description": "Basename of the benchmark project directory."
+    },
+
+    "verdict": {
+      "type": "object",
+      "description": "The comparative conclusion written by the verdict judge. When the project sets group_verdicts, the judge writes one verdict per test-case group plus a synthesis; otherwise there is a single verdict and `groups` is empty.",
+      "required": ["grouped", "groups", "global_verdict", "text"],
+      "additionalProperties": false,
+      "properties": {
+        "grouped": {
+          "type": "boolean",
+          "description": "True when the verdict is split per group."
+        },
+        "groups": {
+          "type": "array",
+          "description": "Per-group verdicts, empty when `grouped` is false.",
+          "items": {
+            "type": "object",
+            "required": ["group_name", "verdict"],
+            "additionalProperties": false,
+            "properties": {
+              "group_name": {
+                "type": "string",
+                "description": "The `group` field shared by the test cases this verdict covers."
+              },
+              "verdict": {
+                "type": "string",
+                "description": "Markdown body of this group's verdict."
+              }
+            }
+          }
+        },
+        "global_verdict": {
+          "type": "string",
+          "description": "The overall conclusion, as Markdown. When `grouped` is false this is the whole verdict."
+        },
+        "text": {
+          "type": "string",
+          "description": "The verdict exactly as stored on the progress.jsonl `verdict` event: the grouped-verdict JSON when `grouped` is true, otherwise the same text as `global_verdict`. Kept so a consumer can reproduce the log byte for byte."
+        }
+      }
+    },
+
+    "configuration": {
+      "type": "object",
+      "description": "What produced the numbers. Mirrors the HTML report's configuration footer.",
+      "required": [
+        "candidates",
+        "repetitions",
+        "group_verdicts",
+        "global_criteria",
+        "test_judge",
+        "verdict_judge",
+        "reasoning"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "candidates": {
+          "type": "array",
+          "description": "The configurations being compared, in declaration order. A 'candidate' is whatever the project varies — usually a model, sometimes a system prompt or a persona against a fixed model.",
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "provider",
+              "model",
+              "temperature",
+              "disable_safety",
+              "thinking",
+              "system_prompt_file"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Unique label. This is the key used in `aggregate` and in each test case's `candidates` map."
+              },
+              "provider": {
+                "type": "string",
+                "description": "Backend that served the model, e.g. google, ollama, anthropic, openai."
+              },
+              "model": {
+                "type": "string",
+                "description": "Provider-side model identifier."
+              },
+              "temperature": { "type": "number" },
+              "disable_safety": {
+                "type": "boolean",
+                "description": "Whether provider safety filters were switched off for this candidate."
+              },
+              "thinking": {
+                "description": "Reasoning/thinking setting as written in candidates.json: a boolean, or a provider-specific string such as \"default\", \"low\", \"high\".",
+                "type": ["boolean", "string"]
+              },
+              "system_prompt_file": {
+                "type": ["string", "null"],
+                "description": "File under the project's system_prompts/ whose content was used as the system instruction, or null for a bare baseline. The resolved text itself is deliberately not included here."
+              }
+            }
+          }
+        },
+        "repetitions": {
+          "type": "integer",
+          "description": "How many times each candidate answered each test case. The length of the `values` arrays below is this number times the number of test cases (pooled) or this number alone (per test case), minus anything an interrupted run never produced.",
+          "minimum": 1
+        },
+        "group_verdicts": {
+          "type": "boolean",
+          "description": "Whether the verdict judge was asked for one verdict per group."
+        },
+        "global_criteria": {
+          "type": "object",
+          "description": "The project-wide criterion applied to every response, independently of each test case's own criteria.",
+          "required": ["mode", "criteria"],
+          "additionalProperties": false,
+          "properties": {
+            "mode": {
+              "type": "string",
+              "enum": ["llm-judge", "similarity", "assert", "none"],
+              "description": "How the global score was produced. \"none\" means global scoring was off, and every global_score in this file is the -1 sentinel."
+            },
+            "criteria": {
+              "type": "string",
+              "description": "The criteria text the active mode used: a rubric for llm-judge, a target response for similarity, a Python lambda source for assert. Empty when mode is \"none\"."
+            }
+          }
+        },
+        "test_judge": {
+          "$ref": "#/$defs/judgeSettings",
+          "description": "The LLM that scored each response against its test case's criteria."
+        },
+        "verdict_judge": {
+          "$ref": "#/$defs/judgeSettings",
+          "description": "The LLM that wrote `verdict`."
+        },
+        "reasoning": {
+          "type": "object",
+          "description": "The reasoning-analysis instrument. The taxonomy comes from the tool's root config.json rather than the project, so that profiles from different benchmarks are comparable.",
+          "required": [
+            "enabled",
+            "scope",
+            "schema_stamp",
+            "intensity_scale",
+            "dimensions",
+            "judge"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Whether the analysis phase ran at all. Equivalent to scope != \"none\"."
+            },
+            "scope": {
+              "type": "string",
+              "enum": ["none", "best", "all"],
+              "description": "Which traces were analysed. \"best\" measures only the highest-scoring repetition of each candidate x test case — the one this file reports under `best` — so its figures are not comparable with an \"all\" run's."
+            },
+            "schema_stamp": {
+              "type": "string",
+              "description": "Identifier of the taxonomy in force when this file was written, e.g. \"framing+solving+presentation@1a2b3c4d\". Compare it with the per-analysis `schema_stamp` values: if they differ, the file mixes analyses produced by different schema versions and they must not be averaged together.",
+              "examples": ["framing+solving+presentation@1a2b3c4d"]
+            },
+            "intensity_scale": {
+              "type": "integer",
+              "description": "Upper bound of a unit's per-dimension score. Units are scored 0..intensity_scale on each dimension."
+            },
+            "dimensions": {
+              "type": "array",
+              "description": "The axes each trace unit is scored on. INDEPENDENT axes, not a partition: one sentence may score on several at once, so the coverages need not sum to 1 and their sum is reported separately as `density`.",
+              "items": {
+                "type": "object",
+                "required": ["name", "definition", "color"],
+                "additionalProperties": false,
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "description": "Dimension key. The per-unit scores and the coverage_* fields use this name."
+                  },
+                  "definition": {
+                    "type": "string",
+                    "description": "The single-concept question the judge was asked for this dimension."
+                  },
+                  "color": {
+                    "type": "string",
+                    "description": "Display colour used by the HTML report, as #rrggbb."
+                  }
+                }
+              }
+            },
+            "judge": {
+              "type": "object",
+              "description": "The LLM that scored the trace units.",
+              "required": ["provider", "model", "temperature", "thinking", "dimension_mode"],
+              "additionalProperties": false,
+              "properties": {
+                "provider": { "type": "string" },
+                "model": { "type": "string" },
+                "temperature": { "type": "number" },
+                "thinking": { "type": ["boolean", "string"] },
+                "dimension_mode": {
+                  "type": ["string", "null"],
+                  "enum": ["split", "joint", null],
+                  "description": "\"split\" asks one single-concept question per dimension, \"joint\" asks for all of them in one call. null means the project left it unset and the tool's default applied."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "aggregate": {
+      "type": "object",
+      "description": "One record per candidate, pooling every repetition of every test case — the report's STATS row. Keys are candidate names, matching configuration.candidates[].name.",
+      "additionalProperties": {
+        "allOf": [{ "$ref": "#/$defs/performance" }],
+        "type": "object",
+        "required": ["combined_avg", "reasoning_profile"],
+        "unevaluatedProperties": false,
+        "properties": {
+          "combined_avg": {
+            "type": "number",
+            "description": "Task and global score means averaged, or whichever of the two was actually measured. -1 when neither was. This is the headline figure the HTML shows next to each candidate's name."
+          },
+          "reasoning_profile": {
+            "$ref": "#/$defs/reasoningProfile"
+          }
+        }
+      }
+    },
+
+    "test_cases": {
+      "type": "array",
+      "description": "One entry per test case, in declaration order.",
+      "items": {
+        "type": "object",
+        "required": [
+          "test_id",
+          "group",
+          "judge_type",
+          "prompt",
+          "criteria",
+          "files_used",
+          "candidates"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "test_id": {
+            "type": "string",
+            "description": "Unique identifier from test_cases.json."
+          },
+          "group": {
+            "type": "string",
+            "description": "Grouping label. Drives the per-group verdicts when configuration.group_verdicts is true."
+          },
+          "judge_type": {
+            "type": "string",
+            "enum": ["llm-judge", "similarity", "assert"],
+            "description": "How this test case's task score was produced. \"llm-judge\": an LLM scored the response against `criteria`. \"similarity\": cosine similarity between embeddings of the response and `criteria`, scaled to 1-10. \"assert\": `criteria` is a Python lambda evaluated against the response text, and its author controls the returned score directly — including a deliberate -1 for 'not applicable'."
+          },
+          "prompt": {
+            "type": "string",
+            "description": "The prompt sent to every candidate for this test case."
+          },
+          "criteria": {
+            "type": "string",
+            "description": "The evaluation criteria, read according to `judge_type`."
+          },
+          "files_used": {
+            "type": "array",
+            "description": "Attachments sent with the prompt, as paths relative to the project directory. Empty when the test case has none.",
+            "items": { "type": "string" }
+          },
+          "candidates": {
+            "type": "object",
+            "description": "Per-candidate results for this test case. Keys are candidate names; a candidate with no recorded repetition for this test case is absent rather than present-and-empty.",
+            "additionalProperties": {
+              "allOf": [{ "$ref": "#/$defs/performance" }],
+              "type": "object",
+              "required": ["best"],
+              "unevaluatedProperties": false,
+              "properties": {
+                "best": {
+                  "type": "object",
+                  "description": "The highest-scoring repetition of this candidate on this test case — the one the HTML report displays. The other repetitions' texts are not in this file; they are in progress.jsonl.",
+                  "required": [
+                    "output",
+                    "reason",
+                    "global_reason",
+                    "reasoning_text",
+                    "reasoning_analysis"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "output": {
+                      "type": "string",
+                      "description": "The response text. Empty when no repetition produced one."
+                    },
+                    "reason": {
+                      "type": "string",
+                      "description": "The task judge's justification for the score."
+                    },
+                    "global_reason": {
+                      "type": "string",
+                      "description": "The global judge's justification. Empty when global scoring is off."
+                    },
+                    "reasoning_text": {
+                      "type": "string",
+                      "description": "The thinking trace of this repetition, verbatim. Emitted in full because `reasoning_analysis.units` are character offsets into THIS string: without it they cannot be resolved. Empty when the model returned no trace. Whether it is the raw chain of thought or a provider-written summary is recorded in reasoning_analysis.reasoning_is_summary."
+                    },
+                    "reasoning_analysis": {
+                      "description": "The per-unit analysis of `reasoning_text`, or null when this trace was not analysed (analysis off, or scope \"best\" and this was not the best repetition).",
+                      "oneOf": [
+                        { "type": "null" },
+                        { "$ref": "#/$defs/reasoningAnalysis" }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+
+  "$defs": {
+    "judgeSettings": {
+      "type": "object",
+      "required": ["provider", "model", "temperature", "disable_safety", "thinking"],
+      "additionalProperties": false,
+      "properties": {
+        "provider": { "type": "string" },
+        "model": { "type": "string" },
+        "temperature": { "type": "number" },
+        "disable_safety": { "type": "boolean" },
+        "thinking": { "type": ["boolean", "string"] }
+      }
+    },
+
+    "statBlock": {
+      "type": "object",
+      "description": "One measured quantity: its mean, its standard deviation, and every raw value behind them. -1 values in `values` are the 'not measured' sentinel and are EXCLUDED from mean and std rather than averaged in as low results — so `values` may be longer than the sample the mean describes, and a mean of -1 means nothing measurable was recorded at all.",
+      "required": ["mean", "std", "values"],
+      "additionalProperties": false,
+      "properties": {
+        "mean": { "type": "number", "description": "Mean of the measured values, or -1 when none were." },
+        "std": { "type": "number", "description": "Population standard deviation of the measured values." },
+        "values": {
+          "type": "array",
+          "description": "One entry per repetition, in the order they ran. This is the detail the HTML report does not show.",
+          "items": { "type": "number" }
+        }
+      }
+    },
+
+    "performance": {
+      "type": "object",
+      "description": "The measured quantities of one candidate, either pooled over the whole run or for a single test case.",
+      "required": [
+        "score",
+        "global_score",
+        "tokens",
+        "reasoning_tokens",
+        "time",
+        "cost_per_point"
+      ],
+      "properties": {
+        "score": {
+          "allOf": [{ "$ref": "#/$defs/statBlock" }],
+          "description": "Task score, 1-10, per the test case's judge_type. -1 means the evaluator itself failed. An `assert` test case's author may also return -1 deliberately to mean 'not applicable to this response'."
+        },
+        "global_score": {
+          "allOf": [{ "$ref": "#/$defs/statBlock" }],
+          "description": "Score against the project-wide global criteria, 1-10. All -1 when configuration.global_criteria.mode is \"none\"."
+        },
+        "tokens": {
+          "allOf": [{ "$ref": "#/$defs/statBlock" }],
+          "description": "Output tokens billed for the response."
+        },
+        "reasoning_tokens": {
+          "allOf": [{ "$ref": "#/$defs/statBlock" }],
+          "description": "Thinking tokens billed. 0 for models that do not think, or that were run with thinking off."
+        },
+        "time": {
+          "allOf": [{ "$ref": "#/$defs/statBlock" }],
+          "description": "Wall-clock seconds for the generation call. Per-process one-off costs (SDK import, client construction, attachment upload) are warmed up before the clock starts, so these are comparable across candidates within one run — but not across runs on different hardware or networks."
+        },
+        "cost_per_point": {
+          "type": "object",
+          "description": "Thinking tokens spent per point of task score; lower is cheaper. A DIAGNOSTIC, NOT A RANKING KEY: the score floors at 1 and spans only 10x while token counts span far more, so a candidate that thinks little and fails scores well here.",
+          "required": ["pooled", "mean", "std"],
+          "additionalProperties": false,
+          "properties": {
+            "pooled": {
+              "type": "number",
+              "description": "Ratio of the means: mean(reasoning_tokens) / mean(score). -1 when there is no thinking to price or no score to price it against."
+            },
+            "mean": {
+              "type": "number",
+              "description": "Mean of each repetition's OWN ratio — a different statistic from `pooled`, which it need not equal. The two diverge the more the score varies across the repetitions this record spans."
+            },
+            "std": {
+              "type": "number",
+              "description": "Standard deviation of the per-repetition ratios averaged in `mean`."
+            }
+          }
+        }
+      }
+    },
+
+    "reasoningProfile": {
+      "type": "object",
+      "description": "Reasoning figures pooled over every analysed repetition of one candidate. An EMPTY OBJECT when nothing was analysed. Keys are avg_<metric> and std_<metric> for each metric of reasoningAnalysis, plus the three below. A coverage of 0.0 is a real measurement — the trace really spent none of itself on that dimension — and must not be read as -1 'not measured'.",
+      "properties": {
+        "n": {
+          "type": "integer",
+          "description": "How many per-repetition analyses were pooled."
+        },
+        "is_summary": {
+          "type": "boolean",
+          "description": "True when ANY pooled trace was a provider-written summary rather than the raw chain of thought. When true, never compare this profile's length- or composition-derived figures against a raw-trace candidate's: they partly measure the summariser."
+        },
+        "schema_stamps": {
+          "type": "array",
+          "description": "The distinct taxonomy stamps behind the pooled analyses. More than one entry means the figures mix schema versions and should not be read as one measurement.",
+          "items": { "type": "string" }
+        }
+      },
+      "additionalProperties": true
+    },
+
+    "reasoningAnalysis": {
+      "type": "object",
+      "description": "The analysis of one thinking trace. The trace is split PROCEDURALLY into sentence-sized units before any LLM sees it, so full coverage and zero overlap are structural; the judge only ever returns numbers against unit ids.",
+      "required": [
+        "units",
+        "coverage_framing",
+        "coverage_solving",
+        "coverage_presentation",
+        "density",
+        "alt_path",
+        "autocorrect",
+        "alignment_score",
+        "alt_path_units",
+        "autocorrect_units",
+        "alignment_evidence",
+        "repetition_rate",
+        "trace_response_drift",
+        "reasoning_is_summary",
+        "schema_stamp"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "units": {
+          "type": "array",
+          "description": "The trace's units in order, each a character span of best.reasoning_text.",
+          "items": {
+            "type": "object",
+            "required": ["start", "end", "framing", "solving", "presentation"],
+            "additionalProperties": false,
+            "properties": {
+              "start": {
+                "type": "integer",
+                "description": "Inclusive start offset into best.reasoning_text."
+              },
+              "end": {
+                "type": "integer",
+                "description": "Exclusive end offset into best.reasoning_text. Gaps between consecutive units are whitespace."
+              },
+              "framing": {
+                "type": "number",
+                "description": "This unit's framing intensity, 0..configuration.reasoning.intensity_scale."
+              },
+              "solving": {
+                "type": "number",
+                "description": "This unit's solving intensity, on the same scale."
+              },
+              "presentation": {
+                "type": "number",
+                "description": "This unit's presentation intensity, on the same scale."
+              }
+            }
+          }
+        },
+        "coverage_framing": {
+          "type": "number",
+          "description": "Share of the trace, weighted by unit length, spent on framing. In [0,1], or -1 if not measured. 0.0 is a real measurement."
+        },
+        "coverage_solving": {
+          "type": "number",
+          "description": "Share spent on solving. In [0,1], or -1 if not measured. 0.0 is a real measurement."
+        },
+        "coverage_presentation": {
+          "type": "number",
+          "description": "Share spent on presentation. In [0,1], or -1 if not measured. 0.0 is a real measurement."
+        },
+        "density": {
+          "type": "number",
+          "description": "Sum of the three coverages: how many concerns the trace carries per unit of text. Exceeds 1 when units score on several dimensions at once. -1 if not measured."
+        },
+        "alt_path": {
+          "type": "integer",
+          "description": "How many alternative approaches the trace weighed, counted as the number of units cited in alt_path_units. -1 if not measured."
+        },
+        "autocorrect": {
+          "type": "integer",
+          "description": "How many times the trace corrected itself, counted as the number of units cited in autocorrect_units. -1 if not measured."
+        },
+        "alignment_score": {
+          "type": "integer",
+          "description": "How well the final response follows what the trace concluded, 1-10. Below 8 the judge must cite the contradicted units in alignment_evidence. -1 if not measured."
+        },
+        "alt_path_units": {
+          "type": "array",
+          "description": "1-based indices into `units` where an alternative was weighed.",
+          "items": { "type": "integer" }
+        },
+        "autocorrect_units": {
+          "type": "array",
+          "description": "1-based indices into `units` where the trace corrected itself.",
+          "items": { "type": "integer" }
+        },
+        "alignment_evidence": {
+          "type": "array",
+          "description": "1-based indices into `units` that the final response contradicts.",
+          "items": { "type": "integer" }
+        },
+        "repetition_rate": {
+          "type": "number",
+          "description": "How much of the trace restates itself, in [0,1]. Computed procedurally with no LLM call. 0.0 is a real measurement."
+        },
+        "trace_response_drift": {
+          "type": "number",
+          "description": "Textual similarity between the trace and the response, in [0,1]. Computed procedurally with no LLM call. Low values mean the response says something the trace did not."
+        },
+        "reasoning_is_summary": {
+          "description": "True when the provider returned a summary the model wrote about its own reasoning rather than the raw chain of thought (Google does; the others do not). null for traces recorded before providers reported this — read null as 'unknown', never as 'raw'. Length and composition figures of a summarised trace must never be ranked against a raw one.",
+          "type": ["boolean", "null"]
+        },
+        "schema_stamp": {
+          "type": "string",
+          "description": "The taxonomy version this analysis was produced under. Compare with configuration.reasoning.schema_stamp."
+        }
+      }
+    }
+  }
+}
