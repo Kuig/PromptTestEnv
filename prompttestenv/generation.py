@@ -3,11 +3,86 @@ from __future__ import annotations
 import time
 
 import prompttestenv.logger as logger
-from prompttestenv.api import call_with_timeout, get_llm_response, preload_model_for_run
+from prompttestenv.api import call_with_timeout, get_llm_response, warm_up_for_run
+from prompttestenv.config import get_app_config
 from prompttestenv.progress import append_event
 from prompttestenv.models import (
     Candidate, TestCaseResult, CandidatePerformance, JudgeConfig, LlmResult, ProgressState,
 )
+
+
+
+def _pending_tests(
+    cand_id: str,
+    results: list[TestCaseResult],
+    repetitions: int,
+    progress_state: ProgressState,
+) -> list[TestCaseResult]:
+    """The test cases this candidate still has generation work left for.
+
+    A resumed run must not pay to warm up a candidate whose every repetition is
+    already in the log, and must not upload the attachments of a test case it
+    will never call again.
+
+    Args:
+        cand_id: Candidate name.
+        results: All test case results, in declaration order.
+        repetitions: Repetitions configured for this run.
+        progress_state: Resume state built from progress.jsonl.
+
+    Returns:
+        The results holding at least one (cand_id, test_id, rep) key that is
+        not yet completed, in declaration order.
+    """
+    return [
+        test_result
+        for test_result in results
+        if any(
+            (cand_id, test_result.test_id, rep) not in progress_state.completed_gen
+            for rep in range(repetitions)
+        )
+    ]
+
+
+def _warm_up_candidate(
+    cand: Candidate,
+    results: list[TestCaseResult],
+    repetitions: int,
+    progress_state: ProgressState,
+) -> None:
+    """Pay this candidate's one-off provider costs before the clock starts.
+
+    Runs outside the timed block so the SDK import, the client construction,
+    the TLS handshake and every attachment upload are not charged to whichever
+    candidate happens to go first. The upload cache lives on the provider
+    instance shared by every candidate, so handing each one its full list of
+    attachments is idempotent: the first candidate uploads, the rest get the
+    cached reference without a round-trip.
+
+    Args:
+        cand: The candidate about to be timed.
+        results: All test case results, in declaration order.
+        repetitions: Repetitions configured for this run.
+        progress_state: Resume state built from progress.jsonl.
+    """
+    if not get_app_config().warmup.enabled:
+        return
+
+    pending = _pending_tests(cand.name, results, repetitions, progress_state)
+    if not pending:
+        return
+
+    # dict.fromkeys: de-duplicated, declaration order preserved. A file shared
+    # by several test cases is uploaded once anyway, but sending it once is
+    # also what the log should show.
+    media = list(dict.fromkeys(
+        path for test_result in pending for path in test_result.media_file_paths
+    ))
+
+    t_start = time.time()
+    if warm_up_for_run(cand.provider, cand.model, media or None):
+        detail = f", {len(media)} attachment(s)" if media else ""
+        logger.log_metric(f"Warmed up in {time.time() - t_start:.2f}s{detail}.")
 
 
 def run_generation_phase(
@@ -50,7 +125,7 @@ def run_generation_phase(
             f"Generation with: {cand_id} [{cand.model}, {provider}, T={cand.temperature}]"
         )
 
-        preload_model_for_run(provider, cand.model)
+        _warm_up_candidate(cand, results, repetitions, progress_state)
 
         sys_instr = cand.resolved_system_instruction
         thinking = cand.thinking

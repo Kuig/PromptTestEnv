@@ -181,6 +181,17 @@ class TestAppConfig(LoggerResetTestCase):
         self.assertEqual(loaded.unit_splitting.min_unit_chars, 15)
         self.assertEqual(loaded.reasoning_schema.dimensions, [])
 
+    def test_warmup_is_read_from_the_file(self):
+        path = self._write(self.tmp, {"warmup": {"enabled": False}})
+        self.assertFalse(config.AppConfig.load(path).warmup.enabled)
+
+    def test_warmup_defaults_to_on_when_the_section_is_absent(self):
+        """A config.json predating this section must still warm up."""
+        self.assertTrue(config.AppConfig.load(self._write(self.tmp, {})).warmup.enabled)
+
+    def test_shipped_config_enables_warmup(self):
+        self.assertTrue(config.AppConfig.load().warmup.enabled)
+
     def test_unknown_keys_are_ignored(self):
         path = self._write(self.tmp, {"unit_splitting": {"min_unit_chars": 9, "future_knob": 1}})
         self.assertEqual(config.AppConfig.load(path).unit_splitting.min_unit_chars, 9)

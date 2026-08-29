@@ -10,6 +10,7 @@ from prompttestenv.api import (
     get_llm_response,
     get_text_embedding,
     preload_model_for_run,
+    warm_up_for_run,
     teardown,
 )
 
@@ -128,6 +129,28 @@ class TestPreloadModelForRun(unittest.TestCase):
     def test_skips_for_non_ollama_providers(self, mock_preload):
         preload_model_for_run("google", "gemini-2.5-flash")
         mock_preload.assert_not_called()
+
+
+class TestWarmUpForRun(unittest.TestCase):
+    @patch("prompttestenv.api.warm_up")
+    def test_forwards_media_paths_as_file_paths(self, mock_warm_up):
+        mock_warm_up.return_value = True
+        result = warm_up_for_run("google", "gemini-3-flash", ["/abs/paper.pdf"])
+        self.assertTrue(result)
+        self.assertEqual(
+            mock_warm_up.call_args.kwargs,
+            {"provider": "google", "model": "gemini-3-flash", "file_paths": ["/abs/paper.pdf"]},
+        )
+
+    @patch("prompttestenv.api.warm_up")
+    def test_media_paths_default_to_none(self, mock_warm_up):
+        warm_up_for_run("ollama", "gemma4")
+        self.assertIsNone(mock_warm_up.call_args.kwargs["file_paths"])
+
+    @patch("prompttestenv.api.warm_up")
+    def test_propagates_a_negative_result(self, mock_warm_up):
+        mock_warm_up.return_value = False
+        self.assertFalse(warm_up_for_run("script", "s.py"))
 
 
 class TestTeardown(unittest.TestCase):

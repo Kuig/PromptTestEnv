@@ -192,6 +192,26 @@ class VerdictMetadata:
 
 
 @dataclass
+class WarmupConfig:
+    """Whether a benchmark pays its providers' one-off costs up front.
+
+    Warm-up is part of the measurement instrument, not of what a benchmark
+    measures: the SDK import, the client construction, the TLS handshake and
+    every attachment upload are charged once per process, so without it they
+    land on whichever candidate happens to run first and inflate its timing for
+    no reason of its own. Two reports are only comparable on time if both were
+    produced the same way, which is why this lives here and not in a project's
+    judge_config.json.
+
+    One switch is enough: UnifiedAiClient's warm_up() consumes no generation
+    tokens and never raises, so the only reason to turn it off is to isolate a
+    problem while debugging.
+    """
+
+    enabled: bool = True
+
+
+@dataclass
 class AppConfig:
     """Global, cross-project application configuration.
 
@@ -203,6 +223,7 @@ class AppConfig:
     unit_splitting: UnitSplittingConfig = field(default_factory=UnitSplittingConfig)
     reasoning_defaults: ReasoningDefaults = field(default_factory=ReasoningDefaults)
     local_providers: list[str] = field(default_factory=list)
+    warmup: WarmupConfig = field(default_factory=WarmupConfig)
     verdict_metadata: VerdictMetadata = field(default_factory=VerdictMetadata)
 
     @classmethod
@@ -224,6 +245,7 @@ class AppConfig:
             unit_splitting=_from_dict(UnitSplittingConfig, data.get("unit_splitting", {})),
             reasoning_defaults=_from_dict(ReasoningDefaults, data.get("reasoning_defaults", {})),
             local_providers=data.get("local_providers", []),
+            warmup=_from_dict(WarmupConfig, data.get("warmup", {})),
             verdict_metadata=_from_dict(
                 VerdictMetadata, data.get("verdict_metadata", {})
             ),

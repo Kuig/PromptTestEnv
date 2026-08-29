@@ -5,7 +5,7 @@ import math
 import subprocess
 from typing import Any, Callable
 
-from unified_ai_client import call_ai, preload_model, cleanup, get_embedding
+from unified_ai_client import call_ai, preload_model, warm_up, cleanup, get_embedding
 
 from prompttestenv.config import get_app_config
 from prompttestenv.models import LlmResult
@@ -148,14 +148,52 @@ def get_llm_response(
     )
 
 
+def warm_up_for_run(
+    provider: str,
+    model_name: str,
+    media_paths: list[str] | None = None,
+) -> bool:
+    """Pay a provider's one-off costs before a candidate starts being timed.
+
+    Without this, the setup a provider charges once per process — SDK import,
+    client construction, DNS + TCP + TLS handshake, model load, and above all
+    the upload of every attachment — all lands on whichever call happens to run
+    first, making the first candidate of the list look slow purely because it
+    went first.
+
+    Use this for anything whose elapsed time is measured. The sibling
+    ``preload_model_for_run`` survives for the one thing warm-up cannot do:
+    allocate an Ollama model with a specific ``context_size``, which Ollama
+    fixes at load time.
+
+    UnifiedAiClient consumes no generation tokens here and never raises, so
+    there is nothing to guard against and no provider to exclude: where there
+    is nothing to warm up it is a free no-op.
+
+    Args:
+        provider: LLM provider name.
+        model_name: Model identifier to warm the connection with.
+        media_paths: Attachments to upload ahead of time. Only providers with a
+            remote file store (currently Google) act on them.
+
+    Returns:
+        True if the provider actually warmed something up.
+    """
+    return warm_up(provider=provider, model=model_name, file_paths=media_paths)
+
+
 def preload_model_for_run(
     provider: str,
     model_name: str,
     context_size: int | None = None,
 ) -> None:
-    """Preload a model into memory before starting a benchmark run.
+    """Preload an Ollama model into memory with a specific context window.
 
-    Only meaningful for Ollama (Google does not support preloading).
+    Narrower than ``warm_up_for_run``, and kept only for what warm-up cannot
+    express: ``unified_ai_client.warm_up`` loads an Ollama model with whatever
+    context the provider config carries, so a caller that needs a particular
+    ``context_size`` — the reasoning judge, which feeds whole traces to a local
+    model — has to come through here instead.
 
     ``context_size`` must be set here rather than per call: Ollama allocates the
     context window at load time, so a later call asking for a different num_ctx

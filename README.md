@@ -76,9 +76,20 @@ Either form leaves the fixture's own JSON config untouched: a real run only adds
 | File | Purpose |
 |---|---|
 | `secrets.json` | Provider API keys, read by `unified_ai_client` from the working directory. Copy `secrets.json.example` to get started. |
-| `config.json` | Cross-project settings: the reasoning-analysis taxonomy and its judge prompts, the sentence-splitting parameters, the list of locally served providers, and the metadata block appended to the verdict judge's system prompt. |
+| `config.json` | Cross-project settings: the reasoning-analysis taxonomy and its judge prompts, the sentence-splitting parameters, the list of locally served providers, whether candidates are warmed up before being timed, and the metadata block appended to the verdict judge's system prompt. |
 
 Everything that describes a single benchmark lives in `Projects/<name>/` and nothing else needs to. `config.json` holds the opposite kind of setting: the definition of the *measurement instrument*. The reasoning dimensions, their definitions and the prompts that apply them have to be identical everywhere, otherwise two reports are not comparable, so they are deliberately not per-project and not editable from `judge_config.json`.
+
+
+`warmup` is there for the same reason, and it is about the clock rather than the scores:
+
+```json
+"warmup": { "enabled": true }
+```
+
+Every provider charges some costs exactly once per process — importing an SDK, building a client, the DNS and TLS handshake, loading a model, uploading an attachment. Left alone, all of it lands on whichever candidate happens to run first, and that candidate's `⏱️` figure is inflated for no reason of its own: in one real run of a project attaching a single PDF, the first candidate took 128s and the fourth took 24s for *more* generated tokens. Before timing each candidate, PromptTestEnv therefore calls `unified_ai_client.warm_up()` with that candidate's model and the attachments of the test cases it still has to run, outside the measured block. It consumes no generation tokens, never raises, and is a free no-op on providers that have nothing to warm up, so there is no provider to exclude and nothing to configure per project. **The reported times are warm times**, which is exactly what makes them comparable across candidates — and why the switch belongs here rather than in a project: two reports are only comparable on time if both were produced the same way. The one reason to set `enabled: false` is to isolate a problem while debugging.
+
+A warm-up is skipped entirely for a candidate whose repetitions are all already in `progress.jsonl`, since it will make no real call. A candidate with even one repetition left is warmed up in full, attachments included: the upload cache lives in the provider instance, so a resumed run always starts cold no matter what the log holds.
 
 `verdict_metadata` is there for the same reason. It is the header the verdict payload opens with, and every section of it describes what the *code* emits: that the aggregate tables carry no standard deviation, that token counts are output only, that an `assert` judge may use the full 1 to 10 range or only a pass/fail pair. Sections are emitted only when the payload contains what they describe, so a project with no reasoning analysis is never told how to read a reasoning profile it will not receive. What a benchmark *means* by its scores stays the author's business, in `verdict_template`.
 

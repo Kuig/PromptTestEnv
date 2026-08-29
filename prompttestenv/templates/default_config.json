@@ -47,6 +47,9 @@
         "reliability_k": 1,
         "max_units_per_call": 150
     },
+    "warmup": {
+        "enabled": true
+    },
     "local_providers": [
         "ollama",
         "lmstudio",
