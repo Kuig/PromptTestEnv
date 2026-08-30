@@ -6,6 +6,8 @@ Usage examples:
     prompttestenv run Projects/MyBenchmark --force-restart
     prompttestenv analyze Projects/MyBenchmark
     prompttestenv render Projects/MyBenchmark --output-mode json
+    prompttestenv show Projects/MyBenchmark
+    prompttestenv edit Projects/MyBenchmark --patch patch.json
     prompttestenv mcp
     prompttestenv gui
     prompttestenv editor
@@ -61,6 +63,45 @@ def cmd_render(args: argparse.Namespace) -> None:
     import prompttestenv.logger as logger
     result = render_from_progress(args.project_dir, args.output_mode)
     logger.log_info(result)
+
+
+def cmd_show(args: argparse.Namespace) -> None:
+    """Handle the ``show`` subcommand — print the project as JSON."""
+    import json
+    from prompttestenv.projectedit import read_project
+    print(json.dumps(read_project(args.project_dir), indent=2, ensure_ascii=False))
+
+
+def cmd_edit(args: argparse.Namespace) -> None:
+    """Handle the ``edit`` subcommand — apply a patch to a project.
+
+    The only subcommand that exits non-zero on failure. It is meant to be driven
+    by scripts, where a silently failing edit in the middle of a pipeline is
+    worse than the inconsistency with the other commands.
+    """
+    import prompttestenv.logger as logger
+    from prompttestenv.projectedit import edit_project, parse_patch
+
+    source = sys.stdin.read() if args.patch == "-" else Path(args.patch).read_text(
+        encoding="utf-8"
+    )
+    try:
+        patch = parse_patch(source)
+    except ValueError as exc:
+        logger.log_error(f"Error: {exc}")
+        sys.exit(1)
+
+    result = edit_project(
+        args.project_dir, patch, dry_run=args.dry_run, force=args.force
+    )
+    for message in result.warnings:
+        logger.log_warning(message)
+    if result.ok:
+        logger.log_success(result.summary())
+    else:
+        for message in result.errors:
+            logger.log_error(message)
+        sys.exit(1)
 
 
 def cmd_mcp(args: argparse.Namespace) -> None:
@@ -137,6 +178,36 @@ def build_parser() -> argparse.ArgumentParser:
         help="Report format (default: html).",
     )
     p_render.set_defaults(func=cmd_render)
+
+    p_show = subparsers.add_parser(
+        "show",
+        help="Print a project's configuration as JSON, with its validation findings.",
+    )
+    p_show.add_argument("project_dir", help="Path to the project directory.")
+    p_show.set_defaults(func=cmd_show)
+
+    p_edit = subparsers.add_parser(
+        "edit",
+        help="Apply a JSON patch to a project's configuration.",
+    )
+    p_edit.add_argument("project_dir", help="Path to the project directory.")
+    p_edit.add_argument(
+        "--patch",
+        required=True,
+        metavar="FILE",
+        help="Patch document to apply. Use '-' to read it from stdin.",
+    )
+    p_edit.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report what would change without writing anything.",
+    )
+    p_edit.add_argument(
+        "--force",
+        action="store_true",
+        help="Write even when the edit invalidates an existing progress.jsonl.",
+    )
+    p_edit.set_defaults(func=cmd_edit)
 
     p_mcp = subparsers.add_parser("mcp", help="Start the MCP server on stdio.")
     p_mcp.set_defaults(func=cmd_mcp)

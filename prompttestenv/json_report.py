@@ -150,7 +150,7 @@ def _configuration_block(
     Mirrors the report's "Candidates Configuration" footer.
     ``resolved_system_instruction`` is deliberately not emitted: it is derived
     from system_prompt_file and can be very large, the same reason
-    gui/projectio.py keeps it out of candidates.json.
+    projectio.py keeps it out of candidates.json.
 
     Args:
         candidates: Resolved candidate configurations.

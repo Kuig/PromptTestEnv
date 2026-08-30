@@ -93,6 +93,11 @@ Then `verdict.py` has a judge LLM write the report body, and `reporting.py` or
 - `models.py`: every domain dataclass, each owning its own file I/O, plus
   `pool_by_candidate`, the one per-candidate aggregation.
 - `config.py`: `AppConfig` over the root `config.json`, and `init_project`.
+- `projectio.py`: byte-faithful load and serialise of the four project config
+  files, their validation, and the guards on the two asset directories. Shared
+  by every interface that edits a project.
+- `projectedit.py`: `read_project` and `edit_project`, the interface-agnostic
+  editing API. Applies a partial patch on top of `projectio`.
 - `progress.py`: the low-level `progress.jsonl` primitives, config hashing and
   event appending.
 - `api.py`: the single door to `UnifiedAiClient`.
@@ -100,8 +105,8 @@ Then `verdict.py` has a judge LLM write the report body, and `reporting.py` or
 - `mcp_tools.py`: MCP tool registration.
 - `__main__.py`: the CLI, and the only entry point.
 - `gui/`: two Streamlit apps, `app.py` (runs benchmarks) and `editor.py`
-  (creates and modifies projects), over `common.py` (shared helpers) and
-  `projectio.py` (byte-faithful load and serialise of the config files).
+  (creates and modifies projects), over `common.py` (shared helpers). Nothing in
+  the core may import this package, which is why `projectio.py` sits above.
 
 ## Invariants
 
@@ -123,7 +128,7 @@ be conflated. The one place the framework does not impose the range is an
 alone.
 
 **Three of the four project config files are hashed as raw bytes.** That is what
-makes resume safe, and it is why `gui/projectio.py` edits raw dicts and never
+makes resume safe, and it is why `projectio.py` edits raw dicts and never
 dataclass instances: the loaders drop unknown keys and materialise every omitted
 default, so a round trip through the dataclasses would rewrite far more of a file
 than its author changed and would silently invalidate a finished run. Key order,
@@ -181,7 +186,12 @@ create the log they were asked to read.
 
 **Between the library and its interfaces**: the interfaces are thin. The CLI, the
 MCP server, the library and both GUIs all call the same three functions in
-`runner.py`, which never raise and always return a descriptive string.
+`runner.py`, which never raise and always return a descriptive string. Editing a
+project is the same arrangement one layer over: every interface, the Streamlit
+editor included, reaches the config files only through `projectio.py`, so no one
+of them can hold a rule the others lack. `projectedit.py` adds the patch language
+and the two gates a form does not need to express, validation and the refusal to
+invalidate a finished run without being told to.
 
 ## Cross-cutting concerns
 

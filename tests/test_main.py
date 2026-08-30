@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import io
+import shutil
+import tempfile
 import unittest
 from unittest.mock import patch
 
 from pathlib import Path
 
+from prompttestenv.projectedit import EditResult
+
 from prompttestenv.__main__ import (
-    build_parser, cmd_editor, cmd_init, cmd_render, cmd_run,
+    build_parser, cmd_edit, cmd_editor, cmd_init, cmd_render, cmd_run, cmd_show,
 )
 from testutils import LoggerResetTestCase
 
@@ -30,6 +35,30 @@ class TestBuildParser(unittest.TestCase):
         args = self.parser.parse_args(["run", "Projects/Foo", "--output-mode", "md", "--force-restart"])
         self.assertEqual(args.output_mode, "md")
         self.assertTrue(args.force_restart)
+
+    def test_show_subcommand(self):
+        args = self.parser.parse_args(["show", "Projects/Foo"])
+        self.assertEqual(args.command, "show")
+        self.assertEqual(args.project_dir, "Projects/Foo")
+        self.assertIs(args.func, cmd_show)
+
+    def test_edit_subcommand_flags(self):
+        args = self.parser.parse_args(
+            ["edit", "Projects/Foo", "--patch", "-", "--dry-run", "--force"]
+        )
+        self.assertIs(args.func, cmd_edit)
+        self.assertEqual(args.patch, "-")
+        self.assertTrue(args.dry_run)
+        self.assertTrue(args.force)
+
+    def test_edit_subcommand_defaults(self):
+        args = self.parser.parse_args(["edit", "Projects/Foo", "--patch", "p.json"])
+        self.assertFalse(args.dry_run)
+        self.assertFalse(args.force)
+
+    def test_edit_subcommand_requires_a_patch(self):
+        with self.assertRaises(SystemExit):
+            self.parser.parse_args(["edit", "Projects/Foo"])
 
     def test_run_subcommand_rejects_invalid_output_mode(self):
         with self.assertRaises(SystemExit):
@@ -111,6 +140,55 @@ class TestCmdHandlers(LoggerResetTestCase):
         args = build_parser().parse_args(["render", "Projects/Foo", "--output-mode", "json"])
         cmd_render(args)
         mock_render.assert_called_once_with("Projects/Foo", "json")
+
+
+class TestCmdEdit(LoggerResetTestCase):
+    """The one subcommand that exits non-zero, because scripts drive it."""
+
+    def _args(self, *extra):
+        return build_parser().parse_args(["edit", "Projects/Foo", "--patch", "-", *extra])
+
+    @patch("prompttestenv.projectedit.edit_project")
+    def test_reads_the_patch_from_stdin_and_forwards_the_flags(self, mock_edit):
+        mock_edit.return_value = EditResult(ok=True, written=["candidates.json"])
+        with patch("sys.stdin", io.StringIO('{"candidates": []}')):
+            cmd_edit(self._args("--dry-run", "--force"))
+        mock_edit.assert_called_once_with(
+            "Projects/Foo", {"candidates": []}, dry_run=True, force=True
+        )
+
+    @patch("prompttestenv.projectedit.edit_project")
+    def test_reads_the_patch_from_a_file(self, mock_edit):
+        mock_edit.return_value = EditResult(ok=True)
+        directory = tempfile.mkdtemp(prefix="prompttestenv_test_")
+        self.addCleanup(shutil.rmtree, directory, ignore_errors=True)
+        patch_file = Path(directory) / "p.json"
+        patch_file.write_text('{"judge_config": {"repetitions": 3}}', encoding="utf-8")
+
+        args = build_parser().parse_args(
+            ["edit", "Projects/Foo", "--patch", str(patch_file)]
+        )
+        cmd_edit(args)
+        mock_edit.assert_called_once_with(
+            "Projects/Foo", {"judge_config": {"repetitions": 3}},
+            dry_run=False, force=False,
+        )
+
+    @patch("prompttestenv.projectedit.edit_project")
+    def test_a_refused_edit_exits_non_zero(self, mock_edit):
+        mock_edit.return_value = EditResult(ok=False, errors=["nope"])
+        with patch("sys.stdin", io.StringIO("{}")):
+            with self.assertRaises(SystemExit) as caught:
+                cmd_edit(self._args())
+        self.assertEqual(caught.exception.code, 1)
+
+    def test_a_malformed_patch_exits_non_zero_without_calling_the_editor(self):
+        with patch("prompttestenv.projectedit.edit_project") as mock_edit:
+            with patch("sys.stdin", io.StringIO("{{{")):
+                with self.assertRaises(SystemExit) as caught:
+                    cmd_edit(self._args())
+        self.assertEqual(caught.exception.code, 1)
+        mock_edit.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -255,3 +255,99 @@ Imagine you have several research papers (PDFs) and you want a comprehensive, mu
 - The framework will pass each paper to all your "expert" candidates in parallel.
 - The verdict judge will synthesize the diverse perspectives into a single, highly detailed review per paper.
 - You obtain a massive amount of analytical work fully automated and structured!
+
+---
+
+## 5. Editing a Project Without a File Editor
+
+Everything above assumes you are editing the four JSON files yourself, by hand or
+through `prompttestenv editor`. There is a third way, meant for scripts and for
+an LLM driving PromptTestEnv as a tool: send a **patch** and let PromptTestEnv
+write the files.
+
+| Interface | How |
+|---|---|
+| CLI | `prompttestenv show <project>` to read, `prompttestenv edit <project> --patch p.json` to write (`--patch -` reads stdin) |
+| MCP | `prompttest_read_project`, `prompttest_edit_project` |
+| Library | `from prompttestenv import read_project, edit_project` |
+
+All three go through one shared layer, so an edit made from any of them obeys the
+same rules the Streamlit editor obeys.
+
+### The patch document
+
+Every key is optional. Send only what changes.
+
+```json
+{
+  "candidates":      [{"name": "Baseline", "temperature": 0.9}],
+  "test_cases":      [{"id": "t1", "prompt": "...", "criteria": "...", "judge_type": "assert"}],
+  "judge_config":    {"repetitions": 3, "test_judge": {"model": "gemini-3-flash"}},
+  "global_criteria": {"mode": "none"},
+  "system_prompts":  {"terse.txt": "Answer in one sentence."},
+  "test_files":      {"notes.md": "Q3 revenue was 150,000 euros."},
+  "delete": {"candidates": ["Old"], "test_cases": ["t9"],
+             "system_prompts": ["old.txt"], "test_files": ["old.csv"]},
+  "order":  {"candidates": ["Baseline", "Challenger"]}
+}
+```
+
+- **Identity.** A candidate is matched by `name`, a test case by `id`. A match is
+  merged into; anything else is appended. An entry without its identity key is an
+  error, since there would be no way to tell an edit from an insertion.
+- **Everything unmentioned survives.** Keys you do not send keep their value,
+  their position in the file, and their numeric form. Extra keys the loaders do
+  not know about are preserved too.
+- **`judge_config` and `global_criteria` merge in depth.** Naming a judge block
+  edits only the keys you list inside it. Sending `null` for one of
+  `reasoning_judge`'s optional settings (`context_size`, `reliability_k`,
+  `max_units_per_call`, `dimension_mode`) means "fall back to the root
+  `config.json`", the same as omitting the key.
+- **A test case's `file`** accepts a string, a list, or `null` to detach every
+  attachment. Separators are normalised to `/`.
+- **An unknown top level key is an error, not a no-op.** A patch is usually
+  written by a machine, and a typo that silently does nothing is worse than one
+  that says so.
+- **Attachments in a patch must be text.** A PDF or an image has to be placed in
+  `test_files/` directly. That content is the data under test, not something a
+  caller synthesises.
+
+### What can block a write
+
+`edit` validates the result before writing anything, exactly as the editor's Save
+button does, and writes nothing at all if something is wrong. Duplicate names,
+a missing `model`, an unparseable `assert` lambda or a broken
+`evaluation_template` are errors and block the write. A missing attachment, an
+unused system prompt or an empty `verdict_template` are warnings: they come back
+in the result and the write proceeds.
+
+The other gate is the resume hash. If the project already holds a
+`progress.jsonl` and your edit would change the config hash, **the edit is
+refused** and the message names both hashes and the files involved. Nothing is
+deleted and nothing is written. You then either accept that, or repeat the call
+with `--force` (CLI) or `force: true` (MCP and library) to say you meant it. Use
+`--dry-run` to ask what an edit would do without writing and without needing
+`--force`.
+
+Two edits never trip that gate:
+
+- Changing only `reasoning_analysis` or the `reasoning_judge` block, because
+  both are excluded from the hash (see [Resume Policy](README.md#resume-policy)).
+- Changing anything in `system_prompts/` or `test_files/`, because those are not
+  hashed at all. This one is the dangerous direction rather than the safe one: a
+  resumed run would mix responses produced under the old and the new prompt into
+  one report with nothing flagging it, so an edit touching them always comes back
+  with a warning saying so. Use `--force-restart` on the next run if that
+  matters.
+
+### Building a project from nothing
+
+```powershell
+prompttestenv init Projects/MyBenchmark
+prompttestenv edit Projects/MyBenchmark --patch - <<< '{ ... }'
+prompttestenv show Projects/MyBenchmark
+```
+
+`init` scaffolds the directory from the packaged templates, so the first patch
+edits a working project rather than an empty one. Delete the template candidates
+and test cases you do not want in the same patch that adds yours.

@@ -115,9 +115,10 @@ Two deliberate exclusions:
   it, which is what lets a report notice it is mixing analyses from different
   schema versions.
 
-`analyze` and `render` open the log **read-only**: they consume stored results
-and do not depend on the config still matching, so they never rename or create
-`progress.jsonl`.
+`analyze`, `render` and `show` open the log **read-only**: they consume stored
+results and do not depend on the config still matching, so they never rename or
+create `progress.jsonl`. `edit` never touches it either: when a change would
+invalidate it, the edit is refused rather than the log discarded.
 
 ---
 
@@ -132,6 +133,8 @@ prompttestenv run Projects/MyBenchmark --force-restart         # re-run, ignorin
 prompttestenv analyze Projects/MyBenchmark                     # reasoning traces only
 prompttestenv analyze Projects/MyBenchmark --force-reanalyze   # redo existing analyses
 prompttestenv render Projects/MyBenchmark --output-mode json   # re-render, no LLM call
+prompttestenv show Projects/MyBenchmark                        # print the project as JSON
+prompttestenv edit Projects/MyBenchmark --patch patch.json     # apply a config patch
 prompttestenv mcp                                              # MCP server on stdio
 prompttestenv gui                                              # Streamlit GUI (runs benchmarks)
 prompttestenv editor                                           # Streamlit project editor
@@ -169,6 +172,8 @@ Tools exposed:
 | Tool | Description |
 |---|---|
 | `prompttest_init_project` | Initialize a new benchmark project directory |
+| `prompttest_read_project` | Read a project's whole configuration, plus its validation findings |
+| `prompttest_edit_project` | Apply a JSON patch to a project's configuration |
 | `prompttest_run_project` | Run a benchmark project |
 | `prompttest_analyze_reasoning` | Analyze the reasoning traces stored in a project's progress log |
 | `prompttest_get_results` | Regenerate report from existing progress, in any output mode, with no LLM call |
@@ -176,7 +181,7 @@ Tools exposed:
 ### As a Library
 
 ```python
-from prompttestenv import init_project, run_project, Candidate
+from prompttestenv import init_project, run_project, edit_project, Candidate
 
 init_project("Projects/MyBenchmark")
 candidates = Candidate.load_all("Projects/MyBenchmark")
@@ -194,6 +199,8 @@ Public surface exposed by `from prompttestenv import ...`:
 | `run_project` | function | `run_project(project_dir: str, output_mode: str = "html", force_restart: bool = False) -> str` | Run the full benchmark and return the report path (or an error string, never raises). `output_mode` is one of `html`, `md`, `json`, `winner_only`, see [Output modes](#output-modes). |
 | `analyze_project` | function | `analyze_project(project_dir: str, force_reanalyze: bool = False) -> str` | Run only the reasoning-analysis phase over the traces already in `progress.jsonl`. No generation and no judging calls. |
 | `render_from_progress` | function | `render_from_progress(project_dir: str, output_mode: str = "html") -> str` | Regenerate the report from an existing `progress.jsonl`, in any output mode, with no LLM calls. Returns a progress summary instead when the log holds no verdict. |
+| `read_project` | function | `read_project(project_dir: str) -> dict` | The project's whole configuration as plain data, plus its validation findings and whether an existing `progress.jsonl` still matches it. |
+| `edit_project` | function | `edit_project(project_dir: str, patch: dict, *, dry_run: bool = False, force: bool = False) -> EditResult` | Apply a partial patch to the config files. Never raises. See [Editing a project](HOWTO.md#5-editing-a-project-without-a-file-editor). |
 | `Candidate` | dataclass | `Candidate.load_all(project_dir) -> list[Candidate]` | Loads and resolves `candidates.json` (including `system_prompt_file` content). Raises `FileNotFoundError` if the file is missing. |
 | `TestCase` | dataclass | `TestCase.load_all(project_dir) -> list[TestCase]` | Loads `test_cases.json`. Raises `FileNotFoundError` if the file is missing. |
 | `JudgeConfig` | dataclass | `JudgeConfig.load(project_dir) -> JudgeConfig` | Loads `judge_config.json`. Raises `FileNotFoundError` if the file is missing. |
@@ -233,18 +240,10 @@ packaged templates. It never runs a benchmark, which is what `gui` is for.
 
 Running a benchmark and authoring one are disjoint jobs, which is why they are
 two apps: folding the editor's six tabs of forms into the run GUI would make the
-common case, press Run and watch the log, markedly heavier for no benefit. Two
-behaviours are worth knowing:
+common case, press Run and watch the log, markedly heavier for no benefit.
 
-- **Saving is byte-faithful.** Opening a project and saving it unchanged writes
-  nothing at all, because three of the four config files feed the resume hash as
-  raw bytes. When a save *would* invalidate an existing `progress.jsonl` the
-  editor says so and asks first, and it never deletes the log itself. Editing
-  only `reasoning_analysis` or the `reasoning_judge` block never triggers that,
-  since those are excluded from the hash (see [Resume Policy](#resume-policy)).
-  The single exception is an attachment path, whose separators are normalised to
-  `/` so a project authored on Windows also runs on Linux.
-- **`system_prompts/` and `test_files/` are *not* hashed.** Changing a system
-  prompt or replacing an attachment does not invalidate a run, so a resumed run
-  would mix responses produced under the old and the new version into one report.
-  The editor warns about this where it can happen.
+Saving is byte-faithful, and a save that would invalidate an existing
+`progress.jsonl` is announced and confirmed rather than done silently. The same
+guarantees back `edit` and `prompttest_edit_project`, since all three go through
+one shared layer. See
+[Editing a project](HOWTO.md#5-editing-a-project-without-a-file-editor).

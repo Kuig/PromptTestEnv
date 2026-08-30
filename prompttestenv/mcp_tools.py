@@ -31,6 +31,93 @@ def register_tools(mcp: "FastMCP") -> None:
             return f"Error: {exc}"
 
     @mcp.tool()
+    def prompttest_read_project(project_dir: str) -> str:
+        """Read a benchmark project's whole configuration, as JSON.
+
+        Returns the four config files exactly as they sit on disk, unknown keys
+        included, which is what a patch for prompttest_edit_project has to be
+        written against. System prompts come back with their text; attachments
+        come back as names and sizes only, since one can be a large binary.
+
+        Also reports `errors` and `warnings` from the same validation the editor
+        runs, and `progress_valid`: False means an existing progress.jsonl no
+        longer matches the config on disk, so the next run would start over.
+
+        Args:
+            project_dir: Path to the project directory.
+
+        Returns:
+            A JSON object, or an error description.
+        """
+        try:
+            import json
+            from prompttestenv.projectedit import read_project
+            return json.dumps(read_project(project_dir), indent=2, ensure_ascii=False)
+        except Exception as exc:
+            return f"Error: {exc}"
+
+    @mcp.tool()
+    def prompttest_edit_project(
+        project_dir: str,
+        patch: dict,
+        dry_run: bool = False,
+        force: bool = False,
+    ) -> str:
+        """Create or modify a benchmark project's configuration, without writing files.
+
+        Send only what changes. Candidates are matched by `name` and test cases
+        by `id`: a matching entry is merged into, a new one is appended, and
+        everything the patch does not mention is left byte for byte alone. Run
+        prompttest_init_project first; this tool edits an existing directory.
+
+        Patch keys, all optional:
+
+            {
+              "candidates":      [{"name": "Baseline", "temperature": 0.9}],
+              "test_cases":      [{"id": "t1", "prompt": "...", "criteria": "..."}],
+              "judge_config":    {"repetitions": 3,
+                                  "test_judge": {"model": "gemini-3-flash"}},
+              "global_criteria": {"mode": "none"},
+              "system_prompts":  {"terse.txt": "Be terse."},
+              "test_files":      {"notes.md": "text content"},
+              "delete": {"candidates": ["Old"], "test_cases": ["t9"],
+                         "system_prompts": ["old.txt"], "test_files": ["old.csv"]},
+              "order":  {"candidates": ["Baseline", "Challenger"]}
+            }
+
+        An unknown key is an error, not a no-op, so a typo is never silent.
+        Attachments must be text here; a binary one has to be placed in
+        test_files/ directly.
+
+        IMPORTANT: when the project already holds a progress.jsonl and the edit
+        would change the config hash, this REFUSES and explains why, because the
+        next run would discard that finished work and start over. Read the
+        message, then either accept it or pass force=True deliberately. Editing
+        only `reasoning_analysis` or the `reasoning_judge` block never triggers
+        this. Editing system_prompts/ or test_files/ does not either, but for the
+        opposite reason: those are outside the hash, so a resumed run silently
+        mixes old and new responses.
+
+        Args:
+            project_dir: Path to an existing project directory.
+            patch: The patch document described above.
+            dry_run: Report what would change and write nothing. Never refuses
+                over the hash; it tells you force would be needed.
+            force: Write even when the edit invalidates progress.jsonl.
+
+        Returns:
+            A JSON object with `ok`, `written`, `deleted`, `errors`, `warnings`,
+            `hash_changed`, `stored_hash` and `new_hash`.
+        """
+        try:
+            import json
+            from prompttestenv.projectedit import edit_project
+            result = edit_project(project_dir, patch, dry_run=dry_run, force=force)
+            return json.dumps(result.to_dict(), indent=2, ensure_ascii=False)
+        except Exception as exc:
+            return f"Error: {exc}"
+
+    @mcp.tool()
     def prompttest_run_project(
         project_dir: str,
         output_mode: str = "html",

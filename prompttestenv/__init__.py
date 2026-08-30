@@ -21,8 +21,11 @@ if sys.stderr.encoding and sys.stderr.encoding.lower() != "utf-8":
 _CONFIG_EXPORTS = ("init_project",)
 _RUNNER_EXPORTS = ("run_project", "render_from_progress", "analyze_project")
 _MODELS_EXPORTS = ("Candidate", "TestCase", "JudgeConfig", "GlobalCriteria")
+_PROJECTEDIT_EXPORTS = ("read_project", "edit_project")
 
-__all__ = [*_CONFIG_EXPORTS, *_RUNNER_EXPORTS, *_MODELS_EXPORTS]
+__all__ = [
+    *_CONFIG_EXPORTS, *_RUNNER_EXPORTS, *_MODELS_EXPORTS, *_PROJECTEDIT_EXPORTS,
+]
 
 
 def __getattr__(name: str):
@@ -46,6 +49,9 @@ def __getattr__(name: str):
     if name in _MODELS_EXPORTS:
         from prompttestenv import models
         return getattr(models, name)
+    if name in _PROJECTEDIT_EXPORTS:
+        from prompttestenv import projectedit
+        return getattr(projectedit, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 

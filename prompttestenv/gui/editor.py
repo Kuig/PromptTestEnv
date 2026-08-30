@@ -26,20 +26,17 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import streamlit as st
 
 import prompttestenv.logger as logger
+from prompttestenv import projectio as pio
 from prompttestenv.config import get_app_config
-from prompttestenv.gui import projectio as pio
 from prompttestenv.gui.common import pick_directory
 from prompttestenv.models import (
     REASONING_SCOPES,
+    Candidate,
     ReasoningJudgeSettings,
     SimilarityJudgeSettings,
+    TestCase,
     TestJudgeSettings,
     VerdictJudgeSettings,
-)
-from prompttestenv.progress import (
-    HASHED_FILENAMES,
-    config_hash_from_bytes,
-    read_stored_hash,
 )
 
 logger.set_backend("streamlit")
@@ -203,7 +200,7 @@ def _harvest() -> None:
     collected it — simply leaves the model's own value alone. That is what makes
     filtering and collapsing safe.
     """
-    from prompttestenv.models import Candidate, GlobalCriteria, JudgeConfig, TestCase
+    from prompttestenv.models import GlobalCriteria, JudgeConfig
 
     ed = st.session_state.ed
     draft = ed["draft"]
@@ -338,30 +335,14 @@ _harvest()
 
 ed = st.session_state.ed
 draft = ed["draft"]
-pending = pio.serialize_all(draft)
-changed = [n for n in HASHED_FILENAMES if pending[n] != draft.disk.get(n)]
-errors, warnings = pio.validate(draft)
 
-stored_hash = read_stored_hash(draft.project_dir)
-would_be_hash = config_hash_from_bytes(pending)
-invalidates = stored_hash is not None and stored_hash != would_be_hash
-
-
-def _semantically_identical() -> list[str]:
-    """Changed files whose JSON content is unchanged — pure reformatting.
-
-    Worth naming explicitly: for the three byte-hashed files this still costs
-    the user their progress, which is deeply unobvious.
-    """
-    import json
-    same = []
-    for name in changed:
-        try:
-            if json.loads(pending[name]) == json.loads((draft.disk.get(name) or b"null")):
-                same.append(name)
-        except (ValueError, TypeError):
-            pass
-    return same
+# Everything the sidebar and the confirmation dialog need, computed once and
+# shared with the headless editing path so the two can never disagree about
+# what changed, what blocks a save, or whether a run survives it.
+status = pio.save_status(draft)
+changed, errors, warnings = status.changed, status.errors, status.warnings
+stored_hash, would_be_hash = status.stored_hash, status.would_be_hash
+invalidates = status.invalidates
 
 
 def _do_save() -> None:
@@ -450,7 +431,7 @@ if ed["confirm_save"]:
             "renames it to `progress.jsonl.bak` and starts over unless you pass "
             "`--force-restart`. **Nothing is deleted right now.**"
         )
-        reformat_only = _semantically_identical()
+        reformat_only = status.reformat_only
         if reformat_only:
             st.info(
                 "Reformatting only in: " + ", ".join(reformat_only) +
@@ -482,8 +463,7 @@ tab_cand, tab_tests, tab_judge, tab_global, tab_prompts, tab_files = st.tabs(
 with tab_cand:
     if st.button("➕ Add candidate", key="add_cand"):
         ed["candidates"].append(
-            {"uid": uuid4().hex,
-             "data": {"name": "", "provider": "google", "model": ""}}
+            {"uid": uuid4().hex, "data": pio.blank_row(Candidate)}
         )
         _sync_draft()
         st.rerun()
@@ -593,8 +573,7 @@ def _attachments_of(data: dict) -> list[str]:
 with tab_tests:
     if st.button("➕ Add test case", key="add_test"):
         ed["tests"].append(
-            {"uid": uuid4().hex,
-             "data": {"id": "", "prompt": "", "criteria": ""}}
+            {"uid": uuid4().hex, "data": pio.blank_row(TestCase)}
         )
         _sync_draft()
         st.rerun()
@@ -915,12 +894,17 @@ with tab_global:
 
 # ── System prompts and test files ─────────────────────────────────────────────
 
-_NOT_HASHED_WARNING = (
-    "⚠️ **These files are not part of the run hash.** Only the four JSON configs "
-    "are. Editing anything here does *not* invalidate `progress.jsonl`, so a "
-    "resumed run will mix responses produced under the old and the new version "
-    "into one report, with nothing flagging it. Use `--force-restart` if that matters."
-)
+# The write/delete rules, the ".txt" constraint and the "still used by" guard all
+# live in projectio, so the headless editing path enforces exactly the same ones.
+# What stays here is only the widgets and the wording.
+_NOT_HASHED_WARNING = f"⚠️ **{pio.ASSETS_NOT_HASHED}**"
+
+
+def _asset_users(kind: str, name: str) -> list[str]:
+    """asset_users() against the rows being edited, not the last-synced draft."""
+    _sync_draft()
+    return [u for u in pio.asset_users(draft, kind, name) if u]
+
 
 with tab_prompts:
     st.warning(_NOT_HASHED_WARNING)
@@ -932,61 +916,55 @@ with tab_prompts:
                                  key="sp:newname")
         content = st.text_area("Content", value="", height=400, key="sp:newbody")
         if st.button("Create", key="sp:create"):
-            problem = pio.check_filename(new_name)
-            if problem:
-                st.error(problem)
-            elif not new_name.endswith(".txt"):
-                st.error("System prompt files must end in .txt")
-            else:
-                draft.system_prompts_dir.mkdir(parents=True, exist_ok=True)
-                (draft.system_prompts_dir / new_name).write_text(
-                    content, encoding="utf-8", newline="\n")
+            try:
+                pio.write_asset(draft, pio.SYSTEM_PROMPTS_DIR, new_name, content)
                 st.rerun()
+            except (ValueError, OSError) as exc:
+                st.error(str(exc))
     else:
         path = draft.system_prompts_dir / choice
         body = st.text_area("Content", value=path.read_text(encoding="utf-8"),
                             height=400, key=f"sp:body:{choice}")
-        users = [c["data"].get("name") for c in ed["candidates"]
-                 if c["data"].get("system_prompt_file") == choice]
-        st.caption("Used by: " + (", ".join(str(u) for u in users) if users else "nothing"))
+        users = _asset_users(pio.SYSTEM_PROMPTS_DIR, choice)
+        st.caption("Used by: " + (", ".join(users) if users else "nothing"))
 
         save_col, delete_col = st.columns(2)
         if save_col.button("💾 Save prompt", key="sp:save"):
-            path.write_text(body, encoding="utf-8", newline="\n")
-            st.success(f"Saved {choice}")
+            try:
+                pio.write_asset(draft, pio.SYSTEM_PROMPTS_DIR, choice, body)
+                st.success(f"Saved {choice}")
+            except (ValueError, OSError) as exc:
+                st.error(str(exc))
         if delete_col.button("🗑 Delete", key="sp:delete"):
-            if users:
-                st.error(f"Still used by {', '.join(str(u) for u in users)}.")
-            else:
-                path.unlink()
+            try:
+                pio.delete_asset(draft, pio.SYSTEM_PROMPTS_DIR, choice)
                 st.rerun()
+            except (ValueError, OSError) as exc:
+                st.error(str(exc))
 
 with tab_files:
     st.warning(_NOT_HASHED_WARNING)
     uploaded = st.file_uploader("Add attachments", accept_multiple_files=True, key="tf:upload")
     if uploaded:
-        draft.test_files_dir.mkdir(parents=True, exist_ok=True)
         for item in uploaded:
             safe = Path(item.name).name
-            problem = pio.check_filename(safe)
-            if problem:
-                st.error(f"{item.name}: {problem}")
-                continue
-            (draft.test_files_dir / safe).write_bytes(item.getvalue())
-            st.success(f"Stored {safe}")
+            try:
+                pio.write_asset(draft, pio.TEST_FILES_DIR, safe, item.getvalue())
+                st.success(f"Stored {safe}")
+            except (ValueError, OSError) as exc:
+                st.error(f"{item.name}: {exc}")
 
     for name in draft.test_file_names():
         path = draft.test_files_dir / name
-        users = [t["data"].get("id") for t in ed["tests"]
-                 if f"{pio.TEST_FILES_DIR}/{name}" in _attachments_of(t["data"])]
+        users = _asset_users(pio.TEST_FILES_DIR, name)
         left, right = st.columns([5, 1])
         left.write(
             f"**{name}** — {path.stat().st_size:,} bytes · used by: "
-            + (", ".join(str(u) for u in users) if users else "nothing")
+            + (", ".join(users) if users else "nothing")
         )
         if right.button("🗑", key=f"tf:rm:{name}"):
-            if users:
-                st.error(f"'{name}' is still used by {', '.join(str(u) for u in users)}.")
-            else:
-                path.unlink()
+            try:
+                pio.delete_asset(draft, pio.TEST_FILES_DIR, name)
                 st.rerun()
+            except (ValueError, OSError) as exc:
+                st.error(str(exc))

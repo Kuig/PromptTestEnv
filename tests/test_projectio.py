@@ -1,7 +1,8 @@
-"""Fidelity tests for the editor's raw-dict load/serialise layer.
+"""Fidelity tests for the shared raw-dict load/serialise layer.
 
-No Streamlit here: this is the layer the editor's correctness rests on, and it
-is testable on its own. The headline case is
+No Streamlit here: this is the layer both editing paths rest on, the Streamlit
+editor and the headless patch API alike, and it is testable on its own. The
+headline case is
 `test_round_trip_is_byte_identical_and_hash_stable` — everything else exists to
 keep that true as the code moves.
 """
@@ -14,7 +15,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from prompttestenv.gui import projectio as pio
+from prompttestenv import projectio as pio
+from prompttestenv.progress import append_event, calculate_config_hash
 from prompttestenv.models import (
     Candidate,
     GlobalCriteria,
@@ -274,6 +276,19 @@ class TestDefaultsClassificationGuard(unittest.TestCase):
         self.assertEqual(pio.effective_default(TestCase, "judge_type"), "llm-judge")
         self.assertEqual(pio.effective_default(Candidate, "provider"), "google")
 
+    def test_new_row_covers_exactly_the_always_emitted_keys(self):
+        """A blank row must carry every key a loader would otherwise fumble.
+
+        _NEW_ROW cannot be derived from effective_default: the loader fallback
+        for `name` and `model` is None, which is right for "the key is absent"
+        and wrong for "nobody has typed it yet".
+        """
+        for cls, row in pio._NEW_ROW.items():
+            with self.subTest(cls=cls.__name__):
+                self.assertEqual(set(row), set(pio._ALWAYS_EMIT[cls]))
+                self.assertEqual(pio.blank_row(cls), row)
+                self.assertIsNot(pio.blank_row(cls), row)  # a fresh dict each time
+
 
 class TestValidation(unittest.TestCase):
     def _draft(self, **kwargs):
@@ -488,7 +503,7 @@ class TestPackaging(unittest.TestCase):
         logger.set_backend("console")
         before = logger._emit
         import prompttestenv.gui.common  # noqa: F401
-        import prompttestenv.gui.projectio  # noqa: F401
+        import prompttestenv.projectio  # noqa: F401
         self.assertIs(logger._emit, before)
 
 
@@ -505,6 +520,182 @@ class TestLoadResilience(unittest.TestCase):
     def test_unparseable_file_loads_as_empty_rather_than_raising(self):
         (Path(self.project_dir) / "candidates.json").write_text("{{{", encoding="utf-8")
         self.assertEqual(pio.load_project(self.project_dir).candidates, [])
+
+
+class SharedLayerTestCase(unittest.TestCase):
+    """A throwaway copy of the smoke fixture, loaded as a draft."""
+
+    def setUp(self):
+        self.project_dir = make_temp_project()
+        self.addCleanup(shutil.rmtree, self.project_dir, ignore_errors=True)
+        self.draft = pio.load_project(self.project_dir)
+
+
+class TestUpsert(SharedLayerTestCase):
+    """Merge-or-append by the on-disk identity key."""
+
+    def test_existing_entry_is_merged_not_replaced(self):
+        original = dict(self.draft.candidates[0])
+        merged = pio.upsert(
+            self.draft.candidates, "name",
+            {"name": original["name"], "temperature": 0.99}, Candidate,
+        )
+        self.assertEqual(len(merged), len(self.draft.candidates))
+        self.assertEqual(merged[0]["temperature"], 0.99)
+        rest = {k: v for k, v in merged[0].items() if k != "temperature"}
+        self.assertEqual(rest, {k: v for k, v in original.items() if k != "temperature"})
+        self.assertEqual(list(merged[0]), list(original))
+
+    def test_unknown_key_appends_a_row_carrying_the_required_fields(self):
+        merged = pio.upsert(
+            self.draft.candidates, "name", {"name": "Fresh", "model": "m"}, Candidate,
+        )
+        self.assertEqual(len(merged), len(self.draft.candidates) + 1)
+        self.assertEqual(merged[-1], {"name": "Fresh", "provider": "google", "model": "m"})
+
+    def test_the_original_list_is_left_alone(self):
+        before = [dict(c) for c in self.draft.candidates]
+        pio.upsert(self.draft.candidates, "name", {"name": "Fresh", "model": "m"}, Candidate)
+        self.assertEqual(self.draft.candidates, before)
+
+
+class TestMergeJudge(SharedLayerTestCase):
+    def test_scalars_and_blocks_merge_independently(self):
+        merged = pio.merge_judge(
+            self.draft.judge,
+            {"repetitions": 7, "test_judge": {"temperature": 0.9}},
+        )
+        self.assertEqual(merged["repetitions"], 7)
+        self.assertEqual(merged["test_judge"]["temperature"], 0.9)
+        for key, value in self.draft.judge["test_judge"].items():
+            if key != "temperature":
+                self.assertEqual(merged["test_judge"][key], value)
+
+    def test_naming_a_block_the_file_lacked_creates_it(self):
+        """Unlike the editor, where a block appearing on tab open would be a bug.
+
+        Here naming the block IS the edit, so creating it is what was asked for.
+        """
+        without = {k: v for k, v in self.draft.judge.items() if k != "reasoning_judge"}
+        merged = pio.merge_judge(without, {"reasoning_judge": {"temperature": 0.1}})
+        self.assertEqual(merged["reasoning_judge"], {"temperature": 0.1})
+
+    def test_a_block_that_is_not_an_object_is_rejected(self):
+        with self.assertRaises(ValueError):
+            pio.merge_judge(self.draft.judge, {"test_judge": "nope"})
+
+
+class TestSaveStatus(SharedLayerTestCase):
+    def test_freshly_loaded_project_has_nothing_changed(self):
+        status = pio.save_status(self.draft)
+        self.assertEqual(status.changed, [])
+        self.assertEqual(status.reformat_only, [])
+        self.assertFalse(status.invalidates)
+
+    def test_no_progress_log_never_invalidates(self):
+        self.draft.candidates[0]["temperature"] = 0.123
+        status = pio.save_status(self.draft)
+        self.assertEqual(status.changed, ["candidates.json"])
+        self.assertIsNone(status.stored_hash)
+        self.assertFalse(status.invalidates)
+
+    def test_a_stale_log_invalidates_and_the_hashes_differ(self):
+        append_event(
+            self.project_dir,
+            {"type": "meta", "config_hash": calculate_config_hash(self.project_dir)},
+        )
+        untouched = pio.save_status(pio.load_project(self.project_dir))
+        self.assertFalse(untouched.invalidates)
+
+        draft = pio.load_project(self.project_dir)
+        draft.candidates[0]["temperature"] = 0.123
+        status = pio.save_status(draft)
+        self.assertTrue(status.invalidates)
+        self.assertNotEqual(status.stored_hash, status.would_be_hash)
+
+    def test_pure_reformatting_is_reported_separately(self):
+        """Same JSON, different bytes: still fatal for a byte-hashed file."""
+        path = Path(self.project_dir) / "candidates.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        status = pio.save_status(pio.load_project(self.project_dir))
+        self.assertEqual(status.changed, ["candidates.json"])
+        self.assertEqual(status.reformat_only, ["candidates.json"])
+
+
+class TestPendingAssets(SharedLayerTestCase):
+    def test_a_pending_write_is_visible_before_it_reaches_disk(self):
+        self.draft.pending_assets["system_prompts"]["new.txt"] = "hi"
+        self.assertIn("new.txt", self.draft.system_prompt_names())
+        self.assertFalse((self.draft.system_prompts_dir / "new.txt").exists())
+
+    def test_a_pending_delete_hides_a_file_that_is_still_on_disk(self):
+        existing = self.draft.system_prompt_names()[0]
+        self.draft.pending_assets["system_prompts"][existing] = None
+        self.assertNotIn(existing, self.draft.system_prompt_names())
+        self.assertTrue((self.draft.system_prompts_dir / existing).exists())
+
+    def test_validate_sees_an_attachment_that_is_only_pending(self):
+        """The reason pending_assets exists at all.
+
+        One patch that adds a file AND the test case using it must not report
+        the file as missing.
+        """
+        self.draft.tests = [{"id": "t", "prompt": "p", "criteria": "c",
+                             "file": "test_files/fresh.csv"}]
+        self.assertTrue([w for w in pio.validate(self.draft)[1] if "fresh.csv" in w])
+
+        self.draft.pending_assets["test_files"]["fresh.csv"] = "a,b"
+        self.assertEqual([w for w in pio.validate(self.draft)[1] if "fresh.csv" in w], [])
+
+
+class TestAssets(SharedLayerTestCase):
+    def test_asset_users_finds_both_kinds(self):
+        self.draft.candidates = [{"name": "A", "model": "m",
+                                  "system_prompt_file": "p.txt"}]
+        self.draft.tests = [{"id": "t", "prompt": "", "criteria": "",
+                             "file": "test_files/s.txt"}]
+        self.assertEqual(pio.asset_users(self.draft, "system_prompts", "p.txt"), ["A"])
+        self.assertEqual(pio.asset_users(self.draft, "test_files", "s.txt"), ["t"])
+        self.assertEqual(pio.asset_users(self.draft, "test_files", "other.txt"), [])
+
+    def test_unknown_kind_is_rejected(self):
+        with self.assertRaises(ValueError):
+            pio.asset_users(self.draft, "reports", "x.txt")
+
+    def test_write_asset_refuses_a_path_and_a_wrong_suffix(self):
+        for name in ("sub/x.txt", "..", ""):
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                pio.write_asset(self.draft, "system_prompts", name, "body")
+        with self.assertRaises(ValueError):
+            pio.write_asset(self.draft, "system_prompts", "x.md", "body")
+
+    def test_write_asset_uses_lf_regardless_of_platform(self):
+        pio.write_asset(self.draft, "system_prompts", "lf.txt", "one\ntwo\n")
+        raw = (self.draft.system_prompts_dir / "lf.txt").read_bytes()
+        self.assertNotIn(b"\r\n", raw)
+
+    def test_write_asset_takes_bytes_for_an_attachment(self):
+        pio.write_asset(self.draft, "test_files", "b.bin", b"\x00\x01")
+        self.assertEqual((self.draft.test_files_dir / "b.bin").read_bytes(), b"\x00\x01")
+
+    def test_delete_asset_refuses_while_something_still_refers_to_it(self):
+        name = self.draft.system_prompt_names()[0]
+        self.draft.candidates = [{"name": "A", "model": "m", "system_prompt_file": name}]
+        with self.assertRaises(ValueError) as caught:
+            pio.delete_asset(self.draft, "system_prompts", name)
+        self.assertIn("still used by", str(caught.exception))
+        self.assertTrue((self.draft.system_prompts_dir / name).exists())
+
+    def test_delete_asset_removes_an_orphan(self):
+        name = self.draft.system_prompt_names()[0]
+        self.draft.candidates = []
+        pio.delete_asset(self.draft, "system_prompts", name)
+        self.assertFalse((self.draft.system_prompts_dir / name).exists())
+
+    def test_delete_asset_reports_a_missing_file(self):
+        with self.assertRaises(ValueError):
+            pio.delete_asset(self.draft, "system_prompts", "never_existed.txt")
 
 
 if __name__ == "__main__":

@@ -36,7 +36,7 @@ No API key and no network access are required: nothing under
 python -m unittest discover -s tests -v
 ```
 
-525 tests, on stdlib `unittest`. There is no `pytest`, `ruff` or `mypy`
+605 tests, on stdlib `unittest`. There is no `pytest`, `ruff` or `mypy`
 configuration.
 
 ### Running a single test
@@ -74,8 +74,9 @@ effect, and without the reset that state leaks into every test that runs after.
 
 Not something you run. It is a minimal, git-tracked project directory that
 `testutils.make_temp_project()` copies into a fresh temp directory for
-`test_runner.py`, `test_verdict.py`, `test_gui.py`, `test_gui_editor.py` and
-`test_gui_projectio.py`, which all need a real project on disk to exercise
+`test_runner.py`, `test_verdict.py`, `test_gui.py`, `test_gui_editor.py`,
+`test_projectio.py` and `test_projectedit.py`, which all need a real project
+on disk to exercise
 `progress.jsonl` and `Report/` writing while the LLM calls themselves stay
 mocked.
 
@@ -119,6 +120,10 @@ for a local check never shows up in your diff.
 The unit suite never touches the real `unified_ai_client` path, so a change to
 the pipeline still wants one real run behind it. In increasing order of cost:
 
+- `prompttestenv show <project>` and `prompttestenv edit <project> --patch -`
+  when you touched the editing layer. Zero API calls, and the check worth making
+  is that an empty patch writes nothing: `echo '{}' | prompttestenv edit ...`
+  must report "Nothing to change" and leave every byte alone.
 - `prompttestenv render <project>` when you only touched reporting or
   aggregation code and an existing `progress.jsonl` is available. Zero API
   calls.

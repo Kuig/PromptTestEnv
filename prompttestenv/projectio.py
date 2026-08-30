@@ -1,6 +1,10 @@
-"""Byte-faithful load/serialise of a project's four config files, for the editor.
+"""Byte-faithful load/serialise of a project's four config files.
 
-Why this module exists at all, rather than the editor just using the dataclasses:
+Every interface that edits a project goes through here: the Streamlit editor,
+`projectedit`'s headless API, and therefore the CLI and the MCP server too. It
+lives at package level rather than under `gui/` for exactly that reason.
+
+Why this module exists at all, rather than callers just using the dataclasses:
 
 ``progress.calculate_config_hash`` gates run resume, and it hashes
 ``candidates.json``, ``test_cases.json`` and ``global_criteria.json`` as RAW
@@ -15,8 +19,8 @@ project through ``Candidate.load_all`` would therefore delete a project's extra
 keys, materialise every default the templates deliberately leave out, and
 persist the derived ``resolved_system_instruction``.
 
-So the editor edits RAW DICTS, and this module holds the rules that keep
-"open a project, press Save, change nothing" a genuine no-op:
+So every editor of a project edits RAW DICTS, and this module holds the rules
+that keep "open a project, save it, change nothing" a genuine no-op:
 
 1. key order preserved (iterate the original, append new keys after)
 2. numeric form preserved (an on-disk int stays an int)
@@ -30,13 +34,14 @@ So the editor edits RAW DICTS, and this module holds the rules that keep
 The one deliberate exception is a test case's ``file``: its path separators are
 normalised to ``/`` on save (see ``attachment_value``), so a project authored on
 Windows runs on POSIX too. That does change bytes, and therefore the run hash,
-on a project holding backslashes — which the editor already surfaces as an
-invalidation warning before the user saves.
+on a project holding backslashes — which both editing paths surface as an
+invalidation warning before anything is written.
 
 The dataclasses stay the source of truth for defaults — but only where they
 actually hold one. See _LOADER_DEFAULTS.
 
-No Streamlit import: this module is unit-tested on its own.
+No Streamlit import: this module is unit-tested on its own, and the core
+must never depend on the `gui` package.
 """
 from __future__ import annotations
 
@@ -57,7 +62,11 @@ from prompttestenv.models import (
     VerdictJudgeSettings,
     attachment_paths,
 )
-from prompttestenv.progress import HASHED_FILENAMES
+from prompttestenv.progress import (
+    HASHED_FILENAMES,
+    config_hash_from_bytes,
+    read_stored_hash,
+)
 
 CANDIDATES_FILE = "candidates.json"
 TEST_CASES_FILE = "test_cases.json"
@@ -66,6 +75,19 @@ GLOBAL_CRITERIA_FILE = "global_criteria.json"
 
 SYSTEM_PROMPTS_DIR = "system_prompts"
 TEST_FILES_DIR = "test_files"
+
+# The two directories a project holds beside its four JSON configs. Neither is
+# part of the run hash, which is the single most surprising thing about them and
+# why every interface that touches one has to say so: see ASSETS_NOT_HASHED.
+ASSET_KINDS = (SYSTEM_PROMPTS_DIR, TEST_FILES_DIR)
+
+ASSETS_NOT_HASHED = (
+    "system_prompts/ and test_files/ are not part of the run hash. Only the "
+    "four JSON configs are. Changing one of these does not invalidate "
+    "progress.jsonl, so a resumed run mixes responses produced under the old "
+    "and the new version into one report, with nothing flagging it. Use "
+    "--force-restart if that matters."
+)
 
 # The judge_config.json blocks, in the order the shipped template writes them,
 # mapped to the settings dataclass that defines each one's keys.
@@ -81,7 +103,7 @@ JUDGE_BLOCKS: dict[str, type] = {
 # without a default (dataclasses.MISSING); the fallbacks below are what
 # Candidate.load_all / TestCase.load_all actually apply. Reading fields() alone
 # would make the editor write a candidate with no `provider` key and a null
-# `model`. Kept honest by test_gui_projectio's classification guard.
+# `model`. Kept honest by test_projectio's classification guard.
 _LOADER_DEFAULTS: dict[type, dict[str, object]] = {
     Candidate: {"name": None, "provider": "google", "model": None},
     TestCase: {"id": "N/A", "prompt": "", "criteria": ""},
@@ -97,6 +119,16 @@ _ALWAYS_EMIT: dict[type, tuple[str, ...]] = {
 # Derived fields that are dataclass fields but NOT valid on-disk keys.
 _NEVER_EMIT: dict[type, tuple[str, ...]] = {
     Candidate: ("resolved_system_instruction",),
+}
+
+# What a brand-new entry holds before anything is merged into it. Its keys are
+# exactly _ALWAYS_EMIT's, but the VALUES are not effective_default's: the loader
+# fallback for `name` and `model` is None, which is the right answer for "the key
+# is absent" and the wrong one for "the author has not typed it yet". Kept in
+# step with _ALWAYS_EMIT by test_projectio's classification guard.
+_NEW_ROW: dict[type, dict] = {
+    Candidate: {"name": "", "provider": "google", "model": ""},
+    TestCase: {"id": "", "prompt": "", "criteria": ""},
 }
 
 # The only `thinking` values the editor offers. api.py normalises exactly these
@@ -248,13 +280,91 @@ def merge_preserving_shape(original: dict, new_values: dict, cls: type) -> dict:
     return out
 
 
+def blank_row(cls: type) -> dict:
+    """A fresh `candidates.json` / `test_cases.json` entry, ready to merge into.
+
+    Args:
+        cls: Candidate or TestCase.
+
+    Returns:
+        A new dict holding exactly the keys _ALWAYS_EMIT requires.
+    """
+    return dict(_NEW_ROW[cls])
+
+
+def upsert(items: list[dict], key_field: str, values: dict, cls: type) -> list[dict]:
+    """Merge `values` into the entry `key_field` names, or append a new one.
+
+    The identity is the on-disk key itself (`name` for a candidate, `id` for a
+    test case), because that is what every progress.jsonl event is keyed by too.
+
+    Args:
+        items: The current list, left untouched.
+        key_field: The field whose value identifies an entry.
+        values: Edited values, keyed by field name.
+        cls: The dataclass describing the entry.
+
+    Returns:
+        A new list. An existing entry keeps its key order and its unknown keys
+        (see merge_preserving_shape); a new one starts from blank_row(), so the
+        _ALWAYS_EMIT keys are present even when `values` omits them.
+    """
+    key = values.get(key_field)
+    out = list(items)
+    for index, item in enumerate(out):
+        if item.get(key_field) == key:
+            out[index] = merge_preserving_shape(item, values, cls)
+            return out
+    out.append(merge_preserving_shape(blank_row(cls), values, cls))
+    return out
+
+
+def merge_judge(judge: dict, values: dict) -> dict:
+    """Deep-merge a partial judge_config: top-level scalars plus the four blocks.
+
+    A block named in `values` is merged into whatever the file already had, or
+    created from scratch. That differs from the editor's own rule, which never
+    creates a block the file lacked — there, an empty block would appear merely
+    because someone opened a tab; here, naming the block IS the edit.
+
+    Args:
+        judge: The judge_config.json dict as read from disk.
+        values: A partial dict, possibly holding nested block dicts.
+
+    Returns:
+        A new dict ready to serialise.
+
+    Raises:
+        ValueError: If a value under a known block name is not a mapping.
+    """
+    scalars = {k: v for k, v in values.items() if k not in JUDGE_BLOCKS}
+    out = merge_preserving_shape(judge, scalars, JudgeConfig)
+    for name, settings_cls in JUDGE_BLOCKS.items():
+        if name not in values:
+            continue
+        block_values = values[name]
+        if not isinstance(block_values, dict):
+            raise ValueError(f"judge_config.{name} must be an object")
+        existing = out.get(name)
+        base = existing if isinstance(existing, dict) else {}
+        out[name] = merge_preserving_shape(base, block_values, settings_cls)
+    return out
+
+
 @dataclass
 class ProjectDraft:
     """A project's four config files, as raw data plus the bytes they came from.
 
     `disk` is what makes "did this actually change?" answerable exactly: the
-    editor serialises the current draft and compares bytes, rather than trying
-    to track per-field dirtiness.
+    draft is serialised and compared byte for byte, rather than tracking
+    per-field dirtiness.
+
+    `pending_assets` holds system prompts and attachments that a caller means to
+    write but has not written yet (kind -> filename -> content, None meaning a
+    pending delete). It exists because validate() answers "does this attachment
+    exist?" by listing the directory: without it, one patch that creates a file
+    AND the test case using it would report the file as missing. The Streamlit
+    editor writes assets immediately, so for it this stays empty.
     """
 
     project_dir: str
@@ -265,6 +375,9 @@ class ProjectDraft:
     disk: dict[str, bytes | None] = field(default_factory=dict)
     trailing_newline: dict[str, bool] = field(default_factory=dict)
     newline: dict[str, str] = field(default_factory=dict)
+    pending_assets: dict[str, dict[str, str | bytes | None]] = field(
+        default_factory=lambda: {kind: {} for kind in ASSET_KINDS}
+    )
 
     @property
     def system_prompts_dir(self) -> Path:
@@ -274,19 +387,40 @@ class ProjectDraft:
     def test_files_dir(self) -> Path:
         return Path(self.project_dir) / TEST_FILES_DIR
 
+    def asset_dir(self, kind: str) -> Path:
+        """The directory holding assets of `kind`.
+
+        Raises:
+            ValueError: If `kind` is not one of ASSET_KINDS.
+        """
+        if kind not in ASSET_KINDS:
+            raise ValueError(f"Unknown asset kind '{kind}'. Expected one of {ASSET_KINDS}.")
+        return Path(self.project_dir) / kind
+
+    def _names(self, kind: str, on_disk: list[str]) -> list[str]:
+        """`on_disk` with this draft's pending writes added and deletes removed."""
+        pending = self.pending_assets.get(kind) or {}
+        names = {name for name in on_disk if pending.get(name, "") is not None}
+        names.update(name for name, content in pending.items() if content is not None)
+        return sorted(names)
+
     def system_prompt_names(self) -> list[str]:
         """Bare .txt filenames available to a candidate's system_prompt_file."""
         directory = self.system_prompts_dir
-        if not directory.is_dir():
-            return []
-        return sorted(p.name for p in directory.iterdir() if p.is_file() and p.suffix == ".txt")
+        on_disk = (
+            [p.name for p in directory.iterdir() if p.is_file() and p.suffix == ".txt"]
+            if directory.is_dir() else []
+        )
+        return self._names(SYSTEM_PROMPTS_DIR, on_disk)
 
     def test_file_names(self) -> list[str]:
         """Bare filenames available as a test case attachment."""
         directory = self.test_files_dir
-        if not directory.is_dir():
-            return []
-        return sorted(p.name for p in directory.iterdir() if p.is_file())
+        on_disk = (
+            [p.name for p in directory.iterdir() if p.is_file()]
+            if directory.is_dir() else []
+        )
+        return self._names(TEST_FILES_DIR, on_disk)
 
 
 def _read_raw(path: Path) -> bytes | None:
@@ -614,6 +748,175 @@ def validate(draft: ProjectDraft) -> tuple[list[str], list[str]]:
         warnings.append(f"Attachment '{path}' is not used by any test case.")
 
     return errors, warnings
+
+
+# ── Save status ───────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class SaveStatus:
+    """Everything a caller needs to decide whether, and how, to write a draft.
+
+    Computed in one place because every interface needs the same four answers
+    and gets them wrong differently: what would change, what blocks the write,
+    whether an existing run survives it, and whether the change is real at all.
+    """
+
+    changed: list[str]
+    errors: list[str]
+    warnings: list[str]
+    stored_hash: str | None
+    would_be_hash: str
+    invalidates: bool
+    reformat_only: list[str]
+
+
+def save_status(draft: ProjectDraft) -> SaveStatus:
+    """Validate a draft and compare it against what is on disk.
+
+    `invalidates` is the expensive one: the project has a progress.jsonl whose
+    stored hash no longer matches what this draft would produce, so the next run
+    renames it to progress.jsonl.bak and starts over. A draft with no log at all
+    can never invalidate anything.
+
+    `reformat_only` names changed files whose JSON content is identical, which
+    is worth surfacing separately: three of the four are hashed byte for byte,
+    so pure reindentation still costs the user their progress.
+
+    Args:
+        draft: The draft to inspect. Not modified.
+
+    Returns:
+        A SaveStatus. `errors` non-empty must block the write.
+    """
+    pending = serialize_all(draft)
+    changed = [name for name in HASHED_FILENAMES if pending[name] != draft.disk.get(name)]
+    errors, warnings = validate(draft)
+
+    stored = read_stored_hash(draft.project_dir)
+    would_be = config_hash_from_bytes(pending)
+
+    reformat_only = []
+    for name in changed:
+        try:
+            if json.loads(pending[name]) == json.loads(draft.disk.get(name) or b"null"):
+                reformat_only.append(name)
+        except (ValueError, TypeError):
+            pass
+
+    return SaveStatus(
+        changed=changed,
+        errors=errors,
+        warnings=warnings,
+        stored_hash=stored,
+        would_be_hash=would_be,
+        invalidates=stored is not None and stored != would_be,
+        reformat_only=reformat_only,
+    )
+
+
+# ── Assets: system_prompts/*.txt and test_files/* ─────────────────────────────
+# Not in the run hash (see ASSETS_NOT_HASHED), but referenced by name from two
+# of the files that are, so deleting one behind a live reference silently breaks
+# the run. Both editing paths share these guards.
+
+
+def asset_users(draft: ProjectDraft, kind: str, name: str) -> list[str]:
+    """Who still refers to this asset.
+
+    Args:
+        draft: The draft to search, in its current (post-edit) state.
+        kind: One of ASSET_KINDS.
+        name: The bare filename.
+
+    Returns:
+        Candidate names for a system prompt, test case ids for an attachment.
+
+    Raises:
+        ValueError: If `kind` is not one of ASSET_KINDS.
+    """
+    if kind == SYSTEM_PROMPTS_DIR:
+        return [
+            str(cand.get("name") or "")
+            for cand in draft.candidates
+            if cand.get("system_prompt_file") == name
+        ]
+    if kind == TEST_FILES_DIR:
+        target = f"{TEST_FILES_DIR}/{name}"
+        users = []
+        for test in draft.tests:
+            try:
+                paths = attachment_paths(test.get("file"))
+            except ValueError:
+                continue  # a malformed `file` is reported by validate(), not here
+            if target in paths:
+                users.append(str(test.get("id") or ""))
+        return users
+    raise ValueError(f"Unknown asset kind '{kind}'. Expected one of {ASSET_KINDS}.")
+
+
+def check_asset_name(kind: str, name: str) -> str | None:
+    """Reject a filename an asset directory must not hold. Returns an error, or None."""
+    problem = check_filename(name)
+    if problem:
+        return problem
+    if kind == SYSTEM_PROMPTS_DIR and not name.endswith(".txt"):
+        return "System prompt files must end in .txt"
+    return None
+
+
+def write_asset(draft: ProjectDraft, kind: str, name: str, content: str | bytes) -> None:
+    """Write one system prompt or attachment straight to disk.
+
+    Text is written with newline="\\n" rather than the platform default,
+    matching seed_project() and the loaders, so the same project reads
+    identically wherever it was authored.
+
+    Args:
+        draft: The draft the asset belongs to.
+        kind: One of ASSET_KINDS.
+        name: The bare filename.
+        content: Text, or bytes for a binary attachment.
+
+    Raises:
+        ValueError: If `kind` or `name` is not acceptable.
+        OSError: If the file cannot be written.
+    """
+    problem = check_asset_name(kind, name)
+    if problem:
+        raise ValueError(problem)
+    directory = draft.asset_dir(kind)
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / name
+    if isinstance(content, bytes):
+        path.write_bytes(content)
+    else:
+        path.write_text(content, encoding="utf-8", newline="\n")
+
+
+def delete_asset(draft: ProjectDraft, kind: str, name: str) -> None:
+    """Delete one system prompt or attachment, unless something still uses it.
+
+    Args:
+        draft: The draft the asset belongs to, in its current (post-edit) state.
+        kind: One of ASSET_KINDS.
+        name: The bare filename.
+
+    Raises:
+        ValueError: If `kind`/`name` is invalid, the file is absent, or a
+            candidate or test case still refers to it.
+        OSError: If the file cannot be removed.
+    """
+    problem = check_filename(name)
+    if problem:
+        raise ValueError(problem)
+    users = asset_users(draft, kind, name)
+    if users:
+        raise ValueError(f"'{name}' is still used by {', '.join(users)}.")
+    path = draft.asset_dir(kind) / name
+    if not path.is_file():
+        raise ValueError(f"'{name}' does not exist in {kind}/.")
+    path.unlink()
 
 
 def externally_modified(draft: ProjectDraft) -> list[str]:
