@@ -1,13 +1,16 @@
-"""Dual-backend logger — console (print) or Streamlit (compact HTML console).
+"""Multi-backend logger: console, MCP (stderr), silent, or Streamlit.
 
 Usage:
     from prompttestenv.logger import log_success, log_error, set_backend
 
-    log_success("Operation complete")   # console (default)
+    log_success("Operation complete")   # console (default), writes to stdout
+    set_backend("mcp")
+    log_success("Operation complete")   # same format, writes to stderr
     set_backend("streamlit")
     log_success("Operation complete")   # compact HTML via st.markdown
 """
 from __future__ import annotations
+import sys
 from typing import Callable, NamedTuple
 
 
@@ -36,6 +39,18 @@ def _console_emit(emoji: str, msg: str, color: str) -> None:
 def _console_sep() -> None:
     print("─" * 40)
 
+def _mcp_emit(emoji: str, msg: str, color: str) -> None:
+    print(f"{emoji} {msg}", file=sys.stderr)
+
+def _mcp_sep() -> None:
+    print("─" * 40, file=sys.stderr)
+
+def _silent_emit(emoji: str, msg: str, color: str) -> None:
+    pass
+
+def _silent_sep() -> None:
+    pass
+
 _emit: Callable[[str, str, str], None] = _console_emit
 _sep:  Callable[[], None]              = _console_sep
 
@@ -44,10 +59,16 @@ def set_backend(backend: str) -> None:
     """Switch output backend.
 
     Args:
-        backend: Either ``'console'`` (default) or ``'streamlit'``.
+        backend: One of ``'console'`` (default, stdout), ``'mcp'`` (stderr),
+            ``'silent'`` (discard), or ``'streamlit'``. Any unknown value
+            falls back to ``'console'``.
     """
     global _emit, _sep
-    if backend == "streamlit":
+    if backend == "mcp":
+        _emit, _sep = _mcp_emit, _mcp_sep
+    elif backend == "silent":
+        _emit, _sep = _silent_emit, _silent_sep
+    elif backend == "streamlit":
         import streamlit as st
 
         def _st_emit(emoji: str, msg: str, color: str) -> None:

@@ -106,10 +106,15 @@ def cmd_edit(args: argparse.Namespace) -> None:
 
 def cmd_mcp(args: argparse.Namespace) -> None:
     """Handle the ``mcp`` subcommand — start the FastMCP server on stdio."""
+    import prompttestenv.logger as logger
+
+    # Before anything can log: stdio transport carries the JSON-RPC frames on
+    # stdout, so every log line has to go to stderr instead.
+    logger.set_backend("mcp")
     try:
         from mcp.server.fastmcp import FastMCP
     except ImportError:
-        print("'mcp' library not installed. Run: pip install mcp", file=sys.stderr)
+        logger.log_error("'mcp' library not installed. Run: pip install mcp")
         sys.exit(1)
     from prompttestenv.mcp_tools import register_tools
     mcp = FastMCP("PromptTestEnv")
