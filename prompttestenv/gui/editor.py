@@ -483,7 +483,12 @@ with tab_cand:
         data = row["data"]
         title = f"{index + 1}. {data.get('name') or '(unnamed)'} — " \
                 f"{data.get('provider', '')}/{data.get('model') or '?'}"
-        with st.expander(title, expanded=len(ed["candidates"]) <= 3):
+        # The uid-scoped key gives the expander a stable, label-independent
+        # identity. Without it, editing name/provider/model changes `title`,
+        # Streamlit sees a brand-new expander and re-applies `expanded=`, and
+        # the panel snaps shut mid-edit.
+        with st.expander(title, expanded=len(ed["candidates"]) <= 3,
+                         key=f"cexp:{row['uid']}"):
             st.text_input("Name", value=data.get("name") or "",
                           key=_wkey("cand", row["uid"], "name"))
             left, right = st.columns(2)
@@ -606,7 +611,11 @@ with tab_tests:
             continue
 
         judge_type = data.get("judge_type", "llm-judge")
-        with st.expander(f"{data.get('id') or '(no id)'} · [{group}] · {judge_type}"):
+        # uid-scoped key: same reason as the candidates expander — the header
+        # interpolates id/group/judge_type, so without a stable key the panel
+        # collapses the moment one of them is edited.
+        with st.expander(f"{data.get('id') or '(no id)'} · [{group}] · {judge_type}",
+                         key=f"texp:{row['uid']}"):
             left, right = st.columns(2)
             with left:
                 st.text_input("ID", value=data.get("id") or "",

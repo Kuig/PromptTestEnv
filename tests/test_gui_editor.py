@@ -8,6 +8,7 @@ generation counter (so Discard actually reloads), and the save-confirmation gate
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import unittest
 from pathlib import Path
@@ -155,6 +156,66 @@ class TestTabsStayPut(EditorTestCase):
         # title, flash slot, confirm slot, issues slot, tabs.
         self.assertEqual(shape.index("tab_container"), 4)
         self.assertEqual(shape[1:4], ["flex_container"] * 3)
+
+
+class TestRowExpandersSurviveHeaderEdits(EditorTestCase):
+    """Each candidate / test-case row expander carries a uid-scoped `key`.
+
+    The headers interpolate the fields being edited (name/provider/model for a
+    candidate, id/group/judge_type for a test case). Without a stable key the
+    frontend loses the expander's identity when the label changes and snaps it
+    shut on every blur. AppTest has no frontend, so this pins the server-side
+    invariants the fix depends on: no exception, a stable set of expanders, and
+    unique keys (a duplicate would raise `StreamlitDuplicateElementKey`). The
+    collapse itself is frontend behaviour, confirmed against the JS bundle.
+    """
+
+    _CAND_LABEL = re.compile(r"^\d+\. ")
+
+    def _candidate_expanders(self, at):
+        return [e for e in at.expander if self._CAND_LABEL.match(e.label)]
+
+    def _testcase_expanders(self, at):
+        return [e for e in at.expander if " · [" in e.label]
+
+    def _seed_four_candidates(self):
+        (Path(self.project_dir) / "candidates.json").write_text(
+            json.dumps([
+                {"name": n, "provider": "google", "model": f"m{i}"}
+                for i, n in enumerate(("Alpha", "Beta", "Gamma", "Delta"), start=1)
+            ], indent=4),
+            encoding="utf-8",
+        )
+
+    def test_editing_a_candidate_header_field_keeps_the_expander_set(self):
+        self._seed_four_candidates()
+        at = self._app()
+        before = [e.label for e in self._candidate_expanders(at)]
+        self.assertEqual(len(before), 4)
+
+        # Row 4's header is `expanded=False` (>3 candidates); pre-fix this edit
+        # rebuilt it collapsed.
+        self._row_inputs(at, "cand", "name")[3].set_value("Renamed")
+        at.run()
+
+        after = self._candidate_expanders(at)
+        self.assertEqual(list(at.exception), [])
+        self.assertEqual(len(after), 4)
+        self.assertIn("Renamed", after[3].label)
+        self.assertEqual(before[:3], [e.label for e in after][:3])
+
+    def test_editing_a_test_case_id_keeps_the_expander_set(self):
+        at = self._app()
+        before = self._testcase_expanders(at)
+        self.assertEqual(len(before), 2)
+
+        self._row_inputs(at, "test", "id")[0].set_value("renamed_case")
+        at.run()
+
+        after = self._testcase_expanders(at)
+        self.assertEqual(list(at.exception), [])
+        self.assertEqual(len(after), 2)
+        self.assertTrue(after[0].label.startswith("renamed_case · ["))
 
 
 class TestNoOpSave(EditorTestCase):
