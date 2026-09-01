@@ -18,6 +18,7 @@ any widget is created, and every widget then renders from the model.
 from __future__ import annotations
 
 import sys
+from copy import deepcopy
 from pathlib import Path
 from uuid import uuid4
 
@@ -94,6 +95,20 @@ def _sync_draft() -> None:
     ed = st.session_state.ed
     ed["draft"].candidates = [row["data"] for row in ed["candidates"]]
     ed["draft"].tests = [row["data"] for row in ed["tests"]]
+
+
+def _unique_label(base: str, taken: set) -> str:
+    """`base` with a ' (copy)' suffix, bumped until it is not already in `taken`.
+
+    Keeps the editor savable straight after a duplicate: `projectio.validate`
+    treats a repeated candidate name or test id as a blocking error.
+    """
+    label = f"{base} (copy)"
+    n = 2
+    while label in taken:
+        label = f"{base} (copy {n})"
+        n += 1
+    return label
 
 
 # Field name -> how to read the widget value back. `None` means "as is".
@@ -543,7 +558,7 @@ with tab_cand:
             if extras:
                 st.caption("Preserved extra keys: " + ", ".join(extras))
 
-            up, down, delete, _ = st.columns([1, 1, 1, 7])
+            up, down, dup, delete, _ = st.columns([1, 1, 1, 1, 6])
             if up.button("▲", key=f"cup:{row['uid']}", disabled=index == 0):
                 ed["candidates"][index - 1], ed["candidates"][index] = \
                     ed["candidates"][index], ed["candidates"][index - 1]
@@ -553,6 +568,18 @@ with tab_cand:
                            disabled=index == len(ed["candidates"]) - 1):
                 ed["candidates"][index + 1], ed["candidates"][index] = \
                     ed["candidates"][index], ed["candidates"][index + 1]
+                _sync_draft()
+                st.rerun()
+            if dup.button("📋", key=f"cdup:{row['uid']}", help="Duplica"):
+                clone = deepcopy(row["data"])
+                if clone.get("name"):
+                    clone["name"] = _unique_label(
+                        clone["name"],
+                        {c["data"].get("name") for c in ed["candidates"]},
+                    )
+                ed["candidates"].insert(
+                    index + 1, {"uid": uuid4().hex, "data": clone}
+                )
                 _sync_draft()
                 st.rerun()
             if delete.button("🗑", key=f"crm:{row['uid']}"):
@@ -666,7 +693,7 @@ with tab_tests:
             if extras:
                 st.caption("Preserved extra keys: " + ", ".join(extras))
 
-            up, down, delete, _ = st.columns([1, 1, 1, 7])
+            up, down, dup, delete, _ = st.columns([1, 1, 1, 1, 6])
             if up.button("▲", key=f"tup:{row['uid']}", disabled=index == 0):
                 ed["tests"][index - 1], ed["tests"][index] = \
                     ed["tests"][index], ed["tests"][index - 1]
@@ -676,6 +703,16 @@ with tab_tests:
                            disabled=index == len(ed["tests"]) - 1):
                 ed["tests"][index + 1], ed["tests"][index] = \
                     ed["tests"][index], ed["tests"][index + 1]
+                _sync_draft()
+                st.rerun()
+            if dup.button("📋", key=f"tdup:{row['uid']}", help="Duplica"):
+                clone = deepcopy(row["data"])
+                if clone.get("id"):
+                    clone["id"] = _unique_label(
+                        clone["id"],
+                        {t["data"].get("id") for t in ed["tests"]},
+                    )
+                ed["tests"].insert(index + 1, {"uid": uuid4().hex, "data": clone})
                 _sync_draft()
                 st.rerun()
             if delete.button("🗑", key=f"trm:{row['uid']}"):

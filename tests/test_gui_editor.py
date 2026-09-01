@@ -290,6 +290,81 @@ class TestRowIdentity(EditorTestCase):
         self.assertEqual(written[-1]["model"], "brand-new")
 
 
+class TestRowDuplication(EditorTestCase):
+    """The 📋 button clones a row in place with a unique name / id."""
+
+    def _seed_three_candidates(self):
+        (Path(self.project_dir) / "candidates.json").write_text(
+            json.dumps([
+                {"name": "Alpha", "provider": "google", "model": "m1"},
+                {"name": "Beta", "provider": "google", "model": "m2"},
+                {"name": "Gamma", "provider": "google", "model": "m3"},
+            ], indent=4),
+            encoding="utf-8",
+        )
+
+    @staticmethod
+    def _row_button(at: AppTest, prefix: str, index: int):
+        return [b for b in at.button if f"-{prefix}:" in b.proto.id][index]
+
+    def test_duplicating_a_candidate_inserts_a_renamed_copy_after_it(self):
+        self._seed_three_candidates()
+        at = self._app()
+
+        self._row_button(at, "cdup", 0).click()
+        at.run()
+
+        self.assertEqual(list(at.exception), [])
+        self.assertEqual(self._candidate_names(at),
+                         ["Alpha", "Alpha (copy)", "Beta", "Gamma"])
+        # Every other field rides along with the clone.
+        self.assertEqual([w.value for w in self._row_inputs(at, "cand", "model")],
+                         ["m1", "m1", "m2", "m3"])
+        self.assertFalse(any("more than once" in e.value for e in at.error))
+
+    def test_duplicating_twice_bumps_the_suffix(self):
+        self._seed_three_candidates()
+        at = self._app()
+
+        for _ in range(2):
+            self._row_button(at, "cdup", 0).click()
+            at.run()
+
+        self.assertEqual(
+            self._candidate_names(at),
+            ["Alpha", "Alpha (copy 2)", "Alpha (copy)", "Beta", "Gamma"],
+        )
+        self.assertEqual(list(at.exception), [])
+
+    def test_duplicating_a_test_case_inserts_a_renamed_copy(self):
+        at = self._app()
+
+        self._row_button(at, "tdup", 0).click()
+        at.run()
+
+        self.assertEqual(list(at.exception), [])
+        self.assertEqual(
+            [w.value for w in self._row_inputs(at, "test", "id")],
+            ["customer_email", "customer_email (copy)", "file_analysis"],
+        )
+
+    def test_the_duplicate_survives_a_save(self):
+        self._seed_three_candidates()
+        at = self._app()
+
+        self._row_button(at, "cdup", 0).click()
+        at.run()
+        self._click(at, "💾 Save")
+        at.run()
+
+        written = json.loads(
+            (Path(self.project_dir) / "candidates.json").read_text("utf-8")
+        )
+        self.assertEqual([c["name"] for c in written],
+                         ["Alpha", "Alpha (copy)", "Beta", "Gamma"])
+        self.assertEqual(written[1]["model"], "m1")
+
+
 class TestSaveConfirmation(EditorTestCase):
     def test_reasoning_only_edit_saves_without_confirmation(self):
         self._add_progress_log()
