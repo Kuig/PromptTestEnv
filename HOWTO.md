@@ -35,7 +35,9 @@ This file contains the actual prompts (the tasks) that the candidates will execu
 - `criteria` *(string, required)*: The criteria text used for evaluation. Depending on the `judge_type`, this represents:
   - For `llm-judge`: The guidelines text given to the judge.
   - For `similarity`: The expected target text to compare the response against using cosine similarity.
-  - For `assert`: A single-line vanilla Python lambda expression returning a `(score, reasoning)` tuple (e.g. `s: (10, 'OK') if s.count(',') == 2 else (1, 'Failed')`).
+  - For `assert`: A single-line vanilla Python lambda expression that receives the raw candidate response string and returns a `(score, reasoning)` tuple (e.g. `s: (10, 'OK') if s.count(',') == 2 else (1, 'Failed')`). The lambda runs against a fixed namespace: its single argument, every Python builtin, the standard-library modules `re`, `math`, `json`, `statistics`, `datetime` and `string`, and a helper `similarity(a, b)` that returns the raw cosine similarity (about -1.0 to 1.0, not rescaled to 1-10) between the embeddings of two strings, computed with the `similarity_judge` provider/model from `judge_config.json` (it performs a real embedding call). Project internals are not visible. The score is used as returned (`int()` truncates a float, nothing is clamped), and returning `-1` marks that one response "not measured". Two examples:
+    - `s: (10, 'has answer') if re.search(r'FINAL:\s*(\w+)', s) else (1, 'no FINAL token')` uses `re` to check for an answer token.
+    - `s: (10, 'on topic') if similarity(s, 'the expected answer text') > 0.8 else (3, 'drifted')` scores by semantic closeness to a reference string.
 - `judge_type` *(string, optional)*: The mode used to judge the candidate response. Can be:
   - `"llm-judge"` *(default)*: Sends the response and criteria to the judge LLM.
   - `"similarity"`: Calculates the embedding cosine similarity between the response and the target criteria, scaled 1 to 10.

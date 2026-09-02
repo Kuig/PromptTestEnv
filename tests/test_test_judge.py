@@ -14,36 +14,145 @@ from prompttestenv.test_judge import (
 
 
 class TestEvaluateAssert(unittest.TestCase):
+    def setUp(self):
+        self.jc = JudgeConfig()
+
+    def _assert(self, criteria, response="anything"):
+        return _evaluate_assert(criteria, response, self.jc)
+
     def test_valid_lambda_with_prefix(self):
-        score, reasoning = _evaluate_assert("lambda s: (9, 'good')", "anything")
+        score, reasoning = self._assert("lambda s: (9, 'good')")
         self.assertEqual(score, 9)
         self.assertEqual(reasoning, "good")
 
     def test_valid_lambda_without_prefix(self):
-        score, reasoning = _evaluate_assert("s: (7, 'ok')", "anything")
+        score, reasoning = self._assert("s: (7, 'ok')")
         self.assertEqual(score, 7)
 
     def test_malformed_syntax_returns_error_tuple(self):
-        score, reasoning = _evaluate_assert("s: (", "anything")
+        score, reasoning = self._assert("s: (")
         self.assertEqual(score, -1)
         self.assertIn("Error", reasoning)
 
     def test_non_two_tuple_return_falls_back(self):
-        score, reasoning = _evaluate_assert("s: 42", "anything")
+        score, reasoning = self._assert("s: 42")
         self.assertEqual(score, -1)
         self.assertIn("did not return", reasoning)
 
     def test_score_is_returned_verbatim_without_clamping(self):
         """Criteria are the author's own unsandboxed lambda: range is their call."""
-        score, _ = _evaluate_assert("s: (99, 'too high')", "anything")
+        score, _ = self._assert("s: (99, 'too high')")
         self.assertEqual(score, 99)
-        score, _ = _evaluate_assert("s: (-5, 'too low')", "anything")
+        score, _ = self._assert("s: (-5, 'too low')")
         self.assertEqual(score, -5)
 
     def test_author_can_signal_not_measured_explicitly(self):
-        score, reasoning = _evaluate_assert("s: (-1, 'not applicable here')", "anything")
+        score, reasoning = self._assert("s: (-1, 'not applicable here')")
         self.assertEqual(score, -1)
         self.assertEqual(reasoning, "not applicable here")
+
+    def test_scaffold_example_criteria_still_works(self):
+        """The string init writes into a new project's test_cases.json."""
+        expr = "s: (10, 'Correct comma count') if s.count(',') == 2 else (1, 'Wrong comma count')"
+        score, reasoning = self._assert(expr, "a, b, c")
+        self.assertEqual(score, 10)
+        self.assertEqual(reasoning, "Correct comma count")
+        score, _ = self._assert(expr, "no commas here")
+        self.assertEqual(score, 1)
+
+    def test_int_truncates_a_float_score_without_clamping(self):
+        score, _ = self._assert("s: (9.9, 'truncated, not rounded, not clamped')")
+        self.assertEqual(score, 9)
+
+    def test_re_is_available_inside_the_lambda(self):
+        expr = (
+            "s: (10, 'found answer ' + re.search(r'ANSWER=(\\d+)', s).group(1)) "
+            "if re.search(r'ANSWER=(\\d+)', s) else (1, 'no answer token')"
+        )
+        score, reasoning = self._assert(expr, "blah blah ANSWER=42 blah")
+        self.assertEqual(score, 10)
+        self.assertIn("42", reasoning)
+
+    def test_math_is_available_inside_the_lambda(self):
+        score, reasoning = self._assert("s: (int(math.pi * 2), 'two pi')")
+        self.assertEqual(score, 6)
+
+    def test_statistics_is_available_inside_the_lambda(self):
+        expr = "s: (int(statistics.mean([2, 4, 6, 8])), 'mean of the run')"
+        score, _ = self._assert(expr)
+        self.assertEqual(score, 5)
+
+    def test_json_is_available_inside_the_lambda(self):
+        expr = "s: (json.loads(s)['score'], json.loads(s)['why'])"
+        score, reasoning = self._assert(expr, '{"score": 8, "why": "parsed from json"}')
+        self.assertEqual(score, 8)
+        self.assertEqual(reasoning, "parsed from json")
+
+    def test_datetime_is_available_inside_the_lambda(self):
+        expr = (
+            "s: (10, 'is a leap year') "
+            "if (datetime.date(2024, 2, 29).month == 2) else (1, 'no')"
+        )
+        score, reasoning = self._assert(expr)
+        self.assertEqual(score, 10)
+        self.assertEqual(reasoning, "is a leap year")
+
+    def test_string_is_available_inside_the_lambda(self):
+        expr = "s: (10, 'all letters') if set(s) <= set(string.ascii_letters) else (1, 'has non-letters')"
+        score, _ = self._assert(expr, "abcDEF")
+        self.assertEqual(score, 10)
+        score, _ = self._assert(expr, "abc123")
+        self.assertEqual(score, 1)
+
+    def test_similarity_helper_is_available_and_branchable(self):
+        with patch("prompttestenv.test_judge.get_text_embedding") as mock_embed:
+            # Both texts embed to the same vector, so the raw cosine is 1.0.
+            mock_embed.return_value = [1.0, 0.0, 0.0]
+            expr = "s: (10, 'close enough') if similarity(s, 'expected text') > 0.8 else (1, 'too far')"
+            score, reasoning = self._assert(expr, "some response")
+        self.assertEqual(score, 10)
+        self.assertEqual(reasoning, "close enough")
+        self.assertTrue(mock_embed.called)
+
+    def test_similarity_helper_low_score_branch(self):
+        with patch("prompttestenv.test_judge.get_text_embedding") as mock_embed:
+            # Orthogonal vectors: raw cosine is 0.0, below the lambda's threshold.
+            mock_embed.side_effect = [[1.0, 0.0], [0.0, 1.0]]
+            expr = "s: (10, 'close') if similarity(s, 'expected') > 0.8 else (1, 'too far')"
+            score, reasoning = self._assert(expr, "some response")
+        self.assertEqual(score, 1)
+        self.assertEqual(reasoning, "too far")
+
+    def test_similarity_backend_failure_degrades_to_not_measured(self):
+        with patch("prompttestenv.test_judge.get_text_embedding") as mock_embed:
+            mock_embed.side_effect = RuntimeError("embedding backend down")
+            score, reasoning = self._assert(
+                "s: similarity(s, 'x') > 0.5 and (10, 'ok') or (1, 'no')", "resp",
+            )
+        self.assertEqual(score, -1)
+        self.assertIn("Error", reasoning)
+
+    def test_module_internal_names_are_no_longer_reachable(self):
+        """Before the explicit namespace, the lambda saw this module's globals
+        (get_llm_response, os, logger, ...). It must not any more."""
+        for leaked in ("get_llm_response", "os", "logger", "TestCaseResult"):
+            score, reasoning = self._assert(f"s: ({leaked} is not None, 'leaked')")
+            self.assertEqual(score, -1, leaked)
+            self.assertIn("Error", reasoning)
+
+    def test_builtins_including_import_are_still_reachable(self):
+        """The namespace is explicit but not a sandbox: full builtins stay."""
+        score, _ = self._assert("s: (len(s), 'len via builtin')", "abcd")
+        self.assertEqual(score, 4)
+        score, reasoning = self._assert(
+            "s: (10, __import__('math').floor(3.7)) if True else (1, 'no')",
+        )
+        self.assertEqual(score, 10)
+        self.assertEqual(reasoning, "3")
+
+    def test_argument_is_the_raw_unstripped_response(self):
+        score, _ = self._assert("s: (len(s), 'raw length keeps whitespace')", "  hi  ")
+        self.assertEqual(score, 6)
 
 
 class TestEvaluateLlmJudge(unittest.TestCase):
