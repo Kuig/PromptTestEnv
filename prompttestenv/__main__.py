@@ -4,6 +4,7 @@ Usage examples:
     prompttestenv init Projects/MyBenchmark
     prompttestenv run Projects/MyBenchmark --output-mode html
     prompttestenv run Projects/MyBenchmark --force-restart
+    prompttestenv run Projects/MyBenchmark --retry-errors
     prompttestenv analyze Projects/MyBenchmark
     prompttestenv render Projects/MyBenchmark --output-mode json
     prompttestenv show Projects/MyBenchmark
@@ -45,7 +46,9 @@ def cmd_run(args: argparse.Namespace) -> None:
     """Handle the ``run`` subcommand."""
     from prompttestenv.runner import run_project
     import prompttestenv.logger as logger
-    result = run_project(args.project_dir, args.output_mode, args.force_restart)
+    result = run_project(
+        args.project_dir, args.output_mode, args.force_restart, args.retry_errors
+    )
     logger.log_info(result)
 
 
@@ -152,10 +155,19 @@ def build_parser() -> argparse.ArgumentParser:
         default="html",
         help="Report format (default: html).",
     )
-    p_run.add_argument(
+    # Mutually exclusive: --force-restart discards the log the other one exists
+    # to repair, so asking for both is always a mistake worth reporting.
+    p_run_resume = p_run.add_mutually_exclusive_group()
+    p_run_resume.add_argument(
         "--force-restart",
         action="store_true",
         help="Ignore previous progress.jsonl and restart from scratch.",
+    )
+    p_run_resume.add_argument(
+        "--retry-errors",
+        action="store_true",
+        help="Resume as usual, but also redo the steps whose stored result is a "
+             "timeout or judge-failure placeholder.",
     )
     p_run.set_defaults(func=cmd_run)
 

@@ -52,6 +52,7 @@ with st.sidebar:
     st.divider()
     output_mode = st.selectbox("Output mode", ["html", "md", "json", "winner_only"])
     force_restart = st.checkbox("Force restart (ignore progress)")
+    retry_errors = st.checkbox("Retry errors (redo failed steps only)")
     force_reanalyze = st.checkbox("Force reanalyze (redo reasoning analysis)")
 
 
@@ -104,7 +105,7 @@ if pending:
                 init_project(pdir)
                 st.session_state.last_result = ("success", f"Initialized: {pdir}")
             elif action == "run":
-                result = run_project(pdir, output_mode, force_restart)
+                result = run_project(pdir, output_mode, force_restart, retry_errors)
                 st.session_state.last_result = (status_of(result), result)
             elif action == "analyze":
                 result = analyze_project(pdir, force_reanalyze)

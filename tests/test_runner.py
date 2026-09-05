@@ -245,6 +245,166 @@ class TestRunProject(LoggerResetTestCase):
         result = run_project(self.project_dir, output_mode="winner_only")
         self.assertIn("configuration has changed", result)
 
+    def _seed_failed_run(self, with_verdict=True):
+        """A finished run whose only repetition failed on both phases."""
+        from prompttestenv.progress import calculate_config_hash
+        cand = "Baseline (Flash 2.5)"
+        lines = [
+            json.dumps({"type": "meta", "config_hash": calculate_config_hash(self.project_dir)}),
+            json.dumps({
+                "type": "gen", "cand_id": cand, "test_id": "customer_email", "rep": 0,
+                "output": "⛔ [TIMEOUT EXCEEDED]", "tokens": 0, "reasoning_tokens": 0,
+                "reasoning_text": "", "elapsed": 240.0,
+            }),
+            json.dumps({
+                "type": "eval", "cand_id": cand, "test_id": "customer_email", "rep": 0,
+                "score": -1, "global_score": -1,
+                "reason": "⛔ [JUDGE TIMEOUT EXCEEDED]", "g_reason": "⛔ [JUDGE TIMEOUT EXCEEDED]",
+            }),
+        ]
+        if with_verdict:
+            lines.append(json.dumps({"type": "verdict", "content": "Verdict about the placeholders."}))
+        (Path(self.project_dir) / "progress.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return (cand, "customer_email", 0)
+
+    def _append(self, *events):
+        with open(Path(self.project_dir) / "progress.jsonl", "a", encoding="utf-8") as f:
+            for event in events:
+                f.write(json.dumps(event) + "\n")
+
+    def _repaired_gen(self, cand):
+        return {"type": "gen", "cand_id": cand, "test_id": "customer_email", "rep": 0,
+                "output": "a real answer", "tokens": 30, "reasoning_tokens": 0,
+                "reasoning_text": "", "elapsed": 2.5}
+
+    def _good_eval(self, cand):
+        return {"type": "eval", "cand_id": cand, "test_id": "customer_email", "rep": 0,
+                "score": 9, "global_score": -1, "reason": "excellent", "g_reason": "N/A"}
+
+    def _run_with_mocks(self, **kwargs):
+        """Run with both phases mocked out, returning the three mocks."""
+        with patch("prompttestenv.runner.run_generation_phase") as mock_gen, \
+             patch("prompttestenv.runner.run_evaluation_phase") as mock_eval, \
+             patch("prompttestenv.runner.generate_verdict", return_value="Fresh verdict.") as mock_verdict, \
+             patch("prompttestenv.runner.teardown"):
+            mock_gen.return_value = [{"fake": "pending_eval"}]
+            run_project(self.project_dir, output_mode="md", **kwargs)
+        return mock_gen, mock_eval, mock_verdict
+
+    def test_an_orphaned_eval_is_rejudged_without_any_flag(self):
+        """An interrupted retry leaves a good response next to the score of the
+        placeholder it replaced. That is a log contradicting itself, so a plain
+        run repairs it: no failure placeholder survives for a predicate to see."""
+        key = self._seed_failed_run()
+        self._append(self._repaired_gen(key[0]))
+
+        mock_gen, mock_eval, _ = self._run_with_mocks()
+
+        self.assertEqual(mock_gen.call_args.args[5], frozenset())
+        self.assertEqual(mock_eval.call_args.args[4], frozenset({key}))
+
+    def test_a_verdict_older_than_the_results_is_rewritten_without_any_flag(self):
+        key = self._seed_failed_run()
+        self._append(self._repaired_gen(key[0]), self._good_eval(key[0]))
+
+        _, _, mock_verdict = self._run_with_mocks()
+
+        mock_verdict.assert_called_once()
+
+    def test_a_second_retry_over_a_repaired_log_does_nothing(self):
+        """Idempotence, and the reason every signal reads the LAST line of a key:
+        the placeholder is still in the log's history forever. A signal scanning
+        the whole log instead would rebuy every response on every run."""
+        key = self._seed_failed_run()
+        # What a completed retry leaves behind: repaired response, fresh score,
+        # fresh verdict, all appended after the failed originals.
+        self._append(
+            self._repaired_gen(key[0]),
+            self._good_eval(key[0]),
+            {"type": "verdict", "content": "Verdict about the repaired results."},
+        )
+
+        mock_gen, mock_eval, mock_verdict = self._run_with_mocks(retry_errors=True)
+
+        self.assertEqual(mock_gen.call_args.args[5], frozenset())
+        self.assertEqual(mock_eval.call_args.args[4], frozenset())
+        mock_verdict.assert_not_called()
+
+    def test_a_regeneration_that_failed_again_is_still_selected(self):
+        """The deliberate exception to idempotence: the newest gen is once more
+        a placeholder, so the generation really did fail again."""
+        key = self._seed_failed_run()
+        self._append(
+            {"type": "gen", "cand_id": key[0], "test_id": "customer_email", "rep": 0,
+             "output": "⛔ [TIMEOUT EXCEEDED]", "tokens": 0, "reasoning_tokens": 0,
+             "reasoning_text": "", "elapsed": 240.0},
+            {"type": "eval", "cand_id": key[0], "test_id": "customer_email", "rep": 0,
+             "score": 1, "global_score": -1, "reason": "no answer", "g_reason": "N/A"},
+        )
+
+        mock_gen, _, _ = self._run_with_mocks(retry_errors=True)
+
+        self.assertEqual(mock_gen.call_args.args[5], frozenset({key}))
+
+    def test_retry_errors_passes_the_failed_keys_to_both_phases(self):
+        key = self._seed_failed_run()
+        with patch("prompttestenv.runner.run_generation_phase") as mock_gen, \
+             patch("prompttestenv.runner.run_evaluation_phase") as mock_eval, \
+             patch("prompttestenv.runner.generate_verdict", return_value="Fresh verdict."), \
+             patch("prompttestenv.runner.teardown"):
+            mock_gen.return_value = [{"fake": "pending_eval"}]
+            run_project(self.project_dir, output_mode="md", retry_errors=True)
+
+        self.assertEqual(mock_gen.call_args.args[5], frozenset({key}))
+        self.assertEqual(mock_eval.call_args.args[4], frozenset({key}))
+
+    def test_without_retry_errors_the_failed_keys_are_left_alone(self):
+        self._seed_failed_run()
+        with patch("prompttestenv.runner.run_generation_phase") as mock_gen, \
+             patch("prompttestenv.runner.run_evaluation_phase") as mock_eval, \
+             patch("prompttestenv.runner.generate_verdict", return_value="Fresh verdict."), \
+             patch("prompttestenv.runner.teardown"):
+            mock_gen.return_value = [{"fake": "pending_eval"}]
+            run_project(self.project_dir, output_mode="md")
+
+        self.assertEqual(mock_gen.call_args.args[5], frozenset())
+        self.assertEqual(mock_eval.call_args.args[4], frozenset())
+
+    def test_a_retry_regenerates_the_stored_verdict(self):
+        """The stored verdict describes the placeholders this run just replaced."""
+        self._seed_failed_run()
+        with patch("prompttestenv.runner.run_generation_phase") as mock_gen, \
+             patch("prompttestenv.runner.run_evaluation_phase"), \
+             patch("prompttestenv.runner.generate_verdict", return_value="Fresh verdict.") as mock_verdict, \
+             patch("prompttestenv.runner.teardown"):
+            mock_gen.return_value = [{"fake": "pending_eval"}]
+            run_project(self.project_dir, output_mode="md", retry_errors=True)
+
+        mock_verdict.assert_called_once()
+
+    def test_a_plain_resume_keeps_the_stored_verdict(self):
+        self._seed_failed_run()
+        with patch("prompttestenv.runner.run_generation_phase") as mock_gen, \
+             patch("prompttestenv.runner.run_evaluation_phase"), \
+             patch("prompttestenv.runner.generate_verdict") as mock_verdict, \
+             patch("prompttestenv.runner.teardown"):
+            mock_gen.return_value = [{"fake": "pending_eval"}]
+            run_project(self.project_dir, output_mode="md")
+
+        mock_verdict.assert_not_called()
+
+    def test_retry_errors_on_a_clean_log_redoes_nothing(self):
+        with patch("prompttestenv.runner.run_generation_phase") as mock_gen, \
+             patch("prompttestenv.runner.run_evaluation_phase") as mock_eval, \
+             patch("prompttestenv.runner.generate_verdict", return_value="Verdict text."), \
+             patch("prompttestenv.runner.teardown"):
+            mock_gen.return_value = [{"fake": "pending_eval"}]
+            result = run_project(self.project_dir, output_mode="md", retry_errors=True)
+
+        self.assertEqual(mock_gen.call_args.args[5], frozenset())
+        self.assertEqual(mock_eval.call_args.args[4], frozenset())
+        self.assertIn("Markdown generated", result)
+
     def test_happy_path_runs_all_phases_and_calls_teardown(self):
         with patch("prompttestenv.runner.run_generation_phase") as mock_gen, \
              patch("prompttestenv.runner.run_evaluation_phase") as mock_eval, \
@@ -300,6 +460,22 @@ class TestAnalyzeProject(LoggerResetTestCase):
             result = analyze_project(self.project_dir)
         self.assertIn("scope 'best'", result)
         self.assertIn("0/1", result)
+
+    def test_stale_analyses_are_forced_through(self):
+        """analyze already buys reasoning-judge calls, so unlike render it is
+        allowed to repair an analysis describing a trace that no longer exists."""
+        self._set_scope("best")
+        stale = frozenset({("A", "t1", 0)})
+        with patch("prompttestenv.runner.ProgressState.load") as mock_load, \
+                patch("prompttestenv.runner.run_analysis_phase") as mock_phase:
+            mock_load.return_value = ProgressState(
+                gen_events={("A", "t1", 0): {"reasoning_text": "A thought."}},
+                stale_reasoning_keys=stale,
+            )
+            mock_phase.return_value = {}
+            analyze_project(self.project_dir)
+
+        self.assertEqual(mock_phase.call_args.kwargs["force_keys"], stale)
 
 
 class TestRenderFromProgress(LoggerResetTestCase):
@@ -385,6 +561,110 @@ class TestRenderFromProgress(LoggerResetTestCase):
             render_from_progress(self.project_dir)
 
         mock_html.assert_called_once()
+
+
+class TestRenderFromProgressDeduplicates(LoggerResetTestCase):
+    """--retry-errors appends a corrected event, so a key can span several lines.
+
+    The renderer must read the deduplicated dicts, where the last line wins,
+    rather than the raw event list, where every superseded attempt would be
+    counted again.
+    """
+
+    def setUp(self):
+        self.project_dir = make_temp_project()
+        self.addCleanup(shutil.rmtree, self.project_dir, ignore_errors=True)
+        self.cand = "Baseline (Flash 2.5)"
+
+    def _write(self, *events):
+        from prompttestenv.progress import calculate_config_hash
+        lines = [json.dumps({"type": "meta", "config_hash": calculate_config_hash(self.project_dir)})]
+        lines += [json.dumps(event) for event in events]
+        lines.append(json.dumps({"type": "verdict", "content": "Final verdict text."}))
+        (Path(self.project_dir) / "progress.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    def _payload(self):
+        render_from_progress(self.project_dir, output_mode="json")
+        return json.loads(
+            list((Path(self.project_dir) / "Report").glob("*.json"))[0].read_text(encoding="utf-8")
+        )
+
+    def _gen(self, rep, output, tokens, elapsed):
+        return {
+            "type": "gen", "cand_id": self.cand, "test_id": "customer_email", "rep": rep,
+            "output": output, "tokens": tokens, "reasoning_tokens": 0, "elapsed": elapsed,
+        }
+
+    def _eval(self, rep, score, reason):
+        return {
+            "type": "eval", "cand_id": self.cand, "test_id": "customer_email", "rep": rep,
+            "score": score, "global_score": -1, "reason": reason, "g_reason": "N/A",
+        }
+
+    def test_a_retried_key_contributes_once_carrying_the_last_value(self):
+        self._write(
+            self._gen(0, "⛔ [TIMEOUT EXCEEDED]", 0, 240.0),
+            self._eval(0, -1, "⛔ [JUDGE TIMEOUT EXCEEDED]"),
+            self._gen(0, "a real answer", 30, 2.5),
+            self._eval(0, 8, "good"),
+        )
+        payload = self._payload()
+
+        cell = payload["test_cases"][0]["candidates"][self.cand]
+        self.assertEqual(cell["score"]["values"], [8])
+        self.assertEqual(cell["tokens"]["values"], [30])
+        self.assertEqual(cell["time"]["values"], [2.5])
+        self.assertEqual(cell["best"]["output"], "a real answer")
+
+    def test_a_duplicate_free_log_renders_exactly_as_before(self):
+        self._write(self._gen(0, "x", 12, 1.5), self._eval(0, 7, "fine"))
+        payload = self._payload()
+
+        cell = payload["test_cases"][0]["candidates"][self.cand]
+        self.assertEqual(cell["score"]["values"], [7])
+        self.assertEqual(cell["tokens"]["values"], [12])
+        self.assertEqual(cell["best"]["output"], "x")
+
+    def test_an_eval_without_its_gen_event_renders_instead_of_raising(self):
+        """The perf record is per test case, so ordering alone does not save this."""
+        self._write(
+            self._gen(0, "x", 1, 0.1),
+            {
+                "type": "eval", "cand_id": self.cand, "test_id": "meeting_notes", "rep": 0,
+                "score": 5, "global_score": -1, "reason": "ok", "g_reason": "N/A",
+            },
+        )
+        result = render_from_progress(self.project_dir, output_mode="json")
+        self.assertIn("JSON report:", result)
+
+    def test_a_stale_log_is_rendered_as_it_is_without_any_llm_call(self):
+        """render is documented everywhere as free, so a stale log is reported,
+        never repaired: repairing needs judge and verdict calls, and `run` owns
+        that. This pins the one thing keeping generate_verdict unreachable here."""
+        self._write(
+            self._gen(0, "⛔ [TIMEOUT EXCEEDED]", 0, 240.0),
+            self._eval(0, -1, "⛔ [JUDGE TIMEOUT EXCEEDED]"),
+            self._gen(0, "a real answer", 30, 2.5),
+        )
+        with patch("prompttestenv.runner.generate_verdict") as mock_verdict:
+            result = render_from_progress(self.project_dir, output_mode="json")
+
+        mock_verdict.assert_not_called()
+        self.assertIn("JSON report:", result)
+
+    def test_a_retried_score_tying_a_later_rep_keeps_the_earlier_one_as_best(self):
+        """Matches evaluator.py and analysis._best_key: ties go to the earliest rep."""
+        self._write(
+            self._gen(0, "first rep", 10, 1.0),
+            self._eval(0, 5, "meh"),
+            self._gen(1, "second rep", 10, 1.0),
+            self._eval(1, 9, "great"),
+            self._eval(0, 9, "great after retry"),
+        )
+        payload = self._payload()
+
+        cell = payload["test_cases"][0]["candidates"][self.cand]
+        self.assertEqual(cell["best"]["output"], "first rep")
 
 
 

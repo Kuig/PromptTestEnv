@@ -30,11 +30,22 @@ class TestBuildParser(unittest.TestCase):
         args = self.parser.parse_args(["run", "Projects/Foo"])
         self.assertEqual(args.output_mode, "html")
         self.assertFalse(args.force_restart)
+        self.assertFalse(args.retry_errors)
 
     def test_run_subcommand_flags(self):
         args = self.parser.parse_args(["run", "Projects/Foo", "--output-mode", "md", "--force-restart"])
         self.assertEqual(args.output_mode, "md")
         self.assertTrue(args.force_restart)
+
+    def test_run_subcommand_retry_errors_flag(self):
+        args = self.parser.parse_args(["run", "Projects/Foo", "--retry-errors"])
+        self.assertTrue(args.retry_errors)
+        self.assertFalse(args.force_restart)
+
+    def test_run_subcommand_rejects_both_resume_flags(self):
+        """--force-restart discards the very log --retry-errors repairs."""
+        with self.assertRaises(SystemExit):
+            self.parser.parse_args(["run", "Projects/Foo", "--force-restart", "--retry-errors"])
 
     def test_show_subcommand(self):
         args = self.parser.parse_args(["show", "Projects/Foo"])
@@ -125,7 +136,14 @@ class TestCmdHandlers(LoggerResetTestCase):
         mock_run.return_value = "done"
         args = build_parser().parse_args(["run", "Projects/Foo", "--output-mode", "md"])
         cmd_run(args)
-        mock_run.assert_called_once_with("Projects/Foo", "md", False)
+        mock_run.assert_called_once_with("Projects/Foo", "md", False, False)
+
+    @patch("prompttestenv.runner.run_project")
+    def test_cmd_run_forwards_retry_errors(self, mock_run):
+        mock_run.return_value = "done"
+        args = build_parser().parse_args(["run", "Projects/Foo", "--retry-errors"])
+        cmd_run(args)
+        mock_run.assert_called_once_with("Projects/Foo", "html", False, True)
 
     @patch("prompttestenv.runner.render_from_progress")
     def test_cmd_render_delegates(self, mock_render):

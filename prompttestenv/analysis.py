@@ -53,6 +53,7 @@ def keys_to_analyze(
     progress_state,
     scope: str,
     force_reanalyze: bool,
+    force_keys: frozenset[tuple[str, str, int]] = frozenset(),
 ) -> list[tuple[str, str, int]]:
     """List the traces this run should spend judge calls on.
 
@@ -60,6 +61,13 @@ def keys_to_analyze(
         progress_state: ProgressState snapshot holding gen, eval and reasoning events.
         scope: REASONING_SCOPE_BEST or REASONING_SCOPE_ALL.
         force_reanalyze: If True, include traces that already have an analysis.
+        force_keys: Keys whose trace was regenerated in this run, so any
+            analysis already stored for them describes text that no longer
+            exists (its unit offsets would resolve into the wrong string).
+            Belt and braces: a regenerated key is a generation placeholder,
+            and those carry an empty trace, so today no analysis can exist for
+            one. This drops the dependency on that invariant, which lives in
+            generation.py rather than here.
 
     Returns:
         Keys into progress_state.gen_events, in a stable order.
@@ -81,7 +89,9 @@ def keys_to_analyze(
     return [
         key
         for key in sorted(with_trace)
-        if force_reanalyze or key not in progress_state.reasoning_events
+        if force_reanalyze
+        or key in force_keys
+        or key not in progress_state.reasoning_events
     ]
 
 
@@ -91,6 +101,7 @@ def run_analysis_phase(
     project_dir: str,
     progress_state,
     force_reanalyze: bool = False,
+    force_keys: frozenset[tuple[str, str, int]] = frozenset(),
 ) -> dict[tuple[str, str, int], dict]:
     """Analyze the stored reasoning traces that have no analysis yet.
 
@@ -109,6 +120,8 @@ def run_analysis_phase(
         project_dir: Benchmark project directory path.
         progress_state: ProgressState snapshot holding the gen and reasoning events.
         force_reanalyze: If True, recompute analyses that already exist.
+        force_keys: Keys whose trace was regenerated in this run, recomputed
+            even when an analysis exists. See keys_to_analyze.
 
     Returns:
         Mapping of (candidate, test_id, repetition) to reasoning event dicts,
@@ -123,7 +136,7 @@ def run_analysis_phase(
     scope = judge_config.reasoning_analysis
     pending = [
         (key, progress_state.gen_events[key])
-        for key in keys_to_analyze(progress_state, scope, force_reanalyze)
+        for key in keys_to_analyze(progress_state, scope, force_reanalyze, force_keys)
     ]
     if scope == REASONING_SCOPE_BEST:
         logger.log_info(

@@ -7,11 +7,17 @@ import unittest
 from pathlib import Path
 
 from prompttestenv.progress import (
+    GEN_TIMEOUT_TEXT,
     HASHED_FILENAMES,
+    JUDGE_TIMEOUT_TEXT,
     append_event,
     calculate_config_hash,
     config_hash_from_bytes,
+    failed_eval_keys,
+    failed_gen_keys,
     hashable_bytes,
+    is_failed_eval,
+    is_failed_gen,
     read_stored_hash,
 )
 
@@ -177,6 +183,99 @@ class TestAppendEvent(unittest.TestCase):
         self.assertEqual(len(lines), 2)
         self.assertEqual(json.loads(lines[0])["type"], "gen")
         self.assertEqual(json.loads(lines[1])["type"], "eval")
+
+
+def _gen(output):
+    return {"type": "gen", "cand_id": "A", "test_id": "t1", "rep": 0, "output": output}
+
+
+def _eval(score=8, reason="fine", global_score=-1, g_reason="N/A"):
+    return {
+        "type": "eval", "cand_id": "A", "test_id": "t1", "rep": 0,
+        "score": score, "reason": reason,
+        "global_score": global_score, "g_reason": g_reason,
+    }
+
+
+class TestIsFailedGen(unittest.TestCase):
+    def test_timeout_placeholder_is_failed(self):
+        self.assertTrue(is_failed_gen(_gen(GEN_TIMEOUT_TEXT)))
+
+    def test_a_real_answer_is_not_failed(self):
+        self.assertFalse(is_failed_gen(_gen("Dear customer, ...")))
+
+    def test_an_empty_answer_is_not_failed(self):
+        """An empty response is a real measurement, not a failure to obtain one."""
+        self.assertFalse(is_failed_gen(_gen("")))
+
+    def test_an_event_without_output_is_not_failed(self):
+        self.assertFalse(is_failed_gen({"type": "gen", "cand_id": "A"}))
+
+
+class TestIsFailedEval(unittest.TestCase):
+    def test_judge_timeout_is_failed(self):
+        self.assertTrue(is_failed_eval(
+            _eval(score=-1, reason=JUDGE_TIMEOUT_TEXT, global_score=-1, g_reason=JUDGE_TIMEOUT_TEXT)
+        ))
+
+    def test_error_prefix_is_failed(self):
+        self.assertTrue(is_failed_eval(_eval(score=-1, reason="Error: boom")))
+
+    def test_bare_error_from_the_dispatcher_is_failed(self):
+        """The dispatcher's global_reasoning is the word 'Error', with no colon."""
+        self.assertTrue(is_failed_eval(
+            _eval(score=-1, reason="Error: boom", global_score=-1, g_reason="Error")
+        ))
+
+    def test_llm_evaluation_failed_is_failed(self):
+        self.assertTrue(is_failed_eval(_eval(score=-1, reason="LLM evaluation failed: 429")))
+
+    def test_template_error_is_failed(self):
+        """'Error in evaluation template: ...' is why the prefix carries no colon."""
+        self.assertTrue(is_failed_eval(
+            _eval(score=-1, reason="Error in evaluation template: missing field 'criteria'")
+        ))
+
+    def test_global_mode_none_is_not_failed(self):
+        """global_criteria.mode 'none' stores -1/'N/A' forever, by design."""
+        self.assertFalse(is_failed_eval(_eval(score=8, reason="good", global_score=-1, g_reason="N/A")))
+
+    def test_deliberate_assert_minus_one_is_not_failed(self):
+        """An assert lambda may return -1 to mean 'not applicable'. That is the author's call."""
+        self.assertFalse(is_failed_eval(
+            _eval(score=-1, reason="Not applicable to this response.")
+        ))
+
+    def test_a_real_score_mentioning_errors_is_not_failed(self):
+        """The score == -1 conjunct is what stops a judge's prose triggering a retry."""
+        self.assertFalse(is_failed_eval(_eval(score=8, reason="Errors were found in the answer.")))
+
+    def test_a_failed_global_side_alone_is_failed(self):
+        self.assertTrue(is_failed_eval(
+            _eval(score=8, reason="good", global_score=-1, g_reason="Error: judge down")
+        ))
+
+
+class TestFailedKeySets(unittest.TestCase):
+    def test_selects_only_the_failed_gen_keys(self):
+        events = {
+            ("A", "t1", 0): _gen(GEN_TIMEOUT_TEXT),
+            ("A", "t1", 1): _gen("a real answer"),
+            ("B", "t2", 0): _gen(GEN_TIMEOUT_TEXT),
+        }
+        self.assertEqual(failed_gen_keys(events), {("A", "t1", 0), ("B", "t2", 0)})
+
+    def test_selects_only_the_failed_eval_keys(self):
+        events = {
+            ("A", "t1", 0): _eval(score=-1, reason="Error: boom"),
+            ("A", "t1", 1): _eval(score=7, reason="fine"),
+            ("B", "t2", 0): _eval(score=-1, reason="Author says not applicable"),
+        }
+        self.assertEqual(failed_eval_keys(events), {("A", "t1", 0)})
+
+    def test_empty_log_selects_nothing(self):
+        self.assertEqual(failed_gen_keys({}), set())
+        self.assertEqual(failed_eval_keys({}), set())
 
 
 if __name__ == "__main__":

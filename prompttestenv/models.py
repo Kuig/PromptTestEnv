@@ -939,6 +939,21 @@ class ProgressState:
     already in ``events`` by their ``(cand_id, test_id, rep)`` key — built in
     the same pass as ``completed_gen``/``completed_eval`` — so a resumed key
     can be looked up in O(1) instead of scanning ``events`` linearly.
+
+    The three ``stale_*`` fields answer "does the log contradict itself?", and
+    they are computed here because this is the only place that knows the ORDER
+    of the lines, which is the whole evidence. The log is append-only, so a
+    retry supersedes a failed step by appending a corrected event: an "eval"
+    (or "reasoning") whose key has a NEWER "gen" line after it was therefore
+    computed against a response that is no longer the stored one, and a
+    "verdict" with "gen"/"eval" lines after it describes results that have
+    since been replaced. Both states are what an interrupted --retry-errors
+    run leaves behind, and neither is visible to the failure predicates in
+    progress.py, which only see the surviving values and not their positions.
+
+    The property is self-healing: once the phase re-appends its event, that
+    event's line follows the "gen" again and the key stops being stale on the
+    next load, so nothing has to be cleared.
     """
 
     hash_match: bool = True
@@ -950,6 +965,9 @@ class ProgressState:
     gen_events: dict[tuple[str, str, int], dict] = field(default_factory=dict)
     eval_events: dict[tuple[str, str, int], dict] = field(default_factory=dict)
     reasoning_events: dict[tuple[str, str, int], dict] = field(default_factory=dict)
+    stale_eval_keys: frozenset[tuple[str, str, int]] = frozenset()
+    stale_reasoning_keys: frozenset[tuple[str, str, int]] = frozenset()
+    stale_verdict: bool = False
 
     @classmethod
     def load(
@@ -1003,6 +1021,15 @@ class ProgressState:
         gen_events: dict[tuple[str, str, int], dict] = {}
         eval_events: dict[tuple[str, str, int], dict] = {}
         reasoning_events: dict[tuple[str, str, int], dict] = {}
+        # Line ordinals of the NEWEST line of each kind, per key. Only ever
+        # compared with each other, so the gaps an unparseable line leaves in
+        # the numbering are harmless. See the class docstring for what they
+        # are evidence of.
+        gen_line: dict[tuple[str, str, int], int] = {}
+        eval_line: dict[tuple[str, str, int], int] = {}
+        reasoning_line: dict[tuple[str, str, int], int] = {}
+        verdict_line: int | None = None
+        last_result_line = -1
 
         if os.path.exists(progress_file):
             with open(progress_file, "r", encoding="utf-8") as f:
@@ -1031,7 +1058,7 @@ class ProgressState:
                     os.replace(progress_file, progress_file + ".bak")
                     return cls(hash_match=False)
 
-                for line in lines[1:]:
+                for position, line in enumerate(lines[1:]):
                     line = line.strip()
                     if not line:
                         continue
@@ -1042,21 +1069,42 @@ class ProgressState:
                             key = (event["cand_id"], event["test_id"], event["rep"])
                             completed_gen.add(key)
                             gen_events[key] = event
+                            gen_line[key] = position
+                            last_result_line = position
                         elif event["type"] == "eval":
                             key = (event["cand_id"], event["test_id"], event["rep"])
                             completed_eval.add(key)
                             eval_events[key] = event
+                            eval_line[key] = position
+                            last_result_line = position
                         elif event["type"] == "reasoning":
                             key = (event["cand_id"], event["test_id"], event["rep"])
                             reasoning_events[key] = event
+                            reasoning_line[key] = position
                         elif event["type"] == "verdict":
                             verdict = event["content"]
+                            verdict_line = position
                     except json.JSONDecodeError:
                         pass  # ignore broken lines at the end of file (crash mid-write)
 
         if not readonly and not os.path.exists(progress_file):
             with open(progress_file, "w", encoding="utf-8") as f:
                 f.write(json.dumps({"type": "meta", "config_hash": current_hash}) + "\n")
+
+        # A key with a "gen" but no "eval" is not stale, it is simply unjudged,
+        # and the evaluation phase already picks it up: staleness is only about
+        # an event that exists and describes superseded text.
+        stale_eval_keys = frozenset(
+            key for key, line in eval_line.items() if gen_line.get(key, -1) > line
+        )
+        stale_reasoning_keys = frozenset(
+            key for key, line in reasoning_line.items() if gen_line.get(key, -1) > line
+        )
+        # "reasoning" lines deliberately do not count towards last_result_line:
+        # `analyze` is the cheap pass meant to be re-run over a finished project
+        # whenever the schema is retuned, so letting it invalidate the verdict
+        # would make retuning the measurement cost a verdict call every time.
+        stale_verdict = verdict_line is not None and last_result_line > verdict_line
 
         return cls(
             hash_match=hash_match,
@@ -1068,4 +1116,7 @@ class ProgressState:
             gen_events=gen_events,
             eval_events=eval_events,
             reasoning_events=reasoning_events,
+            stale_eval_keys=stale_eval_keys,
+            stale_reasoning_keys=stale_reasoning_keys,
+            stale_verdict=stale_verdict,
         )

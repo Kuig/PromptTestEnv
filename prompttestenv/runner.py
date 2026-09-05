@@ -12,7 +12,7 @@ from prompttestenv.generation import run_generation_phase
 from prompttestenv.reporting import generate_html_report
 from prompttestenv.json_report import generate_json_report
 from prompttestenv.models import TestCaseResult, CandidatePerformance, Candidate, TestCase, JudgeConfig, GlobalCriteria, ProgressState
-from prompttestenv.progress import append_event
+from prompttestenv.progress import append_event, failed_eval_keys, failed_gen_keys
 
 
 def _initialize_test_results(test_cases: list[TestCase], project_dir: str) -> list[TestCaseResult]:
@@ -83,6 +83,7 @@ def _generate_output(
     judge_config: JudgeConfig,
     global_criteria: GlobalCriteria,
     progress_state: ProgressState,
+    verdict_is_stale: bool = False,
 ) -> str:
     """Generate the final benchmark report.
 
@@ -94,6 +95,12 @@ def _generate_output(
         judge_config: JudgeConfig instance.
         global_criteria: GlobalCriteria instance.
         progress_state: Current progress state.
+        verdict_is_stale: If True, a stored verdict describes results this run
+            has since replaced, so it must be written again rather than
+            resumed. Without it a --retry-errors run would repair the
+            responses and then publish the verdict written about the
+            placeholders. The new verdict event supersedes the old one, since
+            ProgressState.load keeps the last line for a key.
 
     Returns:
         Path to the report or a summary string.
@@ -101,7 +108,7 @@ def _generate_output(
     if output_mode == "winner_only":
         return evaluate_best_candidate_fast(candidates, results)
 
-    if progress_state.verdict:
+    if progress_state.verdict and not verdict_is_stale:
         verdict = progress_state.verdict
         logger.log_info("Verdict resumed from log.")
     else:
@@ -157,6 +164,7 @@ def run_project(
     project_dir: str,
     output_mode: str = "html",
     force_restart: bool = False,
+    retry_errors: bool = False,
 ) -> str:
     """Execute the benchmark on an existing project directory.
 
@@ -164,6 +172,13 @@ def run_project(
         project_dir: Path to the project directory (must contain config files).
         output_mode: Report format — 'html', 'md', 'json' or 'winner_only'.
         force_restart: If True, deletes progress.jsonl and restarts from scratch.
+        retry_errors: If True, also redo the steps whose stored result is a
+            failure placeholder the framework wrote rather than a real model
+            answer: a '[TIMEOUT EXCEEDED]' response, or a -1 score whose
+            reasoning is a framework error. Missing steps behave exactly as in
+            a normal resume. Everything else in the log is left alone, so a
+            deliberate -1 from an assert lambda and the permanent 'N/A' of
+            global mode 'none' are never retried.
 
     Returns:
         Path to the generated report or an error description string.
@@ -211,15 +226,47 @@ def run_project(
             "Use --force-restart to discard past progress and restart."
         )
 
+    # A regenerated response invalidates the score computed on the placeholder
+    # it replaces, so redo_gen cascades into redo_eval. Both stay empty on a
+    # plain resume, which is what keeps this a no-op for every existing caller.
+    redo_gen = frozenset(failed_gen_keys(progress_state.gen_events)) if retry_errors else frozenset()
+    redo_eval = (
+        frozenset(failed_eval_keys(progress_state.eval_events)) | redo_gen
+        if retry_errors else frozenset()
+    )
+    if retry_errors:
+        if redo_gen or redo_eval:
+            logger.log_info(
+                f"Retrying {len(redo_gen)} failed generation(s) and "
+                f"{len(redo_eval)} evaluation(s)."
+            )
+        else:
+            logger.log_info("Nothing to retry: no failed step found in the log.")
+
+    # Stale steps are repaired on EVERY run, not just under retry_errors, and
+    # the difference is deliberate: a failed step is a result you may choose to
+    # live with, while a stale one is a log contradicting itself, whose report
+    # would show a response next to a score computed on different text. This is
+    # what an interrupted retry leaves behind, and only the line order in the
+    # log records it (see ProgressState).
+    if progress_state.stale_eval_keys:
+        logger.log_warning(
+            f"{len(progress_state.stale_eval_keys)} evaluation(s) score a response that "
+            "was regenerated afterwards. Judging them again."
+        )
+    redo_eval |= progress_state.stale_eval_keys
+
     try:
         pending_evals = run_generation_phase(
-            candidates, results, judge_config, project_dir, progress_state
+            candidates, results, judge_config, project_dir, progress_state, redo_gen
         )
 
         if not pending_evals:
             return "ERROR: No results produced."
 
-        run_evaluation_phase(pending_evals, judge_config, project_dir, progress_state)
+        run_evaluation_phase(
+            pending_evals, judge_config, project_dir, progress_state, redo_eval
+        )
 
         # Re-read the log: the snapshot taken before the phases predates every
         # event they just appended, and the analysis phase reads its input
@@ -231,8 +278,12 @@ def run_project(
         # inside evaluation. `prompttestenv analyze` runs exactly this phase.
         reasoning_events = progress_state.reasoning_events
         if judge_config.reasoning_enabled:
+            # progress_state was just reloaded, so stale_reasoning_keys already
+            # covers anything phase 1 regenerated; redo_gen stays as the belt
+            # to that braces, since it is computed before the phases run.
             reasoning_events = run_analysis_phase(
-                results, judge_config, project_dir, progress_state
+                results, judge_config, project_dir, progress_state,
+                force_keys=progress_state.stale_reasoning_keys | redo_gen,
             )
         attach_reasoning(
             results, reasoning_events, progress_state.eval_events, progress_state.gen_events
@@ -241,8 +292,15 @@ def run_project(
     finally:
         teardown()
 
+    # stale_verdict is the durable half and would suffice on its own, since the
+    # reload above already sees whatever the phases appended after the stored
+    # verdict. The in-process half stays as a safety net for the day that
+    # reload moves or goes away: relying on process-local state alone is
+    # exactly how this bug got here.
     return _generate_output(
-        output_mode, candidates, results, project_dir, judge_config, global_criteria, progress_state
+        output_mode, candidates, results, project_dir, judge_config, global_criteria,
+        progress_state,
+        verdict_is_stale=progress_state.stale_verdict or bool(redo_gen or redo_eval),
     )
 
 
@@ -289,7 +347,8 @@ def analyze_project(project_dir: str, force_reanalyze: bool = False) -> str:
     results = _initialize_test_results(test_cases, project_dir)
     try:
         analyzed = run_analysis_phase(
-            results, judge_config, project_dir, progress_state, force_reanalyze
+            results, judge_config, project_dir, progress_state, force_reanalyze,
+            force_keys=progress_state.stale_reasoning_keys,
         )
     finally:
         teardown()
@@ -341,34 +400,37 @@ def render_from_progress(project_dir: str, output_mode: str = "html") -> str:
 
     results_by_id = {r.test_id: r for r in results}
     best_scores: dict = {}
-    for event in progress_state.events:
-        if event["type"] == "gen":
-            cand_id = event["cand_id"]
-            test_result = results_by_id.get(event["test_id"])
-            if test_result:
-                if cand_id not in test_result.candidates_perf:
-                    test_result.candidates_perf[cand_id] = CandidatePerformance()
-                cand_perf = test_result.candidates_perf[cand_id]
-                cand_perf.tokens.append(event["tokens"])
-                cand_perf.reasoning_tokens.append(event["reasoning_tokens"])
-                cand_perf.times.append(event["elapsed"])
-        elif event["type"] == "eval":
-            cand_id = event["cand_id"]
-            test_result = results_by_id.get(event["test_id"])
-            if test_result:
-                cand_perf = test_result.candidates_perf[cand_id]
-                cand_perf.scores.append(event["score"])
-                cand_perf.global_scores.append(event["global_score"])
-                score_key = (cand_id, test_result.test_id)
-                if event["score"] > best_scores.get(score_key, -1):
-                    best_scores[score_key] = event["score"]
-                    gen_event = progress_state.gen_events.get(
-                        (cand_id, event["test_id"], event["rep"])
-                    )
-                    if gen_event:
-                        cand_perf.best_output = gen_event["output"]
-                    cand_perf.best_reason = event["reason"]
-                    cand_perf.best_global_reason = event["g_reason"]
+
+    # Read the deduplicated dicts, never progress_state.events: --retry-errors
+    # appends a corrected event rather than rewriting the log, so the same key
+    # can appear on several lines and iterating the raw list would count every
+    # superseded attempt again. The dicts keep the first insertion position and
+    # the last value, so the ordering here is the one the run itself produced.
+    for (cand_id, test_id, _rep), event in progress_state.gen_events.items():
+        test_result = results_by_id.get(test_id)
+        if test_result:
+            cand_perf = test_result.candidates_perf.setdefault(cand_id, CandidatePerformance())
+            cand_perf.tokens.append(event["tokens"])
+            cand_perf.reasoning_tokens.append(event["reasoning_tokens"])
+            cand_perf.times.append(event["elapsed"])
+
+    for (cand_id, test_id, rep), event in progress_state.eval_events.items():
+        test_result = results_by_id.get(test_id)
+        if test_result:
+            # setdefault here too: an eval whose gen event is missing for this
+            # test would otherwise raise KeyError on a lookup that has no
+            # reason to assume the two logs cover the same keys.
+            cand_perf = test_result.candidates_perf.setdefault(cand_id, CandidatePerformance())
+            cand_perf.scores.append(event["score"])
+            cand_perf.global_scores.append(event["global_score"])
+            score_key = (cand_id, test_id)
+            if event["score"] > best_scores.get(score_key, -1):
+                best_scores[score_key] = event["score"]
+                gen_event = progress_state.gen_events.get((cand_id, test_id, rep))
+                if gen_event:
+                    cand_perf.best_output = gen_event["output"]
+                cand_perf.best_reason = event["reason"]
+                cand_perf.best_global_reason = event["g_reason"]
 
     attach_reasoning(
         results,
@@ -376,6 +438,20 @@ def render_from_progress(project_dir: str, output_mode: str = "html") -> str:
         progress_state.eval_events,
         progress_state.gen_events,
     )
+
+    # Warn only, and never pass verdict_is_stale on: repairing means judge and
+    # verdict calls, and render is documented everywhere as costing nothing.
+    # `run` is where a stale log gets fixed.
+    if progress_state.stale_eval_keys:
+        logger.log_warning(
+            f"{len(progress_state.stale_eval_keys)} evaluation(s) in this log score a "
+            "response that was regenerated afterwards. Run the project again to rejudge them."
+        )
+    if progress_state.stale_verdict:
+        logger.log_warning(
+            "The stored verdict predates the latest results and is rendered as it is. "
+            "Run the project again to have it written from what the log holds now."
+        )
 
     if progress_state.verdict:
         return _generate_output(

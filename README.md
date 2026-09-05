@@ -95,11 +95,11 @@ the next `run`, PromptTestEnv computes an MD5 hash of `candidates.json`,
 it against the hash stored in the first line of `progress.jsonl`:
 
 - **Hash matches**: already-completed generation/evaluation steps (keyed by
-  `candidate x test x repetition`) are skipped and restored from the log.
+  `candidate x test x repetition`) are skipped and restored from the log, and
+  `--retry-errors` redoes just the ones that failed (see [HOWTO](HOWTO.md)).
 - **Hash mismatch**: the existing `progress.jsonl` is renamed to
   `progress.jsonl.bak` and the run refuses to resume silently. Pass
-  `--force-restart` to discard it and start clean, or restore the original
-  config files to resume as before.
+  `--force-restart` to discard it, or restore the original config files.
 
 Two deliberate exclusions:
 
@@ -130,6 +130,7 @@ invalidate it, the edit is refused rather than the log discarded.
 prompttestenv init Projects/MyBenchmark                        # scaffold a new project
 prompttestenv run Projects/MyBenchmark --output-mode html      # run the benchmark
 prompttestenv run Projects/MyBenchmark --force-restart         # re-run, ignoring progress
+prompttestenv run Projects/MyBenchmark --retry-errors          # redo only the failed steps
 prompttestenv analyze Projects/MyBenchmark                     # reasoning traces only
 prompttestenv analyze Projects/MyBenchmark --force-reanalyze   # redo existing analyses
 prompttestenv render Projects/MyBenchmark --output-mode json   # re-render, no LLM call
@@ -196,7 +197,7 @@ Public surface exposed by `from prompttestenv import ...`:
 | Name | Kind | Signature | Description |
 |---|---|---|---|
 | `init_project` | function | `init_project(project_dir: str) -> None` | Scaffold a new benchmark project directory with default config files. |
-| `run_project` | function | `run_project(project_dir: str, output_mode: str = "html", force_restart: bool = False) -> str` | Run the full benchmark and return the report path (or an error string, never raises). `output_mode` is one of `html`, `md`, `json`, `winner_only`, see [Output modes](#output-modes). |
+| `run_project` | function | `run_project(project_dir: str, output_mode: str = "html", force_restart: bool = False, retry_errors: bool = False) -> str` | Run the full benchmark and return the report path (or an error string, never raises). `output_mode` is one of `html`, `md`, `json`, `winner_only`, see [Output modes](#output-modes). `retry_errors` also redoes the steps whose stored result is a timeout or judge-failure placeholder. |
 | `analyze_project` | function | `analyze_project(project_dir: str, force_reanalyze: bool = False) -> str` | Run only the reasoning-analysis phase over the traces already in `progress.jsonl`. No generation and no judging calls. |
 | `render_from_progress` | function | `render_from_progress(project_dir: str, output_mode: str = "html") -> str` | Regenerate the report from an existing `progress.jsonl`, in any output mode, with no LLM calls. Returns a progress summary instead when the log holds no verdict. |
 | `read_project` | function | `read_project(project_dir: str) -> dict` | The project's whole configuration as plain data, plus its validation findings and whether an existing `progress.jsonl` still matches it. |

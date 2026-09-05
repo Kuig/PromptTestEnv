@@ -88,6 +88,76 @@ class TestRunGenerationPhaseResume(unittest.TestCase):
         self.assertEqual(results[0].candidates_perf["A"].tokens, [7])
 
 
+class TestRunGenerationPhaseRedoKeys(unittest.TestCase):
+    """--retry-errors: a logged key listed in redo_keys is generated again."""
+
+    def _progress(self):
+        event = _gen_event("A", "t1", 0)
+        return ProgressState(
+            completed_gen={("A", "t1", 0)},
+            events=[event],
+            gen_events={("A", "t1", 0): event},
+        )
+
+    def test_a_redo_key_is_generated_again(self):
+        jc = _judge_config()
+        results = [_result()]
+        with patch("prompttestenv.generation.get_llm_response") as mock_llm, \
+             patch("prompttestenv.generation.warm_up_for_run"), \
+             patch("prompttestenv.generation.append_event") as mock_append:
+            mock_llm.return_value = LlmResult(text="fresh", output_tokens=11)
+            pending = run_generation_phase(
+                [_candidate()], results, jc, "/fake/project", self._progress(),
+                frozenset({("A", "t1", 0)}),
+            )
+
+        mock_llm.assert_called_once()
+        mock_append.assert_called_once()
+        self.assertEqual(pending[0]["output"], "fresh")
+        # One entry, carrying the new value: the superseded event is not re-counted.
+        self.assertEqual(results[0].candidates_perf["A"].tokens, [11])
+
+    def test_the_same_key_still_resumes_without_redo_keys(self):
+        jc = _judge_config()
+        results = [_result()]
+        with patch("prompttestenv.generation.get_llm_response") as mock_llm, \
+             patch("prompttestenv.generation.warm_up_for_run"), \
+             patch("prompttestenv.generation.append_event"):
+            pending = run_generation_phase(
+                [_candidate()], results, jc, "/fake/project", self._progress()
+            )
+
+        mock_llm.assert_not_called()
+        self.assertEqual(pending[0]["output"], "resumed output")
+
+    def test_a_candidate_whose_only_work_is_a_redo_is_warmed_up(self):
+        """Otherwise the SDK import and the uploads land on the retried call's elapsed."""
+        jc = _judge_config()
+        results = [_result()]
+        with patch("prompttestenv.generation.get_llm_response") as mock_llm, \
+             patch("prompttestenv.generation.warm_up_for_run") as mock_warm, \
+             patch("prompttestenv.generation.append_event"):
+            mock_llm.return_value = LlmResult(text="fresh", output_tokens=11)
+            run_generation_phase(
+                [_candidate()], results, jc, "/fake/project", self._progress(),
+                frozenset({("A", "t1", 0)}),
+            )
+
+        mock_warm.assert_called_once()
+
+    def test_a_candidate_with_nothing_to_do_is_not_warmed_up(self):
+        jc = _judge_config()
+        results = [_result()]
+        with patch("prompttestenv.generation.get_llm_response"), \
+             patch("prompttestenv.generation.warm_up_for_run") as mock_warm, \
+             patch("prompttestenv.generation.append_event"):
+            run_generation_phase(
+                [_candidate()], results, jc, "/fake/project", self._progress()
+            )
+
+        mock_warm.assert_not_called()
+
+
 class TestRunGenerationPhaseTimeout(unittest.TestCase):
     def test_timeout_kills_ollama_model_and_records_sentinel(self):
         jc = _judge_config(timeout=0.05)

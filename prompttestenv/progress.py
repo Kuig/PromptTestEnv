@@ -23,6 +23,104 @@ HASHED_FILENAMES = (
 # What a file that does not exist contributes to the hash.
 MISSING_FILE_BYTES = b"missing"
 
+# The two placeholder payloads a run stores in place of a real model answer.
+# They are not error messages written for a human to read: they are the values
+# --retry-errors matches on, they are what the judge ends up scoring, and they
+# are what the report renders, so each has exactly one definition.
+GEN_TIMEOUT_TEXT = "⛔ [TIMEOUT EXCEEDED]"
+JUDGE_TIMEOUT_TEXT = "⛔ [JUDGE TIMEOUT EXCEEDED]"
+
+# Every -1 reason the framework writes on its own initiative starts with one of
+# these. "Error" is deliberately not suffixed with a colon: it has to cover
+# "Error: ...", the dispatcher's bare "Error", and "Error in evaluation
+# template: ...", which an "Error:" prefix would miss.
+_EVAL_FAILURE_PREFIXES = ("Error", "LLM evaluation failed:", JUDGE_TIMEOUT_TEXT)
+
+
+def _side_failed(score: object, text: object) -> bool:
+    """Report whether one side of an eval event is a framework failure.
+
+    Args:
+        score: The stored score for this side ("score" or "global_score").
+        text: The reasoning stored alongside it.
+
+    Returns:
+        True when the score is the -1 sentinel AND the reasoning is one the
+        framework wrote about its own failure.
+    """
+    return score == -1 and str(text or "").startswith(_EVAL_FAILURE_PREFIXES)
+
+
+def is_failed_gen(event: dict) -> bool:
+    """Report whether a "gen" event holds a placeholder instead of an answer.
+
+    Args:
+        event: A "gen" event read back from progress.jsonl.
+
+    Returns:
+        True only for the timeout placeholder. An empty response is a real
+        measurement about the model, not a failure to obtain one.
+    """
+    return event.get("output") == GEN_TIMEOUT_TEXT
+
+
+def is_failed_eval(event: dict) -> bool:
+    """Report whether an "eval" event holds a framework failure.
+
+    A -1 score alone is not enough to tell. ``_evaluate_llm_judge`` and
+    ``_evaluate_similarity`` both clamp their result into 1-10 and only reach
+    -1 through their own error paths, but ``_evaluate_assert`` deliberately
+    does NOT clamp: an assert lambda returning -1 is the project author saying
+    "not measured/not applicable" for that response, and re-running it would
+    both ignore their intent and never converge. The prefix list exists to
+    spare exactly that case, and to leave a project with
+    ``global_criteria.mode: "none"`` alone, since it stores -1 with "N/A"
+    forever by design.
+
+    Either side failing makes the event retryable: without that, a project
+    whose global judge hit a transient error could only be repaired with
+    --force-restart, which means re-buying every candidate response. The cost
+    is that ``evaluate_with_judge`` runs both sides, so retrying a global-only
+    failure re-judges the task too and an already-good task score can move.
+
+    Args:
+        event: An "eval" event read back from progress.jsonl.
+
+    Returns:
+        True when either the task or the global side is a framework failure.
+    """
+    return (
+        _side_failed(event.get("score"), event.get("reason"))
+        or _side_failed(event.get("global_score"), event.get("g_reason"))
+    )
+
+
+def failed_gen_keys(gen_events: dict) -> set[tuple[str, str, int]]:
+    """Select the generation keys whose stored answer is a placeholder.
+
+    Takes the plain dict rather than a ProgressState so this module keeps its
+    zero dependencies (models.py imports this one, not the other way round).
+
+    Args:
+        gen_events: ProgressState.gen_events, keyed by (candidate, test, rep).
+
+    Returns:
+        The subset of keys worth generating again.
+    """
+    return {key for key, event in gen_events.items() if is_failed_gen(event)}
+
+
+def failed_eval_keys(eval_events: dict) -> set[tuple[str, str, int]]:
+    """Select the evaluation keys whose stored score is a framework failure.
+
+    Args:
+        eval_events: ProgressState.eval_events, keyed by (candidate, test, rep).
+
+    Returns:
+        The subset of keys worth judging again.
+    """
+    return {key for key, event in eval_events.items() if is_failed_eval(event)}
+
 
 def hashable_bytes(filename: str, raw: bytes | None) -> bytes:
     """Return how one config file's content contributes to the run hash.

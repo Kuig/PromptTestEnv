@@ -122,6 +122,7 @@ def register_tools(mcp: "FastMCP") -> None:
         project_dir: str,
         output_mode: str = "html",
         force_restart: bool = False,
+        retry_errors: bool = False,
     ) -> str:
         """Run a prompt testing benchmark project.
 
@@ -143,13 +144,20 @@ def register_tools(mcp: "FastMCP") -> None:
                     highest average task score. Cheapest: skips the verdict LLM
                     call entirely.
             force_restart: If True, ignores previous progress and restarts from scratch.
+            retry_errors: If True, resumes as usual but also redoes the steps
+                whose stored result is a failure placeholder rather than a real
+                model answer: a '[TIMEOUT EXCEEDED]' response, or a -1 score
+                whose reasoning is a framework error. Use this to repair a run
+                that finished with some cells failed, instead of paying for
+                every response again with force_restart. A deliberate -1 from
+                an assert lambda is never retried.
 
         Returns:
             Path to the generated report or an error description.
         """
         try:
             from prompttestenv.runner import run_project
-            return run_project(project_dir, output_mode, force_restart)
+            return run_project(project_dir, output_mode, force_restart, retry_errors)
         except Exception as exc:
             return f"Error: {exc}"
 

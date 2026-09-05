@@ -377,6 +377,100 @@ class TestProgressStateLoad(LoggerResetTestCase):
         self.assertEqual(state.events, [])
 
 
+class TestProgressStateStaleness(LoggerResetTestCase):
+    """The log's line ORDER is what records an interrupted retry.
+
+    An append-only log supersedes a failed step by adding a corrected event, so
+    an eval (or reasoning, or verdict) with newer results after it was computed
+    against text that is no longer stored. Nothing else in the state can see
+    that: the failure predicates read the surviving values, not their position.
+    """
+
+    KEY = ("A", "t1", 0)
+
+    def setUp(self):
+        self.project_dir = tempfile.mkdtemp(prefix="prompttestenv_test_")
+        self.addCleanup(shutil.rmtree, self.project_dir, ignore_errors=True)
+        for name in ("candidates.json", "judge_config.json", "test_cases.json", "global_criteria.json"):
+            (Path(self.project_dir) / name).write_text("{}", encoding="utf-8")
+
+    def _load(self, *events):
+        from prompttestenv.progress import calculate_config_hash
+        lines = [json.dumps({"type": "meta", "config_hash": calculate_config_hash(self.project_dir)})]
+        lines += [json.dumps(event) for event in events]
+        (Path(self.project_dir) / "progress.jsonl").write_text(
+            "\n".join(lines) + "\n", encoding="utf-8"
+        )
+        return ProgressState.load(self.project_dir, readonly=True)
+
+    def _gen(self, output="answer"):
+        return {"type": "gen", "cand_id": "A", "test_id": "t1", "rep": 0,
+                "output": output, "tokens": 1, "reasoning_tokens": 0,
+                "reasoning_text": "a trace", "elapsed": 0.1}
+
+    def _eval(self, score=8):
+        return {"type": "eval", "cand_id": "A", "test_id": "t1", "rep": 0,
+                "score": score, "global_score": -1, "reason": "ok", "g_reason": "N/A"}
+
+    def _reasoning(self):
+        return {"type": "reasoning", "cand_id": "A", "test_id": "t1", "rep": 0}
+
+    def test_a_gen_after_its_eval_makes_the_eval_stale(self):
+        state = self._load(self._gen(), self._eval(), self._gen("regenerated"))
+        self.assertEqual(state.stale_eval_keys, frozenset({self.KEY}))
+
+    def test_the_normal_order_is_not_stale(self):
+        state = self._load(self._gen(), self._eval())
+        self.assertEqual(state.stale_eval_keys, frozenset())
+
+    def test_a_gen_with_no_eval_is_not_stale(self):
+        """Unjudged, not stale: the evaluation phase already picks it up."""
+        state = self._load(self._gen())
+        self.assertEqual(state.stale_eval_keys, frozenset())
+
+    def test_staleness_is_self_healing(self):
+        """Once the eval is re-appended it follows the gen again, by itself."""
+        state = self._load(self._gen(), self._eval(), self._gen("regenerated"), self._eval(9))
+        self.assertEqual(state.stale_eval_keys, frozenset())
+
+    def test_a_gen_after_its_reasoning_makes_the_analysis_stale(self):
+        state = self._load(self._gen(), self._reasoning(), self._gen("regenerated"))
+        self.assertEqual(state.stale_reasoning_keys, frozenset({self.KEY}))
+
+    def test_results_after_the_verdict_make_it_stale(self):
+        state = self._load(
+            self._gen(), self._eval(), {"type": "verdict", "content": "V"},
+            self._gen("regenerated"), self._eval(9),
+        )
+        self.assertTrue(state.stale_verdict)
+
+    def test_a_verdict_written_last_is_not_stale(self):
+        state = self._load(self._gen(), self._eval(), {"type": "verdict", "content": "V"})
+        self.assertFalse(state.stale_verdict)
+
+    def test_no_verdict_at_all_is_not_stale(self):
+        state = self._load(self._gen(), self._eval())
+        self.assertFalse(state.stale_verdict)
+
+    def test_a_later_reasoning_event_does_not_stale_the_verdict(self):
+        """`analyze` is meant to be re-run over a finished project whenever the
+        schema is retuned, so it must not cost a verdict call every time."""
+        state = self._load(
+            self._gen(), self._eval(), {"type": "verdict", "content": "V"}, self._reasoning(),
+        )
+        self.assertFalse(state.stale_verdict)
+
+    def test_early_return_paths_leave_the_signals_at_their_defaults(self):
+        (Path(self.project_dir) / "progress.jsonl").write_text(
+            json.dumps({"type": "meta", "config_hash": "deadbeef"}) + "\n", encoding="utf-8"
+        )
+        state = ProgressState.load(self.project_dir, readonly=True)
+        self.assertFalse(state.hash_match)
+        self.assertEqual(state.stale_eval_keys, frozenset())
+        self.assertEqual(state.stale_reasoning_keys, frozenset())
+        self.assertFalse(state.stale_verdict)
+
+
 
 class TestReasoningCostPerPoint(unittest.TestCase):
     """Thinking tokens per point of task score, with a sentinel instead of a crash."""

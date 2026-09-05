@@ -36,7 +36,7 @@ No API key and no network access are required: nothing under
 python -m unittest discover -s tests -v
 ```
 
-605 tests, on stdlib `unittest`. There is no `pytest`, `ruff` or `mypy`
+687 tests, on stdlib `unittest`. There is no `pytest`, `ruff` or `mypy`
 configuration.
 
 ### Running a single test

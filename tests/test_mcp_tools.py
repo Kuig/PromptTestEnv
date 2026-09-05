@@ -55,8 +55,14 @@ class TestRegisterTools(unittest.TestCase):
     def test_run_project_delegates_with_defaults(self, mock_run):
         mock_run.return_value = "Report/out.html"
         result = self.mcp.tools["prompttest_run_project"]("Projects/Foo")
-        mock_run.assert_called_once_with("Projects/Foo", "html", False)
+        mock_run.assert_called_once_with("Projects/Foo", "html", False, False)
         self.assertEqual(result, "Report/out.html")
+
+    @patch("prompttestenv.runner.run_project")
+    def test_run_project_forwards_retry_errors(self, mock_run):
+        mock_run.return_value = "Report/out.html"
+        self.mcp.tools["prompttest_run_project"]("Projects/Foo", retry_errors=True)
+        mock_run.assert_called_once_with("Projects/Foo", "html", False, True)
 
     @patch("prompttestenv.runner.run_project")
     def test_run_project_wraps_exceptions(self, mock_run):

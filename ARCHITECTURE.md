@@ -103,7 +103,8 @@ Then `verdict.py` has a judge LLM write the report body, and `reporting.py` or
 - `projectedit.py`: `read_project` and `edit_project`, the interface-agnostic
   editing API. Applies a partial patch on top of `projectio`.
 - `progress.py`: the low-level `progress.jsonl` primitives, config hashing and
-  event appending.
+  event appending, plus the failure placeholders a run stores in place of a
+  model answer and the predicates that recognise them again.
 - `api.py`: the single door to `UnifiedAiClient`.
 - `logger.py`: the four-backend logger (console, MCP, silent, Streamlit).
 - `mcp_tools.py`: MCP tool registration.
@@ -206,14 +207,33 @@ a `meta` record holding the config hash; every later line is a `gen`, `eval`,
 data from the log instead of re-calling the model. A hash mismatch renames the
 file to `progress.jsonl.bak` and refuses to resume silently.
 
+`--retry-errors` narrows that skip: a key whose stored result is a placeholder
+the framework wrote, rather than a real model answer, is run again. It needs no
+rewriting of the log, because `ProgressState.load` builds its lookup dicts by
+overwriting as it reads, so the last line for a key is the one that counts and a
+corrected event simply supersedes the failed one. The corollary is a rule for
+readers: anything aggregating the log must go through those dicts, never through
+the raw event list, or every superseded attempt gets counted again.
+
+The line order carries one more thing, and it is what survives a run that dies
+halfway. An evaluation whose key has a newer generation line after it was
+computed against a response that is no longer stored, and a verdict with results
+after it describes a state that has been replaced. `ProgressState` derives both
+answers while reading, so the repair no longer depends on a flag living in the
+memory of the process that was interrupted. The property is self-healing: once
+the phase re-appends its event, the ordering is restored and the key stops being
+stale by itself, which is what makes a second repair run a no-op. Repairing is a
+job for `run`; `render` only says so, because it must not spend a call.
+
 **Warm-up.** Only candidates are timed, so only candidates are warmed. Before
 each one's timed block, and outside it, `api.warm_up_for_run` hands
 `UnifiedAiClient` that candidate's model plus the attachments of the test cases
 it still has pending. Without it, every per-process one-off cost (SDK import,
 client construction, DNS and TLS, attachment upload) is charged to whichever
-candidate happens to run first. The rule is "warm what is still pending", never
-"skip because events exist": a resumed run always starts with a cold upload
-cache, but a candidate with nothing left to do is skipped entirely.
+candidate happens to run first. The rule is "warm what is still pending or being
+retried", never "skip because events exist": a resumed run always starts with a
+cold upload cache, and a key being retried counts as pending however complete the
+log looks, but a candidate with nothing left to do is skipped entirely.
 
 **Logging.** One logger with four backends. The business logic calls the same
 functions whatever the interface, and only the entry point selects a backend:

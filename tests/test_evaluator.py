@@ -76,6 +76,51 @@ class TestRunEvaluationPhaseResume(unittest.TestCase):
         self.assertEqual(cand_perf.best_reason, "resumed reason")
 
 
+class TestRunEvaluationPhaseRedoKeys(unittest.TestCase):
+    """--retry-errors: a logged key listed in redo_keys is judged again."""
+
+    def _progress(self):
+        event = {
+            "type": "eval", "cand_id": "A", "test_id": "t1", "rep": 0,
+            "score": -1, "global_score": -1,
+            "reason": "Error: judge down", "g_reason": "Error: judge down",
+        }
+        return ProgressState(
+            completed_eval={("A", "t1", 0)},
+            events=[event],
+            eval_events={("A", "t1", 0): event},
+        )
+
+    def test_a_redo_key_is_judged_again(self):
+        jc = _judge_config()
+        task, cand_perf = _pending_eval()
+        with patch("prompttestenv.evaluator.evaluate_with_judge") as mock_eval, \
+             patch("prompttestenv.evaluator.preload_model_for_run"), \
+             patch("prompttestenv.evaluator.append_event") as mock_append:
+            mock_eval.return_value = {
+                "score": 9, "reasoning": "good", "global_score": -1, "global_reasoning": "N/A",
+            }
+            run_evaluation_phase(
+                [task], jc, "/fake/project", self._progress(), frozenset({("A", "t1", 0)})
+            )
+
+        mock_eval.assert_called_once()
+        mock_append.assert_called_once()
+        # One entry, carrying the new score rather than the superseded -1.
+        self.assertEqual(cand_perf.scores, [9])
+
+    def test_the_same_key_still_resumes_without_redo_keys(self):
+        jc = _judge_config()
+        task, cand_perf = _pending_eval()
+        with patch("prompttestenv.evaluator.evaluate_with_judge") as mock_eval, \
+             patch("prompttestenv.evaluator.preload_model_for_run"), \
+             patch("prompttestenv.evaluator.append_event"):
+            run_evaluation_phase([task], jc, "/fake/project", self._progress())
+
+        mock_eval.assert_not_called()
+        self.assertEqual(cand_perf.scores, [-1])
+
+
 class TestRunEvaluationPhaseTimeout(unittest.TestCase):
     def test_timeout_kills_ollama_judge_and_records_sentinel_score(self):
         jc = _judge_config(timeout=0.05)

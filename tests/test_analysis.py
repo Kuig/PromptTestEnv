@@ -104,6 +104,21 @@ class TestKeysToAnalyze(unittest.TestCase):
             [("Alpha", "t1", 1), ("Alpha", "t2", 0)],
         )
 
+    def test_force_keys_reanalyzes_just_those_keys(self):
+        """A regenerated trace invalidates its analysis: the unit offsets
+        would otherwise resolve into text that no longer exists."""
+        state = _state(
+            self.gen, self.evals,
+            {("Alpha", "t1", 1): {"type": "reasoning"}, ("Alpha", "t2", 0): {"type": "reasoning"}},
+        )
+        self.assertEqual(keys_to_analyze(state, REASONING_SCOPE_BEST, False), [])
+        self.assertEqual(
+            keys_to_analyze(
+                state, REASONING_SCOPE_BEST, False, frozenset({("Alpha", "t1", 1)})
+            ),
+            [("Alpha", "t1", 1)],
+        )
+
 
 class TestScopeIsResumable(unittest.TestCase):
     """Changing scope must never discard analyses already paid for."""

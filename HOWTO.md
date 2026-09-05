@@ -340,7 +340,8 @@ Two edits never trip that gate:
   resumed run would mix responses produced under the old and the new prompt into
   one report with nothing flagging it, so an edit touching them always comes back
   with a warning saying so. Use `--force-restart` on the next run if that
-  matters.
+  matters, and see [Rerunning a project](#6-rerunning-a-project) for the
+  cheaper middle option.
 
 ### Building a project from nothing
 
@@ -353,3 +354,69 @@ prompttestenv show Projects/MyBenchmark
 `init` scaffolds the directory from the packaged templates, so the first patch
 edits a working project rather than an empty one. Delete the template candidates
 and test cases you do not want in the same patch that adds yours.
+
+## 6. Rerunning a Project
+
+Three ways to run a project that already has a `progress.jsonl`, from cheapest
+to most expensive:
+
+| Command | What it repeats |
+|---|---|
+| `prompttestenv run <dir>` | Only the steps missing from the log. |
+| `prompttestenv run <dir> --retry-errors` | The missing steps, plus the ones that failed. |
+| `prompttestenv run <dir> --force-restart` | Everything. The log is deleted first. |
+
+`--retry-errors` exists for the run that finished but left some cells broken: a
+model that timed out, a judge that returned a transient error. Without it the
+only way to repair those cells is `--force-restart`, which means paying for
+every response in the benchmark again.
+
+### What counts as a failed step
+
+Exactly two things, both written by the framework itself rather than by a model:
+
+- A response stored as `[TIMEOUT EXCEEDED]`, which is what a generation timeout
+  records in place of an answer that never arrived.
+- A score of `-1` whose reasoning is a framework error message, which covers the
+  judge timeout and every internal failure of the evaluators.
+
+Everything else in the log is a real result and is never touched. Two cases are
+worth calling out because they also store `-1`:
+
+- An `assert` lambda that deliberately returns `-1` to mean "not applicable to
+  this response". That is your verdict, not a failure, so it stands. The one
+  way to have it retried by mistake is to write a reasoning string starting
+  with the word `Error`, which is how the framework labels its own failures.
+- A project with `global_criteria.mode: "none"`, which stores `-1` and `N/A`
+  for the global score of every response, permanently and by design.
+
+### Two consequences to expect
+
+A retried response is judged again, necessarily: the score in the log was
+computed on the placeholder text, so it describes nothing. The same applies one
+level up, so the verdict is written again whenever anything was retried, rather
+than being resumed from the log as it is on a plain rerun.
+
+A failure on the global side alone still retries the whole step, because the
+task judge and the global judge run together and cannot be asked for separately.
+An already-good task score can therefore come back different. Nothing is lost
+when it does: `progress.jsonl` is append-only, so the earlier value stays on its
+own line and only stops being the one the report reads.
+
+### If a rerun is interrupted
+
+A run that dies partway through leaves the log consistent, not broken, because
+every result is written the moment it is produced. The one state worth knowing
+about is a rerun that repaired a response but stopped before rejudging it: the
+log then holds a good answer next to the score of the placeholder it replaced.
+
+You do not have to spot that yourself, and it does not need `--retry-errors`.
+Any `run` notices it, says how many evaluations are affected, and judges them
+again, because the alternative is a report whose response and score describe
+different text. The same applies to the verdict, which is written again whenever
+the results underneath it have moved. `render` reports the situation and renders
+what it has, since it never spends an LLM call.
+
+Repairing is idempotent. Once a rerun completes, running it again does nothing:
+the placeholder stays in the log's history, but only the most recent line for
+each step counts, and that one is now a real result.

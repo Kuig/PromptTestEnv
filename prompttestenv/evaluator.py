@@ -4,7 +4,7 @@ import time
 
 import prompttestenv.logger as logger
 from prompttestenv.api import call_with_timeout, preload_model_for_run
-from prompttestenv.progress import append_event
+from prompttestenv.progress import JUDGE_TIMEOUT_TEXT, append_event
 from prompttestenv.models import JudgeConfig, ProgressState
 from prompttestenv.test_judge import evaluate_with_judge
 
@@ -14,6 +14,7 @@ def run_evaluation_phase(
     judge_config: JudgeConfig,
     project_dir: str,
     progress_state: ProgressState,
+    redo_keys: frozenset[tuple[str, str, int]] = frozenset(),
 ) -> None:
     """Execute Phase 2: judge evaluation of all generated responses.
 
@@ -22,6 +23,9 @@ def run_evaluation_phase(
         judge_config: JudgeConfig instance.
         project_dir: Benchmark project directory path.
         progress_state: Current progress state (for resume support).
+        redo_keys: Keys to judge again even though the log already holds a
+            score for them, either because that score is a framework failure
+            or because the response it was computed on has been regenerated.
     """
     logger.log_separator()
     logger.log_info("PHASE 2: Judge Evaluation")
@@ -61,7 +65,7 @@ def run_evaluation_phase(
 
         # Resume logic
         key = (cand_id, test_result.test_id, rep)
-        if key in progress_state.completed_eval:
+        if key in progress_state.completed_eval and key not in redo_keys:
             event = progress_state.eval_events[key]
             score = event["score"]
             g_score = event["global_score"]
@@ -95,9 +99,9 @@ def run_evaluation_phase(
             logger.log_warning(f"{prefix}Judge timeout ({timeout_val}s).")
             eval_result = {
                 "score": -1,
-                "reasoning": "⛔ [JUDGE TIMEOUT EXCEEDED]",
+                "reasoning": JUDGE_TIMEOUT_TEXT,
                 "global_score": -1,
-                "global_reasoning": "⛔ [JUDGE TIMEOUT EXCEEDED]",
+                "global_reasoning": JUDGE_TIMEOUT_TEXT,
             }
 
         score = eval_result.get("score", -1)

@@ -5,7 +5,7 @@ import time
 import prompttestenv.logger as logger
 from prompttestenv.api import call_with_timeout, get_llm_response, warm_up_for_run
 from prompttestenv.config import get_app_config
-from prompttestenv.progress import append_event
+from prompttestenv.progress import GEN_TIMEOUT_TEXT, append_event
 from prompttestenv.models import (
     Candidate, TestCaseResult, CandidatePerformance, JudgeConfig, LlmResult, ProgressState,
 )
@@ -17,6 +17,7 @@ def _pending_tests(
     results: list[TestCaseResult],
     repetitions: int,
     progress_state: ProgressState,
+    redo_keys: frozenset[tuple[str, str, int]] = frozenset(),
 ) -> list[TestCaseResult]:
     """The test cases this candidate still has generation work left for.
 
@@ -24,21 +25,28 @@ def _pending_tests(
     already in the log, and must not upload the attachments of a test case it
     will never call again.
 
+    A key being logged is not on its own enough to call it done: a key in
+    redo_keys is about to be called again, so it counts as pending here too.
+    Otherwise a --retry-errors run would charge the SDK import, the handshake
+    and every attachment upload to the retried call's own elapsed time.
+
     Args:
         cand_id: Candidate name.
         results: All test case results, in declaration order.
         repetitions: Repetitions configured for this run.
         progress_state: Resume state built from progress.jsonl.
+        redo_keys: Keys that will be generated again despite being logged.
 
     Returns:
         The results holding at least one (cand_id, test_id, rep) key that is
-        not yet completed, in declaration order.
+        not yet completed or is due to be redone, in declaration order.
     """
     return [
         test_result
         for test_result in results
         if any(
             (cand_id, test_result.test_id, rep) not in progress_state.completed_gen
+            or (cand_id, test_result.test_id, rep) in redo_keys
             for rep in range(repetitions)
         )
     ]
@@ -49,6 +57,7 @@ def _warm_up_candidate(
     results: list[TestCaseResult],
     repetitions: int,
     progress_state: ProgressState,
+    redo_keys: frozenset[tuple[str, str, int]] = frozenset(),
 ) -> None:
     """Pay this candidate's one-off provider costs before the clock starts.
 
@@ -64,11 +73,13 @@ def _warm_up_candidate(
         results: All test case results, in declaration order.
         repetitions: Repetitions configured for this run.
         progress_state: Resume state built from progress.jsonl.
+        redo_keys: Keys that will be generated again despite being logged, so
+            a candidate whose only outstanding work is a retry is still warmed.
     """
     if not get_app_config().warmup.enabled:
         return
 
-    pending = _pending_tests(cand.name, results, repetitions, progress_state)
+    pending = _pending_tests(cand.name, results, repetitions, progress_state, redo_keys)
     if not pending:
         return
 
@@ -91,6 +102,7 @@ def run_generation_phase(
     judge_config: JudgeConfig,
     project_dir: str,
     progress_state: ProgressState,
+    redo_keys: frozenset[tuple[str, str, int]] = frozenset(),
 ) -> list[dict]:
     """Execute Phase 1: generate LLM responses for all candidates x test cases.
 
@@ -100,6 +112,9 @@ def run_generation_phase(
         judge_config: JudgeConfig instance.
         project_dir: Benchmark project directory path.
         progress_state: Current progress state (for resume support).
+        redo_keys: Keys to generate again even though the log already holds
+            them, because what it holds is a failure placeholder rather than a
+            real answer. The new event is appended and supersedes the old one.
 
     Returns:
         List of pending evaluation task dicts.
@@ -125,7 +140,7 @@ def run_generation_phase(
             f"Generation with: {cand_id} [{cand.model}, {provider}, T={cand.temperature}]"
         )
 
-        _warm_up_candidate(cand, results, repetitions, progress_state)
+        _warm_up_candidate(cand, results, repetitions, progress_state, redo_keys)
 
         sys_instr = cand.resolved_system_instruction
         thinking = cand.thinking
@@ -139,7 +154,7 @@ def run_generation_phase(
 
                 # Resume logic
                 key = (cand_id, test_result.test_id, rep)
-                if key in progress_state.completed_gen:
+                if key in progress_state.completed_gen and key not in redo_keys:
                     event = progress_state.gen_events[key]
                     cand_perf.tokens.append(event["tokens"])
                     cand_perf.reasoning_tokens.append(event["reasoning_tokens"])
@@ -178,7 +193,7 @@ def run_generation_phase(
                     model=cand.model,
                 )
                 if timed_out:
-                    result = LlmResult(text="⛔ [TIMEOUT EXCEEDED]")
+                    result = LlmResult(text=GEN_TIMEOUT_TEXT)
                     elapsed = timeout_val
                     logger.log_warning(f"{prefix}Timeout hit ({timeout_val}s).")
                 else:
