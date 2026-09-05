@@ -718,6 +718,7 @@ def _run_verdict_call(
         temp=vj.temperature,
         thinking=vj.thinking,
         disable_safety=vj.disable_safety,
+        max_response_timeout_seconds=judge_config.max_response_timeout_seconds,
     )
     return _strip_code_fence(result.text.strip())
 
@@ -809,6 +810,7 @@ def generate_verdict(
                 temp=v_judge_temp,
                 thinking=thinking,
                 disable_safety=disable_safety,
+                max_response_timeout_seconds=judge_config.max_response_timeout_seconds,
             )
             global_response_text = _strip_code_fence(global_result.text.strip())
 

@@ -10,6 +10,28 @@ from unified_ai_client import call_ai, preload_model, warm_up, cleanup, get_embe
 from prompttestenv.config import get_app_config
 from prompttestenv.models import LlmResult
 
+# Added to max_response_timeout_seconds to derive the provider-level network
+# timeout (and, for Ollama, keep_alive): it must expire slightly AFTER the
+# outer call_with_timeout deadline, never before it (which would trigger
+# call_ai's own retries prematurely) and never much later (which would leave
+# an abandoned thread, or a resident model, hanging around long after
+# PromptTestEnv itself has given up).
+PROVIDER_TIMEOUT_BUFFER_SECONDS = 10
+
+
+def _buffered_provider_timeout(max_response_timeout_seconds: float) -> int:
+    """Derive the provider-level timeout from the outer enforced one.
+
+    Args:
+        max_response_timeout_seconds: The judge_config value that
+            call_with_timeout already enforces from outside.
+
+    Returns:
+        That value plus PROVIDER_TIMEOUT_BUFFER_SECONDS, as a whole number of
+        seconds (call_ai's own ``timeout`` parameter is typed ``int``).
+    """
+    return int(max_response_timeout_seconds) + PROVIDER_TIMEOUT_BUFFER_SECONDS
+
 
 def is_local_provider(provider: str) -> bool:
     """Report whether a provider runs models on this machine.
@@ -84,6 +106,7 @@ def get_llm_response(
     response_mime_type: str | None = None,
     thinking: bool | str = "default",
     disable_safety: bool = False,
+    max_response_timeout_seconds: float | None = None,
 ) -> LlmResult:
     """Route an LLM generation request to the appropriate provider via UnifiedAiClient.
 
@@ -105,6 +128,14 @@ def get_llm_response(
         response_mime_type: If 'application/json', enables JSON output mode.
         thinking: Whether to enable thinking/reasoning mode.
         disable_safety: Whether to disable safety settings (Google Gemini only).
+        max_response_timeout_seconds: The judge_config value that
+            call_with_timeout enforces around this call from outside. When
+            given, the underlying network timeout (and, for Ollama, the
+            per-call keep_alive) is set to this value plus
+            PROVIDER_TIMEOUT_BUFFER_SECONDS, so the provider layer never times
+            out before the outer deadline (which would trigger call_ai's own
+            retries prematurely) nor leaves the call, or the model, hanging
+            around long after it. When None, call_ai's own default applies.
 
     Returns:
         An LlmResult. Its reasoning_text is the thinking transcript when the
@@ -127,7 +158,7 @@ def get_llm_response(
     if disable_safety:
         extra_options["disable_safety"] = True
 
-    response = call_ai(
+    call_kwargs: dict[str, Any] = dict(
         provider=normalized_provider,
         model=model_name,
         prompt=user_prompt,
@@ -139,6 +170,16 @@ def get_llm_response(
         max_retries=5,
         extra_options=extra_options,
     )
+    if max_response_timeout_seconds is not None:
+        buffered = _buffered_provider_timeout(max_response_timeout_seconds)
+        call_kwargs["timeout"] = buffered
+        if normalized_provider == "ollama":
+            # Keeps the model resident at least as long as this call (plus
+            # whatever it waits queued behind another one) can possibly take,
+            # so Ollama's own keep_alive cannot evict it mid-wait.
+            extra_options["keep_alive"] = f"{buffered}s"
+
+    response = call_ai(**call_kwargs)
     return LlmResult(
         text=response.text,
         output_tokens=response.output_tokens,
@@ -186,6 +227,7 @@ def preload_model_for_run(
     provider: str,
     model_name: str,
     context_size: int | None = None,
+    max_response_timeout_seconds: float | None = None,
 ) -> None:
     """Preload an Ollama model into memory with a specific context window.
 
@@ -204,10 +246,20 @@ def preload_model_for_run(
         provider: LLM provider name.
         model_name: Model identifier to preload.
         context_size: Context window to allocate, in tokens. Ignored when None.
+        max_response_timeout_seconds: The judge_config value the calls that
+            will use this preloaded model are bounded by. When given,
+            keep_alive is set to this value plus PROVIDER_TIMEOUT_BUFFER_SECONDS
+            instead of the "15m" fallback, so the model cannot be evicted
+            while one of those calls is still queued or in flight.
     """
     if provider.lower() == "ollama":
         extra = {"context_size": context_size} if context_size else {}
-        preload_model(provider=provider, model=model_name, keep_alive="15m", **extra)
+        keep_alive = (
+            f"{_buffered_provider_timeout(max_response_timeout_seconds)}s"
+            if max_response_timeout_seconds is not None
+            else "15m"
+        )
+        preload_model(provider=provider, model=model_name, keep_alive=keep_alive, **extra)
 
 
 def teardown() -> None:

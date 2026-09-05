@@ -171,6 +171,7 @@ def run_generation_phase(
                         temp=cand.temperature,
                         thinking=thinking,
                         disable_safety=cand.disable_safety,
+                        max_response_timeout_seconds=timeout_val,
                     ),
                     timeout=timeout_val,
                     provider=provider,

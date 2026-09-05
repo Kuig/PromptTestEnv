@@ -109,6 +109,30 @@ class TestGetLlmResponse(unittest.TestCase):
         get_llm_response("google", "gemini", None, "prompt", response_mime_type="application/json")
         self.assertTrue(mock_call_ai.call_args.kwargs["format_json"])
 
+    @patch("prompttestenv.api.call_ai")
+    def test_no_timeout_kwarg_when_max_response_timeout_seconds_omitted(self, mock_call_ai):
+        mock_call_ai.return_value = self._fake_response()
+        get_llm_response("google", "gemini", None, "prompt")
+        self.assertNotIn("timeout", mock_call_ai.call_args.kwargs)
+
+    @patch("prompttestenv.api.call_ai")
+    def test_timeout_is_max_response_timeout_seconds_plus_buffer(self, mock_call_ai):
+        mock_call_ai.return_value = self._fake_response()
+        get_llm_response("google", "gemini", None, "prompt", max_response_timeout_seconds=240)
+        self.assertEqual(mock_call_ai.call_args.kwargs["timeout"], 250)
+
+    @patch("prompttestenv.api.call_ai")
+    def test_ollama_gets_matching_keep_alive(self, mock_call_ai):
+        mock_call_ai.return_value = self._fake_response()
+        get_llm_response("ollama", "gemma4", None, "prompt", max_response_timeout_seconds=240)
+        self.assertEqual(mock_call_ai.call_args.kwargs["extra_options"]["keep_alive"], "250s")
+
+    @patch("prompttestenv.api.call_ai")
+    def test_non_ollama_provider_gets_no_keep_alive(self, mock_call_ai):
+        mock_call_ai.return_value = self._fake_response()
+        get_llm_response("google", "gemini", None, "prompt", max_response_timeout_seconds=240)
+        self.assertNotIn("keep_alive", mock_call_ai.call_args.kwargs["extra_options"])
+
 
 class TestGetTextEmbedding(unittest.TestCase):
     @patch("prompttestenv.api.get_embedding")
@@ -129,6 +153,16 @@ class TestPreloadModelForRun(unittest.TestCase):
     def test_skips_for_non_ollama_providers(self, mock_preload):
         preload_model_for_run("google", "gemini-2.5-flash")
         mock_preload.assert_not_called()
+
+    @patch("prompttestenv.api.preload_model")
+    def test_default_keep_alive_without_timeout(self, mock_preload):
+        preload_model_for_run("ollama", "gemma4")
+        self.assertEqual(mock_preload.call_args.kwargs["keep_alive"], "15m")
+
+    @patch("prompttestenv.api.preload_model")
+    def test_keep_alive_matches_buffered_timeout(self, mock_preload):
+        preload_model_for_run("ollama", "gemma4", max_response_timeout_seconds=240)
+        self.assertEqual(mock_preload.call_args.kwargs["keep_alive"], "250s")
 
 
 class TestWarmUpForRun(unittest.TestCase):

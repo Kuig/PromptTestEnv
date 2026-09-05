@@ -138,7 +138,12 @@ def run_analysis_phase(
         logger.log_info(
             f"Reasoning judge '{rj.model}' is local: dimension calls run sequentially."
         )
-        preload_model_for_run(rj.provider, rj.model, context_size=rj.context_size)
+        preload_model_for_run(
+            rj.provider,
+            rj.model,
+            context_size=rj.context_size,
+            max_response_timeout_seconds=judge_config.max_response_timeout_seconds,
+        )
 
     delay = judge_config.evaluation_delay_seconds
     for position, (key, event) in enumerate(pending):

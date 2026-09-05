@@ -90,6 +90,7 @@ def _evaluate_llm_judge(
             thinking=thinking,
             response_mime_type="application/json",
             disable_safety=disable_safety,
+            max_response_timeout_seconds=judge_config.max_response_timeout_seconds,
         )
         parsed = json.loads(result.text)
         if isinstance(parsed, list):

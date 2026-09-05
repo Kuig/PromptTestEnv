@@ -356,6 +356,7 @@ def _ask_judge(prompt: str, judge_config: JudgeConfig) -> dict | None:
             temp=rj.temperature,
             thinking=rj.thinking,
             response_mime_type="application/json",
+            max_response_timeout_seconds=judge_config.max_response_timeout_seconds,
         ),
         timeout=judge_config.max_response_timeout_seconds,
         provider=rj.provider,
