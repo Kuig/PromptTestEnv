@@ -10,6 +10,12 @@ from prompttestenv.models import (
     Candidate, TestCaseResult, CandidatePerformance, JudgeConfig, LlmResult, ProgressState,
 )
 
+# Candidate generation does not retry: a retry lands on the measured elapsed
+# time, and several retries of a transient failure can burst
+# max_response_timeout_seconds. A failed generation is left for resume /
+# --retry-errors to redo instead.
+GENERATION_MAX_RETRIES = 0
+
 
 
 def _pending_tests(
@@ -187,6 +193,7 @@ def run_generation_phase(
                         thinking=thinking,
                         disable_safety=cand.disable_safety,
                         max_response_timeout_seconds=timeout_val,
+                        max_retries=GENERATION_MAX_RETRIES,
                     ),
                     timeout=timeout_val,
                     provider=provider,

@@ -5,7 +5,14 @@ import math
 import subprocess
 from typing import Any, Callable
 
-from unified_ai_client import call_ai, preload_model, warm_up, cleanup, get_embedding
+from unified_ai_client import (
+    call_ai,
+    preload_model,
+    warm_up,
+    cleanup,
+    get_embedding,
+    set_verbosity,
+)
 
 from prompttestenv.config import get_app_config
 from prompttestenv.models import LlmResult
@@ -17,6 +24,31 @@ from prompttestenv.models import LlmResult
 # an abandoned thread, or a resident model, hanging around long after
 # PromptTestEnv itself has given up).
 PROVIDER_TIMEOUT_BUFFER_SECONDS = 10
+
+# Level handed to unified_ai_client.set_verbosity when config.json's
+# logging.level is missing or unrecognised.
+DEFAULT_AI_LOG_LEVEL = "warning"
+
+
+def configure_ai_logging() -> None:
+    """Apply config.json's ``logging.level`` to UnifiedAiClient's logger.
+
+    Called once per process from every entry point (the CLI ``main()``, and each
+    Streamlit app, which run as their own processes). An unrecognised level is
+    reported through the project logger and falls back to DEFAULT_AI_LOG_LEVEL
+    rather than aborting startup.
+    """
+    level = get_app_config().logging.level
+    try:
+        set_verbosity(level)
+    except ValueError:
+        import prompttestenv.logger as logger
+
+        logger.log_warning(
+            f"Unknown logging.level {level!r} in config.json; using "
+            f"{DEFAULT_AI_LOG_LEVEL!r}. Valid: silent, error, warning, debug."
+        )
+        set_verbosity(DEFAULT_AI_LOG_LEVEL)
 
 
 def _buffered_provider_timeout(max_response_timeout_seconds: float) -> int:
@@ -107,6 +139,7 @@ def get_llm_response(
     thinking: bool | str = "default",
     disable_safety: bool = False,
     max_response_timeout_seconds: float | None = None,
+    max_retries: int = 5,
 ) -> LlmResult:
     """Route an LLM generation request to the appropriate provider via UnifiedAiClient.
 
@@ -136,6 +169,10 @@ def get_llm_response(
             out before the outer deadline (which would trigger call_ai's own
             retries prematurely) nor leaves the call, or the model, hanging
             around long after it. When None, call_ai's own default applies.
+        max_retries: How many times call_ai retries a retryable failure before
+            giving up. Defaults to 5 for judge/verdict/reasoning calls;
+            candidate generation passes 0 so a failure surfaces immediately
+            instead of being retried on the measured clock.
 
     Returns:
         An LlmResult. Its reasoning_text is the thinking transcript when the
@@ -167,7 +204,7 @@ def get_llm_response(
         temperature=temp,
         thinking=thinking,
         format_json=(response_mime_type == "application/json"),
-        max_retries=5,
+        max_retries=max_retries,
         extra_options=extra_options,
     )
     if max_response_timeout_seconds is not None:

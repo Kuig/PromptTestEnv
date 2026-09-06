@@ -50,6 +50,9 @@
     "warmup": {
         "enabled": true
     },
+    "logging": {
+        "level": "debug"
+    },
     "local_providers": [
         "ollama",
         "lmstudio",

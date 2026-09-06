@@ -213,6 +213,23 @@ class WarmupConfig:
 
 
 @dataclass
+class LoggingConfig:
+    """config.json's `logging` section: the verbosity of UnifiedAiClient's logger.
+
+    `level` is handed to unified_ai_client.set_verbosity and must be one of
+    "silent", "error", "warning", "debug" (UAC has no "info" level). It is
+    applied once per process at entry-point startup by api.configure_ai_logging;
+    an unrecognised value there falls back to "warning" with a warning rather
+    than aborting the run.
+
+    config.json is never part of the run hash, so changing this never
+    invalidates a progress.jsonl.
+    """
+
+    level: str = "warning"
+
+
+@dataclass
 class AppConfig:
     """Global, cross-project application configuration.
 
@@ -225,6 +242,7 @@ class AppConfig:
     reasoning_defaults: ReasoningDefaults = field(default_factory=ReasoningDefaults)
     local_providers: list[str] = field(default_factory=list)
     warmup: WarmupConfig = field(default_factory=WarmupConfig)
+    logging: LoggingConfig = field(default_factory=LoggingConfig)
     verdict_metadata: VerdictMetadata = field(default_factory=VerdictMetadata)
 
     @classmethod
@@ -247,6 +265,7 @@ class AppConfig:
             reasoning_defaults=_from_dict(ReasoningDefaults, data.get("reasoning_defaults", {})),
             local_providers=data.get("local_providers", []),
             warmup=_from_dict(WarmupConfig, data.get("warmup", {})),
+            logging=_from_dict(LoggingConfig, data.get("logging", {})),
             verdict_metadata=_from_dict(
                 VerdictMetadata, data.get("verdict_metadata", {})
             ),

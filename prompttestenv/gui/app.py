@@ -9,11 +9,13 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import streamlit as st
 
 import prompttestenv.logger as logger
+from prompttestenv.api import configure_ai_logging
 from prompttestenv.config import init_project
 from prompttestenv.gui.common import pick_directory, report_path, status_of
 from prompttestenv.runner import analyze_project, run_project, render_from_progress
 
 logger.set_backend("streamlit")
+configure_ai_logging()
 
 st.set_page_config(page_title="PromptTestEnv", page_icon="🧪", layout="wide")
 st.title("🧪 PromptTestEnv — LLM Benchmarking")

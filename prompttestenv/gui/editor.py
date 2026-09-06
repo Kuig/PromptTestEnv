@@ -28,6 +28,7 @@ import streamlit as st
 
 import prompttestenv.logger as logger
 from prompttestenv import projectio as pio
+from prompttestenv.api import configure_ai_logging
 from prompttestenv.config import get_app_config
 from prompttestenv.gui.common import pick_directory
 from prompttestenv.models import (
@@ -41,6 +42,7 @@ from prompttestenv.models import (
 )
 
 logger.set_backend("streamlit")
+configure_ai_logging()
 
 st.set_page_config(page_title="PromptTestEnv Editor", page_icon="📝", layout="wide")
 st.title("📝 PromptTestEnv — Project Editor")

@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 from prompttestenv.api import (
     call_with_timeout,
+    configure_ai_logging,
     cosine_similarity,
     get_llm_response,
     get_text_embedding,
@@ -132,6 +133,44 @@ class TestGetLlmResponse(unittest.TestCase):
         mock_call_ai.return_value = self._fake_response()
         get_llm_response("google", "gemini", None, "prompt", max_response_timeout_seconds=240)
         self.assertNotIn("keep_alive", mock_call_ai.call_args.kwargs["extra_options"])
+
+    @patch("prompttestenv.api.call_ai")
+    def test_max_retries_defaults_to_five_for_judge_and_verdict_calls(self, mock_call_ai):
+        mock_call_ai.return_value = self._fake_response()
+        get_llm_response("google", "gemini", None, "prompt")
+        self.assertEqual(mock_call_ai.call_args.kwargs["max_retries"], 5)
+
+    @patch("prompttestenv.api.call_ai")
+    def test_max_retries_is_forwarded_when_given(self, mock_call_ai):
+        mock_call_ai.return_value = self._fake_response()
+        get_llm_response("google", "gemini", None, "prompt", max_retries=0)
+        self.assertEqual(mock_call_ai.call_args.kwargs["max_retries"], 0)
+
+
+class TestConfigureAiLogging(unittest.TestCase):
+    def _cfg(self, level):
+        cfg = MagicMock()
+        cfg.logging.level = level
+        return cfg
+
+    @patch("prompttestenv.api.set_verbosity")
+    @patch("prompttestenv.api.get_app_config")
+    def test_applies_the_configured_level(self, mock_get_cfg, mock_set_verbosity):
+        mock_get_cfg.return_value = self._cfg("debug")
+        configure_ai_logging()
+        mock_set_verbosity.assert_called_once_with("debug")
+
+    @patch("prompttestenv.logger.log_warning")
+    @patch("prompttestenv.api.set_verbosity")
+    @patch("prompttestenv.api.get_app_config")
+    def test_unknown_level_falls_back_to_warning(self, mock_get_cfg, mock_set_verbosity, mock_warn):
+        mock_get_cfg.return_value = self._cfg("chatty")
+        mock_set_verbosity.side_effect = [ValueError("bad level"), None]
+        configure_ai_logging()
+        self.assertEqual(
+            [c.args[0] for c in mock_set_verbosity.call_args_list], ["chatty", "warning"]
+        )
+        mock_warn.assert_called_once()
 
 
 class TestGetTextEmbedding(unittest.TestCase):

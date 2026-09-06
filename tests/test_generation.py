@@ -62,6 +62,16 @@ class TestRunGenerationPhaseNormal(unittest.TestCase):
         mock_append.assert_called_once()
         self.assertEqual(mock_append.call_args.args[1]["type"], "gen")
 
+    def test_generation_call_does_not_retry(self):
+        jc = _judge_config()
+        with patch("prompttestenv.generation.get_llm_response") as mock_llm, \
+             patch("prompttestenv.generation.warm_up_for_run"), \
+             patch("prompttestenv.generation.append_event"):
+            mock_llm.return_value = LlmResult(text="hello", output_tokens=1)
+            run_generation_phase([_candidate()], [_result()], jc, "/fake/project", ProgressState())
+
+        self.assertEqual(mock_llm.call_args.kwargs["max_retries"], 0)
+
 
 class TestRunGenerationPhaseResume(unittest.TestCase):
     def test_resumed_entry_skips_llm_call(self):

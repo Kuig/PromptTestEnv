@@ -125,6 +125,25 @@ left is warmed in full, attachments included: the upload cache lives in the
 provider instance, so a resumed run always starts cold no matter what the log
 holds.
 
+### `logging`
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `level` | string | `"warning"` | Verbosity of the `unified_ai_client` logger. One of `"silent"`, `"error"`, `"warning"`, `"debug"` (there is no `"info"`). |
+
+The value is handed to the client's `set_verbosity()` once per process at every
+entry point (the CLI, the MCP server, and each Streamlit app). It attaches a
+single stderr handler to the client's own logger, so `"warning"` and above
+surface retry activity and `"debug"` adds the full request trace; `"silent"`
+suppresses all of it. An unrecognised value does not abort the run: it logs a
+warning and falls back to `"warning"`.
+
+The shipped `config.json` sets `"debug"`. This section is not part of the run
+hash, so changing it never invalidates a `progress.jsonl`.
+
+Third-party SDK chatter (httpx, the provider SDKs) is handled separately and is
+always quietened, independent of this setting.
+
 ### `local_providers`
 
 | Key | Type | Default | Description |

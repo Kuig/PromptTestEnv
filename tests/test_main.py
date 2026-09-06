@@ -11,7 +11,7 @@ from pathlib import Path
 from prompttestenv.projectedit import EditResult
 
 from prompttestenv.__main__ import (
-    build_parser, cmd_edit, cmd_editor, cmd_init, cmd_render, cmd_run, cmd_show,
+    build_parser, cmd_edit, cmd_editor, cmd_init, cmd_render, cmd_run, cmd_show, main,
 )
 from testutils import LoggerResetTestCase
 
@@ -110,6 +110,18 @@ class TestBuildParser(unittest.TestCase):
     def test_no_subcommand_is_rejected(self):
         with self.assertRaises(SystemExit):
             self.parser.parse_args([])
+
+
+class TestMain(unittest.TestCase):
+    @patch("prompttestenv.__main__.build_parser")
+    @patch("prompttestenv.__main__.configure_ai_logging")
+    @patch("prompttestenv.__main__.silence_sdks")
+    def test_configures_ai_logging_before_dispatch(self, mock_silence, mock_cfg_log, mock_parser):
+        with patch("sys.argv", ["prompttestenv", "run", "Projects/Foo"]):
+            main()
+        mock_silence.assert_called_once()
+        mock_cfg_log.assert_called_once()
+        mock_parser.return_value.parse_args.return_value.func.assert_called_once()
 
 
 class TestCmdEditor(unittest.TestCase):

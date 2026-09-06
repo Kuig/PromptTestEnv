@@ -27,6 +27,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from unified_ai_client import silence_sdks
 
+from prompttestenv.api import configure_ai_logging
+
 # The report formats every entry point offers. "md" is a text summary of the
 # verdict alone, "json" the same content the HTML carries in machine-readable
 # form (see report.schema.json), "winner_only" writes no file at all.
@@ -243,6 +245,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     """Main entry point for the PromptTestEnv CLI."""
     silence_sdks()
+    configure_ai_logging()
     parser = build_parser()
     args = parser.parse_args()
     args.func(args)
