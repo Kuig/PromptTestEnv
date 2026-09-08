@@ -242,7 +242,9 @@ derived from the response deadline: those measure different things, and a
 benchmark must never time a candidate while an earlier candidate's model is
 still competing for the same VRAM. A candidate that reuses the previous model
 releases nothing, so candidates differing only by prompt or temperature do not
-pay a reload between them.
+pay a reload between them. A response timeout does not release anything either:
+the model belongs to the candidate still running, and evicting it there would
+put its reload inside the next repetition's own measured time.
 
 **Logging.** One logger with four backends. The business logic calls the same
 functions whatever the interface, and only the entry point selects a backend:

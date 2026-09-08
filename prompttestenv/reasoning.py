@@ -359,8 +359,6 @@ def _ask_judge(prompt: str, judge_config: JudgeConfig) -> dict | None:
             max_response_timeout_seconds=judge_config.max_response_timeout_seconds,
         ),
         timeout=judge_config.max_response_timeout_seconds,
-        provider=rj.provider,
-        model=rj.model,
     )
     if timed_out:
         logger.log_warning(

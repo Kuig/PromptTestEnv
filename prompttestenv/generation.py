@@ -215,8 +215,6 @@ def run_generation_phase(
                         max_retries=GENERATION_MAX_RETRIES,
                     ),
                     timeout=timeout_val,
-                    provider=provider,
-                    model=cand.model,
                 )
                 if timed_out:
                     result = LlmResult(text=GEN_TIMEOUT_TEXT)

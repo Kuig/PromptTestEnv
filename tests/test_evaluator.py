@@ -122,7 +122,7 @@ class TestRunEvaluationPhaseRedoKeys(unittest.TestCase):
 
 
 class TestRunEvaluationPhaseTimeout(unittest.TestCase):
-    def test_timeout_kills_ollama_judge_and_records_sentinel_score(self):
+    def _timed_out_run(self):
         jc = _judge_config(timeout=0.05)
         jc.test_judge.provider = "ollama"
         jc.test_judge.model = "judge-model"
@@ -137,9 +137,21 @@ class TestRunEvaluationPhaseTimeout(unittest.TestCase):
              patch("prompttestenv.evaluator.append_event"), \
              patch("prompttestenv.api.unload_model") as mock_unload:
             run_evaluation_phase([task], jc, "/fake/project", ProgressState())
+        return cand_perf, mock_unload
 
+    def test_timeout_records_the_sentinel_score(self):
+        cand_perf, _ = self._timed_out_run()
         self.assertEqual(cand_perf.scores, [-1])
-        mock_unload.assert_called_once_with("ollama", "judge-model")
+
+    def test_timeout_does_not_evict_the_judge_model(self):
+        """Every remaining evaluation reuses this model, so a reload buys nothing.
+
+        Judges are not timed, so here it is wall clock rather than the
+        measurement at stake, but the reasoning call_with_timeout gives is
+        the same: cleanup() releases the model at exit regardless.
+        """
+        _, mock_unload = self._timed_out_run()
+        mock_unload.assert_not_called()
 
 
 class TestRunEvaluationPhaseReasoning(unittest.TestCase):

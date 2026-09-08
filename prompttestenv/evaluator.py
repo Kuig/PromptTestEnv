@@ -92,8 +92,6 @@ def run_evaluation_phase(
             judge_config,
             fn_kwargs={"local_media_paths": m_paths},
             timeout=timeout_val,
-            provider=j_provider,
-            model=j_model,
         )
         if timed_out:
             logger.log_warning(f"{prefix}Judge timeout ({timeout_val}s).")

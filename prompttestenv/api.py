@@ -406,25 +406,33 @@ def call_with_timeout(
     *args: Any,
     fn_kwargs: dict | None = None,
     timeout: float,
-    provider: str,
-    model: str,
 ) -> tuple[Any, bool]:
     """Run fn in a single-worker executor with a timeout.
 
-    On timeout the model is released, so a call this process has given up on
-    does not leave a pinned model holding VRAM for the rest of the run. That
-    goes through the client rather than the `ollama stop` CLI, so it needs no
-    binary on PATH and reaches a remote or non-default-port server, which the
-    CLI would not. It is a no-op for providers with no residency concept, so no
-    provider check is needed here.
+    This deliberately does **not** touch model residency. It used to release
+    the model on timeout, on the theory that a call this process had given up
+    on must not leave a pinned model holding VRAM; but the model in question is
+    never orphaned, and unloading it here cost more than it saved:
+
+    - It is the running candidate's own model, recorded in the residency slot,
+      so `release_previous_candidate` frees it at the next candidate boundary
+      and `cleanup()` frees it at exit either way. There is no leak to prevent.
+    - Warm-up runs once per candidate, outside the timed block, so the reload
+      the unload forces lands inside the `elapsed` of the next repetition or
+      test case of that same candidate. That is exactly the measurement error
+      warm-up exists to remove.
+    - It did not even shorten the wait. The provider-level timeout is only
+      PROVIDER_TIMEOUT_BUFFER_SECONDS behind this one, and closing that socket
+      is what stops the abandoned generation.
+
+    Residency stays what LOCAL_KEEP_ALIVE says it is: a decision the run makes
+    at the candidate boundary and at teardown, never one a timer makes.
 
     Args:
         fn: Callable to execute.
         *args: Positional arguments passed to fn.
         fn_kwargs: Keyword arguments passed to fn.
         timeout: Timeout in seconds.
-        provider: LLM provider name, for the unload on timeout.
-        model: Model identifier to release on timeout.
 
     Returns:
         Tuple of (result, timed_out). When timed_out is True, result is None
@@ -436,5 +444,4 @@ def call_with_timeout(
         try:
             return future.result(timeout=timeout), False
         except concurrent.futures.TimeoutError:
-            unload_model(provider, model)
             return None, True

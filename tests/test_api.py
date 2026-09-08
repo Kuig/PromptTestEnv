@@ -123,7 +123,7 @@ class TestGetLlmResponse(unittest.TestCase):
     def test_timeout_is_max_response_timeout_seconds_plus_buffer(self, mock_call_ai):
         mock_call_ai.return_value = self._fake_response()
         get_llm_response("google", "gemini", None, "prompt", max_response_timeout_seconds=240)
-        self.assertEqual(mock_call_ai.call_args.kwargs["timeout"], 250)
+        self.assertEqual(mock_call_ai.call_args.kwargs["timeout"], 245)
 
     @patch("prompttestenv.api.call_ai")
     def test_a_local_provider_is_pinned_resident(self, mock_call_ai):
@@ -249,7 +249,7 @@ class TestWarmUpForRun(ResidencyResetTestCase):
     def test_the_load_gets_the_buffered_timeout(self, mock_warm_up):
         """A slow local model must not be cut off by the client's own default."""
         warm_up_for_run("ollama", "gemma4", max_response_timeout_seconds=240)
-        self.assertEqual(mock_warm_up.call_args.kwargs["timeout"], 250)
+        self.assertEqual(mock_warm_up.call_args.kwargs["timeout"], 245)
 
 
 class TestCandidateBoundary(ResidencyResetTestCase):
@@ -322,37 +322,52 @@ class TestTeardown(ResidencyResetTestCase):
         mock_unload.assert_not_called()
 
 
-class TestCallWithTimeout(unittest.TestCase):
+class TestCallWithTimeout(ResidencyResetTestCase):
     def test_success_path_returns_result_and_false(self):
-        result, timed_out = call_with_timeout(
-            lambda x: x * 2, 3, timeout=5.0, provider="google", model="gemini",
-        )
+        result, timed_out = call_with_timeout(lambda x: x * 2, 3, timeout=5.0)
         self.assertEqual(result, 6)
         self.assertFalse(timed_out)
 
     @patch("prompttestenv.api.unload_model")
-    def test_timeout_releases_the_model(self, mock_unload):
+    def test_timeout_leaves_residency_alone(self, mock_unload):
+        """A timeout must not evict the model the next call will reuse.
+
+        Warm-up runs once per candidate, outside the timed block, so a reload
+        forced here would be charged to the next repetition's own elapsed. The
+        model is the running candidate's, so the candidate boundary and
+        teardown free it anyway.
+        """
         def slow(*args, **kwargs):
             time.sleep(0.3)
             return "too slow"
 
-        result, timed_out = call_with_timeout(
-            slow, timeout=0.05, provider="ollama", model="gemma4",
-        )
+        result, timed_out = call_with_timeout(slow, timeout=0.05)
         self.assertIsNone(result)
         self.assertTrue(timed_out)
-        mock_unload.assert_called_once_with("ollama", "gemma4")
+        mock_unload.assert_not_called()
 
     @patch("prompttestenv.api.unload_model")
-    def test_no_release_when_the_call_succeeds(self, mock_unload):
-        call_with_timeout(
-            lambda: "fast", timeout=5.0, provider="ollama", model="gemma4",
-        )
-        mock_unload.assert_not_called()
+    def test_the_timed_out_model_stays_in_the_residency_slot(self, mock_unload):
+        """The slot must keep telling the truth: the model is still loaded.
+
+        Were it cleared, the next candidate boundary would skip the release and
+        leave the model resident for the rest of the run.
+        """
+        with patch("prompttestenv.api.call_ai") as mock_call:
+            mock_call.return_value = MagicMock(
+                text="hi", output_tokens=1, reasoning_tokens=0,
+                reasoning_text="", reasoning_is_summary=False,
+            )
+            get_llm_response("ollama", "gemma4", "sys", "p")
+
+        call_with_timeout(lambda: time.sleep(0.3), timeout=0.05)
+
+        release_previous_candidate("ollama", "other-model")
+        mock_unload.assert_called_once_with("ollama", "gemma4")
 
     def test_fn_kwargs_are_passed_through(self):
         result, _timed_out = call_with_timeout(
-            lambda a, b: a + b, 2, fn_kwargs={"b": 4}, timeout=5.0, provider="google", model="gemini",
+            lambda a, b: a + b, 2, fn_kwargs={"b": 4}, timeout=5.0,
         )
         self.assertEqual(result, 6)
 

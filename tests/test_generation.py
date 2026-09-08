@@ -170,7 +170,7 @@ class TestRunGenerationPhaseRedoKeys(unittest.TestCase):
 
 
 class TestRunGenerationPhaseTimeout(ResidencyResetTestCase):
-    def test_timeout_kills_ollama_model_and_records_sentinel(self):
+    def _timed_out_run(self, provider):
         jc = _judge_config(timeout=0.05)
         results = [_result()]
 
@@ -178,34 +178,31 @@ class TestRunGenerationPhaseTimeout(ResidencyResetTestCase):
             time.sleep(0.3)
             return ("too slow", 0, 0, "")
 
-        with patch("prompttestenv.generation.get_llm_response", side_effect=slow_response), \
-             patch("prompttestenv.generation.warm_up_for_run"), \
-             patch("prompttestenv.generation.append_event"), \
-             patch("prompttestenv.api.unload_model") as mock_unload:
+        with patch("prompttestenv.generation.get_llm_response", side_effect=slow_response),              patch("prompttestenv.generation.warm_up_for_run"),              patch("prompttestenv.generation.append_event"),              patch("prompttestenv.api.unload_model") as mock_unload:
             progress = ProgressState()
-            pending = run_generation_phase([_candidate(provider="ollama")], results, jc, "/fake/project", progress)
+            pending = run_generation_phase(
+                [_candidate(provider=provider)], results, jc, "/fake/project", progress
+            )
+        return pending, mock_unload
 
+    def test_timeout_records_the_sentinel(self):
+        pending, _ = self._timed_out_run("ollama")
         self.assertEqual(pending[0]["output"], "⛔ [TIMEOUT EXCEEDED]")
-        mock_unload.assert_called_once_with("ollama", "m")
 
-    def test_timeout_on_non_ollama_provider_releases_nothing_real(self):
-        jc = _judge_config(timeout=0.05)
-        results = [_result()]
+    def test_timeout_does_not_evict_the_local_model(self):
+        """The reload would be charged to the next repetition's own elapsed.
 
-        def slow_response(*args, **kwargs):
-            time.sleep(0.3)
-            return ("too slow", 0, 0, "")
+        Warm-up runs once per candidate, outside the timed block, so evicting a
+        model here makes the next call of that same candidate pay to load it
+        again inside the measurement. Nothing leaks by keeping it: the candidate
+        boundary and teardown release it either way.
+        """
+        _, mock_unload = self._timed_out_run("ollama")
+        mock_unload.assert_not_called()
 
-        with patch("prompttestenv.generation.get_llm_response", side_effect=slow_response), \
-             patch("prompttestenv.generation.warm_up_for_run"), \
-             patch("prompttestenv.generation.append_event"), \
-             patch("prompttestenv.api.unload_model") as mock_unload:
-            progress = ProgressState()
-            run_generation_phase([_candidate(provider="google")], results, jc, "/fake/project", progress)
-
-        # No provider check here any more: the client no-ops a release for
-        # anything without a residency concept, so a cloud model costs nothing.
-        mock_unload.assert_called_once_with("google", "m")
+    def test_timeout_does_not_evict_a_remote_model_either(self):
+        _, mock_unload = self._timed_out_run("google")
+        mock_unload.assert_not_called()
 
 
 class TestRunGenerationPhaseWarmUp(unittest.TestCase):
