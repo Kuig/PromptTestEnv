@@ -3,7 +3,12 @@ from __future__ import annotations
 import time
 
 import prompttestenv.logger as logger
-from prompttestenv.api import call_with_timeout, get_llm_response, warm_up_for_run
+from prompttestenv.api import (
+    call_with_timeout,
+    get_llm_response,
+    release_previous_candidate,
+    warm_up_for_run,
+)
 from prompttestenv.config import get_app_config
 from prompttestenv.progress import GEN_TIMEOUT_TEXT, append_event
 from prompttestenv.models import (
@@ -64,6 +69,7 @@ def _warm_up_candidate(
     repetitions: int,
     progress_state: ProgressState,
     redo_keys: frozenset[tuple[str, str, int]] = frozenset(),
+    max_response_timeout_seconds: float | None = None,
 ) -> None:
     """Pay this candidate's one-off provider costs before the clock starts.
 
@@ -81,6 +87,9 @@ def _warm_up_candidate(
         progress_state: Resume state built from progress.jsonl.
         redo_keys: Keys that will be generated again despite being logged, so
             a candidate whose only outstanding work is a retry is still warmed.
+        max_response_timeout_seconds: Bound this candidate's calls run under,
+            used as the load's own timeout so a slow local model is not cut off
+            by the client's default.
     """
     if not get_app_config().warmup.enabled:
         return
@@ -97,7 +106,12 @@ def _warm_up_candidate(
     ))
 
     t_start = time.time()
-    if warm_up_for_run(cand.provider, cand.model, media or None):
+    if warm_up_for_run(
+        cand.provider,
+        cand.model,
+        media or None,
+        max_response_timeout_seconds=max_response_timeout_seconds,
+    ):
         detail = f", {len(media)} attachment(s)" if media else ""
         logger.log_metric(f"Warmed up in {time.time() - t_start:.2f}s{detail}.")
 
@@ -146,7 +160,12 @@ def run_generation_phase(
             f"Generation with: {cand_id} [{cand.model}, {provider}, T={cand.temperature}]"
         )
 
-        _warm_up_candidate(cand, results, repetitions, progress_state, redo_keys)
+        # Before the clock, and before this candidate's model is loaded: the
+        # previous one is pinned until something lets it go.
+        release_previous_candidate(provider, cand.model)
+        _warm_up_candidate(
+            cand, results, repetitions, progress_state, redo_keys, timeout_val
+        )
 
         sys_instr = cand.resolved_system_instruction
         thinking = cand.thinking

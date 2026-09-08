@@ -37,7 +37,7 @@ def run_evaluation_phase(
     j_provider = judge_config.test_judge.provider
     j_model = judge_config.test_judge.model
 
-    preload_model_for_run(j_provider, j_model, max_response_timeout_seconds=timeout_val)
+    preload_model_for_run(j_provider, j_model)
 
     best_scores: dict = {}
     current_cand = None

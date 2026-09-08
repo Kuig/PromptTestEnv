@@ -14,6 +14,9 @@ Provides:
   to "console" after every test, so a test that flips it to "streamlit"
   (or imports prompttestenv.gui.app, which does so as an import-time side
   effect) never leaks state into unrelated tests run afterward.
+- ResidencyResetTestCase: clears prompttestenv.api's record of which local
+  model is currently pinned resident, so no test can make another one release
+  a model it never loaded.
 - make_temp_project(): copies the read-only tests/fixtures/smoke_project/
   fixture into a fresh temp directory and returns its path. Callers must
   never write into fixtures/smoke_project/ directly, since generation,
@@ -27,6 +30,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import prompttestenv.api as api
 import prompttestenv.logger as logger
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
@@ -39,6 +43,20 @@ class LoggerResetTestCase(unittest.TestCase):
     def tearDown(self) -> None:
         logger.set_backend("console")
         super().tearDown()
+
+
+class ResidencyResetTestCase(unittest.TestCase):
+    """Base TestCase that forgets which local model api.py thinks is resident.
+
+    The slot is module state, so a key left behind by one test would make a
+    later one release a model it never loaded, and in a test that does not patch
+    the client that means a real request.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        api._reset_residency_state()
+        self.addCleanup(api._reset_residency_state)
 
 
 def make_temp_project() -> str:

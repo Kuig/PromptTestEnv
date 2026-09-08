@@ -235,6 +235,15 @@ retried", never "skip because events exist": a resumed run always starts with a
 cold upload cache, and a key being retried counts as pending however complete the
 log looks, but a candidate with nothing left to do is skipped entirely.
 
+**Model residency.** A local model is pinned in memory for as long as it is being
+measured, then released explicitly at the candidate boundary and again at
+teardown. It is not left to expire on a timer, and in particular not on one
+derived from the response deadline: those measure different things, and a
+benchmark must never time a candidate while an earlier candidate's model is
+still competing for the same VRAM. A candidate that reuses the previous model
+releases nothing, so candidates differing only by prompt or temperature do not
+pay a reload between them.
+
 **Logging.** One logger with four backends. The business logic calls the same
 functions whatever the interface, and only the entry point selects a backend:
 console for the CLI, stderr for MCP (stdout carries the JSON-RPC framing, and a

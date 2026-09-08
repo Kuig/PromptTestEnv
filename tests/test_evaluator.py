@@ -135,12 +135,11 @@ class TestRunEvaluationPhaseTimeout(unittest.TestCase):
         with patch("prompttestenv.evaluator.evaluate_with_judge", side_effect=slow_eval), \
              patch("prompttestenv.evaluator.preload_model_for_run"), \
              patch("prompttestenv.evaluator.append_event"), \
-             patch("prompttestenv.api.subprocess.run") as mock_subprocess:
+             patch("prompttestenv.api.unload_model") as mock_unload:
             run_evaluation_phase([task], jc, "/fake/project", ProgressState())
 
         self.assertEqual(cand_perf.scores, [-1])
-        mock_subprocess.assert_called_once()
-        self.assertEqual(mock_subprocess.call_args.args[0], ["ollama", "stop", "judge-model"])
+        mock_unload.assert_called_once_with("ollama", "judge-model")
 
 
 class TestRunEvaluationPhaseReasoning(unittest.TestCase):

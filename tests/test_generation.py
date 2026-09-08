@@ -6,6 +6,7 @@ from unittest.mock import patch
 from types import SimpleNamespace
 
 from prompttestenv.generation import run_generation_phase
+from testutils import ResidencyResetTestCase
 from prompttestenv.models import (
     Candidate,
     JudgeConfig,
@@ -168,7 +169,7 @@ class TestRunGenerationPhaseRedoKeys(unittest.TestCase):
         mock_warm.assert_not_called()
 
 
-class TestRunGenerationPhaseTimeout(unittest.TestCase):
+class TestRunGenerationPhaseTimeout(ResidencyResetTestCase):
     def test_timeout_kills_ollama_model_and_records_sentinel(self):
         jc = _judge_config(timeout=0.05)
         results = [_result()]
@@ -180,15 +181,14 @@ class TestRunGenerationPhaseTimeout(unittest.TestCase):
         with patch("prompttestenv.generation.get_llm_response", side_effect=slow_response), \
              patch("prompttestenv.generation.warm_up_for_run"), \
              patch("prompttestenv.generation.append_event"), \
-             patch("prompttestenv.api.subprocess.run") as mock_subprocess:
+             patch("prompttestenv.api.unload_model") as mock_unload:
             progress = ProgressState()
             pending = run_generation_phase([_candidate(provider="ollama")], results, jc, "/fake/project", progress)
 
         self.assertEqual(pending[0]["output"], "⛔ [TIMEOUT EXCEEDED]")
-        mock_subprocess.assert_called_once()
-        self.assertEqual(mock_subprocess.call_args.args[0], ["ollama", "stop", "m"])
+        mock_unload.assert_called_once_with("ollama", "m")
 
-    def test_timeout_on_non_ollama_provider_does_not_kill_anything(self):
+    def test_timeout_on_non_ollama_provider_releases_nothing_real(self):
         jc = _judge_config(timeout=0.05)
         results = [_result()]
 
@@ -199,11 +199,13 @@ class TestRunGenerationPhaseTimeout(unittest.TestCase):
         with patch("prompttestenv.generation.get_llm_response", side_effect=slow_response), \
              patch("prompttestenv.generation.warm_up_for_run"), \
              patch("prompttestenv.generation.append_event"), \
-             patch("prompttestenv.api.subprocess.run") as mock_subprocess:
+             patch("prompttestenv.api.unload_model") as mock_unload:
             progress = ProgressState()
             run_generation_phase([_candidate(provider="google")], results, jc, "/fake/project", progress)
 
-        mock_subprocess.assert_not_called()
+        # No provider check here any more: the client no-ops a release for
+        # anything without a residency concept, so a cloud model costs nothing.
+        mock_unload.assert_called_once_with("google", "m")
 
 
 class TestRunGenerationPhaseWarmUp(unittest.TestCase):
