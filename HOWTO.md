@@ -313,6 +313,10 @@ Every key is optional. Send only what changes.
 - **Attachments in a patch must be text.** A PDF or an image has to be placed in
   `test_files/` directly. That content is the data under test, not something a
   caller synthesises.
+- **Asset names are bare filenames, never paths**, under `system_prompts` and
+  `test_files` alike, and in `delete` just as much as when writing. `"notes.md"`
+  is accepted; `"sub/notes.md"`, `"../notes.md"` and any absolute path are
+  refused. A patch can only reach the project's own two asset directories.
 
 ### What can block a write
 

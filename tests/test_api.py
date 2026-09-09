@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 import time
 import unittest
 from unittest.mock import MagicMock, patch
@@ -11,11 +12,13 @@ from prompttestenv.api import (
     cosine_similarity,
     get_llm_response,
     get_text_embedding,
+    parse_json_object,
     preload_model_for_run,
     release_previous_candidate,
     warm_up_for_run,
     teardown,
 )
+from unified_ai_client import AiResponse
 from testutils import ResidencyResetTestCase
 
 
@@ -38,7 +41,14 @@ class TestCosineSimilarity(unittest.TestCase):
 
 class TestGetLlmResponse(unittest.TestCase):
     def _fake_response(self, text="hi", out_tok=10, r_tok=0, reasoning="", is_summary=False):
-        resp = MagicMock()
+        """spec=AiResponse, so the mock has the real class's attributes only.
+
+        A bare MagicMock answers to anything, so a field renamed in
+        UnifiedAiClient would have left this whole suite green and surfaced
+        only in production. get_llm_response is the single place this project
+        touches AiResponse, which makes this the one boundary worth typing.
+        """
+        resp = MagicMock(spec=AiResponse)
         resp.text = text
         resp.output_tokens = out_tok
         resp.reasoning_tokens = r_tok
@@ -63,13 +73,24 @@ class TestGetLlmResponse(unittest.TestCase):
         mock_call_ai.return_value = self._fake_response(reasoning=None)
         self.assertEqual(get_llm_response("google", "gemini", None, "prompt").reasoning_text, "")
 
+    def test_every_field_this_module_reads_exists_on_the_real_response(self):
+        """The guard the mock alone cannot be: if UnifiedAiClient renames one of
+        these, this fails here instead of silently changing a report."""
+        for name in ("text", "output_tokens", "reasoning_tokens",
+                     "reasoning_text", "reasoning_is_summary"):
+            with self.subTest(name):
+                self.assertTrue(hasattr(AiResponse(text=""), name))
+
     @patch("prompttestenv.api.call_ai")
-    def test_provider_without_the_summary_flag_defaults_to_raw(self, mock_call_ai):
-        """An older UnifiedAiClient has no reasoning_is_summary, and raw is the safe reading."""
+    def test_a_missing_attribute_is_not_papered_over(self, mock_call_ai):
+        """reasoning_is_summary is read directly now. A defensive getattr would
+        turn a rename into "raw" on every trace, which is the one reading the
+        report must never invent."""
         resp = self._fake_response(reasoning="raw trace")
         del resp.reasoning_is_summary
         mock_call_ai.return_value = resp
-        self.assertFalse(get_llm_response("google", "gemini", None, "prompt").reasoning_is_summary)
+        with self.assertRaises(AttributeError):
+            get_llm_response("google", "gemini", None, "prompt")
 
     @patch("prompttestenv.api.call_ai")
     def test_thinking_string_true_normalized_to_bool(self, mock_call_ai):
@@ -120,10 +141,14 @@ class TestGetLlmResponse(unittest.TestCase):
         self.assertNotIn("timeout", mock_call_ai.call_args.kwargs)
 
     @patch("prompttestenv.api.call_ai")
-    def test_timeout_is_max_response_timeout_seconds_plus_buffer(self, mock_call_ai):
+    def test_the_provider_deadline_matches_the_one_we_enforce(self, mock_call_ai):
+        """The buffer is 0: the abandoned call's socket must close when we stop
+        waiting for it, not seconds later while the next call is being timed."""
         mock_call_ai.return_value = self._fake_response()
         get_llm_response("google", "gemini", None, "prompt", max_response_timeout_seconds=240)
-        self.assertEqual(mock_call_ai.call_args.kwargs["timeout"], 245)
+        # Literal on purpose, so a change to PROVIDER_TIMEOUT_BUFFER_SECONDS has
+        # to be made deliberately here too: 240 + 0.
+        self.assertEqual(mock_call_ai.call_args.kwargs["timeout"], 240)
 
     @patch("prompttestenv.api.call_ai")
     def test_a_local_provider_is_pinned_resident(self, mock_call_ai):
@@ -196,11 +221,92 @@ class TestGetTextEmbedding(unittest.TestCase):
         self.assertEqual(mock_get_embedding.call_args.kwargs["provider"], "ollama")
 
 
-class TestPreloadModelForRun(unittest.TestCase):
+class TestParseJsonObject(unittest.TestCase):
+    """response_mime_type="application/json" makes a fenced or list-wrapped
+    reply the rare case, not the common one — Ollama and OpenAI-compatible
+    backends do not enforce JSON mode the way Google does. Shared by
+    test_judge.py, reasoning.py and verdict.py, so a case missed here was
+    previously reimplemented (or missed) independently up to three times."""
+
+    def test_plain_object(self):
+        self.assertEqual(parse_json_object('{"score": 7}'), {"score": 7})
+
+    def test_wrapped_in_a_markdown_code_fence(self):
+        text = '```json\n{"score": 7}\n```'
+        self.assertEqual(parse_json_object(text), {"score": 7})
+
+    def test_fence_with_no_language_tag(self):
+        text = '```\n{"score": 7}\n```'
+        self.assertEqual(parse_json_object(text), {"score": 7})
+
+    def test_single_element_list_is_unwrapped(self):
+        self.assertEqual(parse_json_object('[{"score": 7}]'), {"score": 7})
+
+    def test_a_fenced_list_is_both_unwrapped_and_unfenced(self):
+        text = '```json\n[{"score": 7}]\n```'
+        self.assertEqual(parse_json_object(text), {"score": 7})
+
+    def test_empty_list_returns_none(self):
+        self.assertIsNone(parse_json_object("[]"))
+
+    def test_list_of_non_dicts_returns_none(self):
+        self.assertIsNone(parse_json_object("[1, 2, 3]"))
+
+    def test_a_bare_scalar_returns_none(self):
+        self.assertIsNone(parse_json_object("7"))
+
+    def test_invalid_json_returns_none_instead_of_raising(self):
+        self.assertIsNone(parse_json_object("not json at all"))
+
+
+class TestPreloadModelForRun(ResidencyResetTestCase):
+    """ResidencyResetTestCase, not plain TestCase: a preload now writes the
+    residency slot, so without the reset these would leak into whatever runs
+    next and make the suite order-dependent."""
+
     @patch("prompttestenv.api.preload_model")
     def test_preloads_for_ollama(self, mock_preload):
         preload_model_for_run("ollama", "gemma4")
         mock_preload.assert_called_once()
+
+    @patch("prompttestenv.api.unload_model")
+    @patch("prompttestenv.api.preload_model")
+    def test_a_preload_records_residency(self, _mock_preload, mock_unload):
+        """Without the record the judge's model stayed pinned until teardown."""
+        preload_model_for_run("ollama", "judge-model")
+        release_previous_candidate("ollama", "something-else")
+        mock_unload.assert_called_once_with("ollama", "judge-model")
+
+    @patch("prompttestenv.api.unload_model")
+    @patch("prompttestenv.api.preload_model")
+    @patch("prompttestenv.api.warm_up")
+    def test_a_preload_releases_whatever_was_pinned_before(
+        self, _mock_warm, _mock_preload, mock_unload
+    ):
+        """Phase 3 used to run its judge while the last candidate's model was
+        still holding VRAM."""
+        warm_up_for_run("ollama", "candidate-model")
+        preload_model_for_run("ollama", "judge-model")
+        mock_unload.assert_called_once_with("ollama", "candidate-model")
+
+    @patch("prompttestenv.api.unload_model")
+    @patch("prompttestenv.api.preload_model")
+    @patch("prompttestenv.api.warm_up")
+    def test_a_preload_of_the_same_model_releases_nothing(
+        self, _mock_warm, _mock_preload, mock_unload
+    ):
+        warm_up_for_run("ollama", "same-model")
+        preload_model_for_run("ollama", "same-model")
+        mock_unload.assert_not_called()
+
+    @patch("prompttestenv.api.unload_model")
+    @patch("prompttestenv.api.preload_model")
+    def test_a_non_ollama_preload_touches_neither_slot_nor_provider(
+        self, mock_preload, mock_unload
+    ):
+        preload_model_for_run("google", "gemini")
+        mock_preload.assert_not_called()
+        mock_unload.assert_not_called()
 
     @patch("prompttestenv.api.preload_model")
     def test_skips_for_non_ollama_providers(self, mock_preload):
@@ -249,7 +355,8 @@ class TestWarmUpForRun(ResidencyResetTestCase):
     def test_the_load_gets_the_buffered_timeout(self, mock_warm_up):
         """A slow local model must not be cut off by the client's own default."""
         warm_up_for_run("ollama", "gemma4", max_response_timeout_seconds=240)
-        self.assertEqual(mock_warm_up.call_args.kwargs["timeout"], 245)
+        # 240 + PROVIDER_TIMEOUT_BUFFER_SECONDS, spelled out deliberately.
+        self.assertEqual(mock_warm_up.call_args.kwargs["timeout"], 240)
 
 
 class TestCandidateBoundary(ResidencyResetTestCase):
@@ -327,6 +434,49 @@ class TestCallWithTimeout(ResidencyResetTestCase):
         result, timed_out = call_with_timeout(lambda x: x * 2, 3, timeout=5.0)
         self.assertEqual(result, 6)
         self.assertFalse(timed_out)
+
+    def test_it_returns_at_the_deadline_instead_of_waiting_for_the_call(self):
+        """The regression the rest of this class could not see.
+
+        Every other test here asserts only the return VALUE, so the pooled
+        version passed them all while taking as long as the call it had given
+        up on. The bound is deliberately loose (5x the deadline, a quarter of
+        the call): Windows timer granularity is ~15ms and the suite runs under
+        load, so a tight bound would flake without catching anything more.
+        """
+        started = time.perf_counter()
+        result, timed_out = call_with_timeout(lambda: time.sleep(2.0), timeout=0.2)
+        elapsed = time.perf_counter() - started
+
+        self.assertTrue(timed_out)
+        self.assertIsNone(result)
+        self.assertLess(elapsed, 1.0, f"waited {elapsed:.2f}s for a 0.2s deadline")
+
+    def test_the_abandoned_worker_is_a_daemon(self):
+        """Process exit cannot be asserted from inside the process, so assert
+        the property that decides it: a non-daemon worker is joined by the
+        interpreter at exit, which is where the pooled version moved its block."""
+        captured = {}
+        entered = threading.Event()
+
+        def slow():
+            captured["thread"] = threading.current_thread()
+            entered.set()
+            time.sleep(1.0)
+
+        call_with_timeout(slow, timeout=0.05)
+
+        self.assertTrue(entered.wait(1.0))
+        self.assertTrue(captured["thread"].daemon)
+
+    def test_an_exception_inside_fn_still_reaches_the_caller(self):
+        """Future.result() re-raised for free; the thread version has to do it
+        by hand, and run_project's teardown contract depends on it."""
+        def boom():
+            raise ValueError("boom")
+
+        with self.assertRaises(ValueError):
+            call_with_timeout(boom, timeout=5.0)
 
     @patch("prompttestenv.api.unload_model")
     def test_timeout_leaves_residency_alone(self, mock_unload):

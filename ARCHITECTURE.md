@@ -56,7 +56,9 @@ and then produces output; `analyze_project` runs the third phase alone;
 1. **Generation** (`generation.py`). For every candidate x test case x
    repetition, calls the candidate model and records the response, its token
    counts, its thinking trace and the elapsed time as a `gen` event. Runs inside
-   a single-worker thread pool purely to enforce `max_response_timeout_seconds`.
+   an abandonable daemon thread to enforce `max_response_timeout_seconds`: at the
+   deadline the call is given up on and left to finish on its own, rather than
+   waited for.
 2. **Evaluation** (`evaluator.py`). For every generated response, produces two
    independent scores: the task score, dispatched by the test case's
    `judge_type`, and the global score, dispatched by `global_criteria.json`'s
@@ -187,7 +189,10 @@ produced it, which is what lets a report notice that it mixes schema versions.
 
 **Between reading and writing the log**: `ProgressState.load(..., readonly=True)`.
 `analyze` and `render` only consume stored results, so they must not rename or
-create the log they were asked to read.
+create the log they were asked to read. `run_project`'s own re-read between the
+phases and the analysis is readonly for a different reason: it is a pure read,
+but a plain load renames the log on a hash mismatch, so a config saved from the
+editor while a benchmark runs would destroy the events the phases just wrote.
 
 **Between the library and its interfaces**: the interfaces are thin. The CLI, the
 MCP server, the library and both GUIs all call the same three functions in
@@ -195,8 +200,15 @@ MCP server, the library and both GUIs all call the same three functions in
 project is the same arrangement one layer over: every interface, the Streamlit
 editor included, reaches the config files only through `projectio.py`, so no one
 of them can hold a rule the others lack. `projectedit.py` adds the patch language
-and the two gates a form does not need to express, validation and the refusal to
-invalidate a finished run without being told to.
+and the refusal to invalidate a finished run without being told to.
+
+`projectio.validate` is the pre-flight all three share, editing and running
+alike, so a project cannot be accepted by one surface and silently mishandled by
+the other. The asymmetry is deliberate: the editors block on errors and show
+warnings, while `run_project` blocks on errors and only logs the warnings. Being
+total is therefore part of its contract, since `load_project` is total too and a
+check that crashes on a malformed file is useless on exactly the file it exists
+to describe.
 
 ## Cross-cutting concerns
 
@@ -208,7 +220,13 @@ data from the log instead of re-calling the model. A hash mismatch renames the
 file to `progress.jsonl.bak` and refuses to resume silently.
 
 `--retry-errors` narrows that skip: a key whose stored result is a placeholder
-the framework wrote, rather than a real model answer, is run again. It needs no
+the framework wrote, rather than a real model answer, is run again. There are
+three such placeholders and each says something different: a response timeout, a
+generation the provider refused, and a judge timeout. They are kept distinct
+rather than collapsed into one, because the log would otherwise report a timeout
+for a rate limit. The exception behind a refused generation is recorded in its
+own field, so the payload stays comparable by equality, and its elapsed time is
+the not-measured sentinel rather than the milliseconds it took to fail. It needs no
 rewriting of the log, because `ProgressState.load` builds its lookup dicts by
 overwriting as it reads, so the last line for a key is the one that counts and a
 corrected event simply supersedes the failed one. The corollary is a rule for
@@ -244,7 +262,18 @@ still competing for the same VRAM. A candidate that reuses the previous model
 releases nothing, so candidates differing only by prompt or temperature do not
 pay a reload between them. A response timeout does not release anything either:
 the model belongs to the candidate still running, and evicting it there would
-put its reload inside the next repetition's own measured time.
+put its reload inside the next repetition's own measured time. This holds after
+the deadline too, and it is the reason abandoning the call is safe: the worker
+left behind touches only process-lifetime caches, so the model stays pinned
+exactly as long as `LOCAL_KEEP_ALIVE` says.
+
+The rule is "whoever loads a model records it, and the boundary releases it",
+and it holds for every loader without exception. A judge preload is a load like
+any other: it goes through the same release-then-record sequence, or the slot
+would not know about the judge's model and nothing could free it, while the last
+candidate's model sat beside it for the whole of phase 3. The preload is also
+conditional, since only the LLM judge reaches the judge model at all: a project
+scoring everything by similarity or by assertion loads nothing for it.
 
 **Logging.** One logger with four backends. The business logic calls the same
 functions whatever the interface, and only the entry point selects a backend:
@@ -255,4 +284,17 @@ log line there corrupts it), Streamlit widgets for the GUIs.
 the three mandatory config files above all. AI calls degrade instead: a failed
 judge call returns the `-1` sentinel rather than raising, so one bad response
 never costs the run. The entry points catch everything and return a readable
-`"Error: ..."` string.
+`"Error: ..."` string. Around the config loaders that catch is a typed tuple
+rather than a bare `except`, and it is deliberately wider than the two exceptions
+the loaders document: `validate` cannot enumerate every malformed shape a
+hand-written file can take, and an entry point owes its caller a string, not a
+traceback. It stays confined to the loaders, since the phases below are meant to
+propagate.
+
+The report format is checked the same way, in the core rather than at one
+interface. Validating it in the CLI's argument parser alone left the library,
+the MCP tools and both GUIs accepting any string and falling through to HTML, so
+a caller asking for a format that does not exist got a full report and no
+warning. The check now runs first thing in the two entry points that take it,
+before any file is read or any call is paid for, and returns the usual error
+string.

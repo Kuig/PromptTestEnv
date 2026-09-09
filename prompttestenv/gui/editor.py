@@ -17,12 +17,14 @@ any widget is created, and every widget then renders from the model.
 """
 from __future__ import annotations
 
-import sys
 from copy import deepcopy
 from pathlib import Path
 from uuid import uuid4
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# No sys.path manipulation: streamlit run executes this file by path, but the
+# package is installed, so importing prompttestenv works without help. Inserting
+# the repo root here published the package's own generic module names to every
+# import that followed.
 
 import streamlit as st
 
@@ -30,7 +32,7 @@ import prompttestenv.logger as logger
 from prompttestenv import projectio as pio
 from prompttestenv.api import configure_ai_logging
 from prompttestenv.config import get_app_config
-from prompttestenv.gui.common import pick_directory
+from prompttestenv.gui.common import browse_button
 from prompttestenv.models import (
     REASONING_SCOPES,
     Candidate,
@@ -111,6 +113,50 @@ def _unique_label(base: str, taken: set) -> str:
         label = f"{base} (copy {n})"
         n += 1
     return label
+
+
+def _row_action_bar(rows: list, index: int, key_prefix: str, label_field: str) -> None:
+    """Move up/down, duplicate, or delete one row of `rows` in place.
+
+    Shared by the Candidates and Test cases tabs: identical apart from which
+    list they act on, the widget-key prefix, and which field of the row's
+    data needs to stay unique after a duplicate (name vs id). A row's own
+    uid, not its index, still identifies the widgets that live above this
+    bar, so reordering here cannot shift another row's values out from
+    under it.
+
+    Args:
+        rows: ed["candidates"] or ed["tests"], mutated in place.
+        index: This row's position in `rows`.
+        key_prefix: Short prefix ("c" or "t") making the four widget keys
+            unique across both tabs.
+        label_field: The row-data field _unique_label is applied to on
+            duplicate ("name" or "id").
+    """
+    row = rows[index]
+    up, down, dup, delete, _ = st.columns([1, 1, 1, 1, 6])
+    if up.button("▲", key=f"{key_prefix}up:{row['uid']}", disabled=index == 0):
+        rows[index - 1], rows[index] = rows[index], rows[index - 1]
+        _sync_draft()
+        st.rerun()
+    if down.button("▼", key=f"{key_prefix}dn:{row['uid']}", disabled=index == len(rows) - 1):
+        rows[index + 1], rows[index] = rows[index], rows[index + 1]
+        _sync_draft()
+        st.rerun()
+    if dup.button("📋", key=f"{key_prefix}dup:{row['uid']}", help="Duplica"):
+        clone = deepcopy(row["data"])
+        if clone.get(label_field):
+            clone[label_field] = _unique_label(
+                clone[label_field],
+                {r["data"].get(label_field) for r in rows},
+            )
+        rows.insert(index + 1, {"uid": uuid4().hex, "data": clone})
+        _sync_draft()
+        st.rerun()
+    if delete.button("🗑", key=f"{key_prefix}rm:{row['uid']}"):
+        rows.pop(index)
+        _sync_draft()
+        st.rerun()
 
 
 # Field name -> how to read the widget value back. `None` means "as is".
@@ -255,6 +301,27 @@ def _open_choice(label: str, options, current, key: str, help_text: str | None =
                         accept_new_options=True)
 
 
+def _thinking_widget(label_prefix: str, current, key: str) -> None:
+    """Render `thinking` as a closed choice, or as text if the file disagrees.
+
+    api.py normalises exactly "true"/"false"/"default" (booleans included) and
+    passes anything else through verbatim, so an out-of-vocabulary value is
+    shown as-is rather than silently rewritten into one of the three.
+
+    Defined here, ahead of the Candidates tab that is this script's first
+    user (the top-level `with tab_cand:` block runs at script-execution time,
+    not at some later call time), rather than down by _judge_common: a
+    forward reference from there is exactly why the candidates tab used to
+    carry its own inline copy of this instead of calling it.
+    """
+    current_str = str(current).lower() if isinstance(current, bool) else current
+    if current_str in pio.THINKING_CHOICES:
+        st.selectbox(f"{label_prefix}Thinking", pio.THINKING_CHOICES,
+                     index=pio.THINKING_CHOICES.index(current_str), key=key)
+    else:
+        st.text_input(f"{label_prefix}Thinking (non-standard)", value=str(current), key=key)
+
+
 def _nullable_number(label: str, current, key: str, *, minimum: int, step: int,
                      fallback, help_text: str) -> None:
     """A checkbox+input pair for a field where None means "use config.json".
@@ -302,21 +369,7 @@ with st.sidebar:
     )
     st.session_state.path_input = path_input
 
-    if st.button("📁 Browse...", width="stretch"):
-        init_dir = st.session_state.path_input or str(Path.cwd())
-        if not Path(init_dir).is_absolute():
-            init_dir = str(Path.cwd() / init_dir)
-        picked = None
-        try:
-            picked = pick_directory(init_dir)
-        except Exception as exc:
-            st.warning(f"Folder picker unavailable: {exc}. Type the path manually.")
-        if picked:
-            try:
-                st.session_state.path_input = Path(picked).relative_to(Path.cwd()).as_posix()
-            except ValueError:
-                st.session_state.path_input = Path(picked).as_posix()
-            st.rerun()
+    browse_button(st, "path_input")
 
     col_open, col_new = st.columns(2)
     if col_open.button("📂 Open", width="stretch", type="primary"):
@@ -524,18 +577,8 @@ with tab_cand:
                     key=_wkey("cand", row["uid"], "temperature"),
                 )
             with mid:
-                thinking = data.get("thinking", "default")
-                thinking_str = str(thinking).lower() if isinstance(thinking, bool) else thinking
-                if thinking_str in pio.THINKING_CHOICES:
-                    st.selectbox(
-                        "Thinking", pio.THINKING_CHOICES,
-                        index=pio.THINKING_CHOICES.index(thinking_str),
-                        key=_wkey("cand", row["uid"], "thinking"),
-                    )
-                else:
-                    # Kept, not silently rewritten: it reaches the provider verbatim.
-                    st.text_input("Thinking (non-standard)", value=str(thinking),
-                                  key=_wkey("cand", row["uid"], "thinking"))
+                _thinking_widget("", data.get("thinking", "default"),
+                                  _wkey("cand", row["uid"], "thinking"))
             with right:
                 st.checkbox("Disable safety filters",
                             value=bool(data.get("disable_safety", False)),
@@ -560,34 +603,7 @@ with tab_cand:
             if extras:
                 st.caption("Preserved extra keys: " + ", ".join(extras))
 
-            up, down, dup, delete, _ = st.columns([1, 1, 1, 1, 6])
-            if up.button("▲", key=f"cup:{row['uid']}", disabled=index == 0):
-                ed["candidates"][index - 1], ed["candidates"][index] = \
-                    ed["candidates"][index], ed["candidates"][index - 1]
-                _sync_draft()
-                st.rerun()
-            if down.button("▼", key=f"cdn:{row['uid']}",
-                           disabled=index == len(ed["candidates"]) - 1):
-                ed["candidates"][index + 1], ed["candidates"][index] = \
-                    ed["candidates"][index], ed["candidates"][index + 1]
-                _sync_draft()
-                st.rerun()
-            if dup.button("📋", key=f"cdup:{row['uid']}", help="Duplica"):
-                clone = deepcopy(row["data"])
-                if clone.get("name"):
-                    clone["name"] = _unique_label(
-                        clone["name"],
-                        {c["data"].get("name") for c in ed["candidates"]},
-                    )
-                ed["candidates"].insert(
-                    index + 1, {"uid": uuid4().hex, "data": clone}
-                )
-                _sync_draft()
-                st.rerun()
-            if delete.button("🗑", key=f"crm:{row['uid']}"):
-                ed["candidates"].pop(index)
-                _sync_draft()
-                st.rerun()
+            _row_action_bar(ed["candidates"], index, "c", "name")
 
 
 # ── Test cases ────────────────────────────────────────────────────────────────
@@ -695,32 +711,7 @@ with tab_tests:
             if extras:
                 st.caption("Preserved extra keys: " + ", ".join(extras))
 
-            up, down, dup, delete, _ = st.columns([1, 1, 1, 1, 6])
-            if up.button("▲", key=f"tup:{row['uid']}", disabled=index == 0):
-                ed["tests"][index - 1], ed["tests"][index] = \
-                    ed["tests"][index], ed["tests"][index - 1]
-                _sync_draft()
-                st.rerun()
-            if down.button("▼", key=f"tdn:{row['uid']}",
-                           disabled=index == len(ed["tests"]) - 1):
-                ed["tests"][index + 1], ed["tests"][index] = \
-                    ed["tests"][index], ed["tests"][index + 1]
-                _sync_draft()
-                st.rerun()
-            if dup.button("📋", key=f"tdup:{row['uid']}", help="Duplica"):
-                clone = deepcopy(row["data"])
-                if clone.get("id"):
-                    clone["id"] = _unique_label(
-                        clone["id"],
-                        {t["data"].get("id") for t in ed["tests"]},
-                    )
-                ed["tests"].insert(index + 1, {"uid": uuid4().hex, "data": clone})
-                _sync_draft()
-                st.rerun()
-            if delete.button("🗑", key=f"trm:{row['uid']}"):
-                ed["tests"].pop(index)
-                _sync_draft()
-                st.rerun()
+            _row_action_bar(ed["tests"], index, "t", "id")
 
 
 # ── Judge config ──────────────────────────────────────────────────────────────
@@ -738,21 +729,6 @@ def _field(block: dict, name: str, cls: type):
     change the user never made, and write the block out.
     """
     return block.get(name, pio.effective_default(cls, name))
-
-
-def _thinking_widget(label_prefix: str, current, key: str) -> None:
-    """Render `thinking` as a closed choice, or as text if the file disagrees.
-
-    api.py normalises exactly "true"/"false"/"default" (booleans included) and
-    passes anything else through verbatim, so an out-of-vocabulary value is
-    shown as-is rather than silently rewritten into one of the three.
-    """
-    current_str = str(current).lower() if isinstance(current, bool) else current
-    if current_str in pio.THINKING_CHOICES:
-        st.selectbox(f"{label_prefix}Thinking", pio.THINKING_CHOICES,
-                     index=pio.THINKING_CHOICES.index(current_str), key=key)
-    else:
-        st.text_input(f"{label_prefix}Thinking (non-standard)", value=str(current), key=key)
 
 
 def _judge_common(block: dict, prefix: str, cls: type, *, safety: bool) -> None:

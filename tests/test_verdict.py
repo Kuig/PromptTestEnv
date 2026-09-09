@@ -24,6 +24,7 @@ from prompttestenv.models import (
 from prompttestenv.config import get_app_config
 from prompttestenv.runner import _generate_output
 from prompttestenv.verdict import (
+    _source_cell,
     DEFAULT_DEBUG_FILENAME,
     MetadataError,
     _build_summary_data,
@@ -407,6 +408,30 @@ class TestAggregateReasoningProfile(_SummaryFixture, unittest.TestCase):
             reasoning_analysis=REASONING_SCOPE_ALL,
         )
         self.assertIn("summary", aggregate)
+
+    def test_an_unreported_flag_beside_a_raw_one_is_mixed_not_raw(self):
+        """The dangerous half: answering "raw" is the one claim _source_cell
+        exists to refuse, because it invites the judge to compare a summary
+        against a real transcript on length and composition."""
+        self.assertEqual(
+            _source_cell([{"reasoning_is_summary": None}, {"reasoning_is_summary": False}]),
+            "mixed",
+        )
+
+    def test_an_unreported_flag_beside_a_summary_one_is_mixed(self):
+        self.assertEqual(
+            _source_cell([{"reasoning_is_summary": None}, {"reasoning_is_summary": True}]),
+            "mixed",
+        )
+
+    def test_an_empty_pool_is_unknown_not_raw(self):
+        self.assertEqual(_source_cell([]), "unknown")
+
+    def test_a_uniform_pool_still_answers_plainly(self):
+        for flag, expected in ((True, "summary"), (False, "raw"), (None, "unknown")):
+            with self.subTest(flag):
+                rows = [{"reasoning_is_summary": flag}] * 3
+                self.assertEqual(_source_cell(rows), expected)
 
     def test_mixed_schemas_raise_a_warning(self):
         row = self._row()

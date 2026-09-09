@@ -6,11 +6,27 @@ from unittest.mock import patch
 
 from prompttestenv.models import LlmResult, GlobalCriteria, JudgeConfig, TestCaseResult
 from prompttestenv.test_judge import (
+    JudgeScore,
+    _any_side_is_local,
     _evaluate_assert,
     _evaluate_llm_judge,
     _evaluate_similarity,
     evaluate_with_judge,
 )
+
+
+class TestJudgeScore(unittest.TestCase):
+    """A NamedTuple, so every _evaluate_* return value must still unpack and
+    compare exactly like the plain (score, reasoning) tuple it replaces."""
+
+    def test_equal_to_the_literal_tuple_it_replaces(self):
+        self.assertEqual(JudgeScore(7, "good"), (7, "good"))
+
+    def test_evaluate_similarity_return_value_unpacks_positionally(self):
+        # Empty response short-circuits before any embedding call.
+        score, reasoning = _evaluate_similarity("target", "  ", JudgeConfig())
+        self.assertIsInstance(score, int)
+        self.assertIsInstance(reasoning, str)
 
 
 class TestEvaluateAssert(unittest.TestCase):
@@ -155,6 +171,53 @@ class TestEvaluateAssert(unittest.TestCase):
         self.assertEqual(score, 6)
 
 
+class TestSequentialGate(unittest.TestCase):
+    """The gate must look at the judge each side actually reaches.
+
+    It read test_judge.provider alone, but only the llm-judge evaluators use
+    that one: similarity and assert embed through similarity_judge, whose
+    default is ollama. A remote test_judge with similarity criteria therefore
+    looked remote and fired two concurrent embedding requests at the local
+    backend, which is what the sequential branch exists to prevent.
+    """
+
+    def _config(self, test_provider, similarity_provider, mode="none"):
+        jc = JudgeConfig()
+        jc.test_judge.provider = test_provider
+        jc.similarity_judge.provider = similarity_provider
+        jc.global_criteria = GlobalCriteria(mode=mode)
+        return jc
+
+    def _prompt(self, judge_type):
+        return TestCaseResult(test_id="t1", prompt="p", criteria="c", judge_type=judge_type)
+
+    def test_a_remote_test_judge_with_local_similarity_is_still_sequential(self):
+        """The case the old gate got wrong."""
+        jc = self._config("google", "ollama")
+        self.assertTrue(_any_side_is_local(self._prompt("similarity"), jc))
+
+    def test_the_global_side_alone_is_enough_to_serialise(self):
+        jc = self._config("google", "ollama", mode="similarity")
+        self.assertTrue(_any_side_is_local(self._prompt("llm-judge"), jc))
+
+    def test_an_assert_side_counts_as_reaching_the_similarity_judge(self):
+        """An assert lambda may call similarity(), which embeds through it."""
+        jc = self._config("google", "ollama")
+        self.assertTrue(_any_side_is_local(self._prompt("assert"), jc))
+
+    def test_all_remote_stays_parallel(self):
+        jc = self._config("google", "google")
+        self.assertFalse(_any_side_is_local(self._prompt("similarity"), jc))
+
+    def test_a_local_test_judge_is_still_detected(self):
+        jc = self._config("ollama", "google")
+        self.assertTrue(_any_side_is_local(self._prompt("llm-judge"), jc))
+
+    def test_a_global_mode_of_none_reaches_no_provider(self):
+        jc = self._config("google", "ollama", mode="none")
+        self.assertFalse(_any_side_is_local(self._prompt("llm-judge"), jc))
+
+
 class TestEvaluateLlmJudge(unittest.TestCase):
     def _judge_config(self, template="[{user_prompt}] [{candidate_response}] [{criteria}]"):
         jc = JudgeConfig()
@@ -178,6 +241,43 @@ class TestEvaluateLlmJudge(unittest.TestCase):
             score, reasoning = _evaluate_llm_judge(prompt, "resp", jc)
         self.assertEqual(score, 8)
         self.assertEqual(reasoning, "good job")
+
+    def test_the_judge_retries_once_not_the_client_default(self):
+        """An abandoned judge worker outlives the deadline, so its retries are
+        attempts the run has already discarded but still pays for."""
+        jc = self._judge_config()
+        prompt = TestCaseResult(test_id="t1", prompt="p", criteria="c")
+        with patch("prompttestenv.test_judge.get_llm_response") as mock_llm:
+            mock_llm.return_value = LlmResult(text=json.dumps({"score": 7, "reasoning": "r"}))
+            _evaluate_llm_judge(prompt, "resp", jc)
+        self.assertEqual(mock_llm.call_args.kwargs["max_retries"], 1)
+
+    def test_a_malformed_template_is_reported_instead_of_raising(self):
+        """str.format raises three things, and all three must reach the caller
+        as the sentinel rather than escaping.
+
+        An escaping exception reaches the dispatcher's own except, which zeroes
+        the global score alongside the task one - including a global score the
+        parallel branch has already computed and paid for.
+        """
+        cases = {
+            "missing field": "{nope} {candidate_response} {criteria}",
+            "positional": "{0} {user_prompt} {candidate_response} {criteria}",
+            "unbalanced brace": "{user_prompt} { {candidate_response} {criteria}",
+        }
+        prompt = TestCaseResult(test_id="t1", prompt="p", criteria="c")
+        for label, template in cases.items():
+            with self.subTest(label):
+                jc = self._judge_config(template=template)
+                with patch("prompttestenv.test_judge.get_llm_response") as mock_llm:
+                    score, reasoning = _evaluate_llm_judge(prompt, "resp", jc)
+                self.assertEqual(score, -1)
+                # The prefix is load-bearing: progress.is_failed_eval matches on
+                # it, which is what makes the event retryable.
+                self.assertTrue(
+                    reasoning.startswith("Error in evaluation template"), reasoning,
+                )
+                mock_llm.assert_not_called()
 
     def test_system_note_leads_the_prompt_and_names_the_file(self):
         jc = self._judge_config()
@@ -236,7 +336,10 @@ class TestEvaluateLlmJudge(unittest.TestCase):
             mock_llm.return_value = LlmResult(text="not json")
             score, reasoning = _evaluate_llm_judge(prompt, "resp", jc)
         self.assertEqual(score, -1)
-        self.assertIn("failed", reasoning)
+        # parse_json_object swallows the JSONDecodeError and returns None
+        # rather than letting it reach the dispatcher's generic except, so
+        # the message names the real problem instead of "evaluation failed".
+        self.assertIn("did not parse", reasoning)
 
     def test_out_of_range_score_is_clamped_to_1_10(self):
         jc = self._judge_config()

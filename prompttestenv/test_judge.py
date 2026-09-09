@@ -9,6 +9,7 @@ import re
 import statistics
 import string
 from dataclasses import dataclass
+from typing import NamedTuple
 
 import prompttestenv.logger as logger
 from prompttestenv.api import (
@@ -16,6 +17,7 @@ from prompttestenv.api import (
     get_llm_response,
     get_text_embedding,
     is_local_provider,
+    parse_json_object,
 )
 from prompttestenv.models import (
     TestCaseResult,
@@ -26,13 +28,41 @@ from prompttestenv.models import (
     GLOBAL_MODE_NONE,
 )
 
+# The judge retries once, not the client default of five. call_with_timeout
+# abandons its worker at the deadline now instead of waiting for it, so an
+# abandoned judge call keeps running on its own: at five retries over two calls
+# it would go on buying attempts the run has already thrown away. Same argument
+# generation.py makes with GENERATION_MAX_RETRIES, arriving at a different
+# number because the judge is not on the measured clock.
+#
+# One consequence worth knowing: the outer deadline is max_response_timeout_
+# seconds for the whole of evaluate_with_judge, so this retry cannot rescue a
+# call that TIMES OUT - we give up before the second attempt could finish. It
+# buys back the fast failures, a 429 or a 502 returned immediately, which fit
+# inside the window. max_response_timeout_seconds stays the ceiling for one
+# evaluation.
+JUDGE_MAX_RETRIES = 1
+
+
+class JudgeScore(NamedTuple):
+    """A single evaluator's verdict: score is 1-10, or -1 for "not measured".
+
+    The return type of the three _evaluate_* functions. Coexists with, and is
+    not a replacement for, the four-key dict evaluate_with_judge builds a few
+    lines below — that dict is the task/global pair together, this is one
+    side of it, and neither shape is what progress.jsonl stores.
+    """
+
+    score: int
+    reasoning: str
+
 
 def _evaluate_llm_judge(
     prompt: TestCaseResult | TempPrompt,
     candidate_response: str,
     judge_config: JudgeConfig,
     local_media_paths: list[str] | None = None,
-) -> tuple[int, str]:
+) -> JudgeScore:
     """Execute evaluation using the judge LLM.
 
     Args:
@@ -58,6 +88,17 @@ def _evaluate_llm_judge(
         )
     except KeyError as exc:
         return -1, f"Error in evaluation template: missing field {exc}"
+    except (IndexError, ValueError) as exc:
+        # str.format raises three things, not one: IndexError for a positional
+        # {} or {0}, ValueError for an unbalanced brace. A JSON example inside
+        # the template is the common way to hit the second. Left uncaught they
+        # reached the dispatcher's own except, which zeroes the global score
+        # too - including one already computed and paid for. reasoning.py and
+        # projectio.check_evaluation_template already catch all three.
+        #
+        # The "Error in evaluation template" prefix must stay byte-identical:
+        # progress.is_failed_eval matches on it to make the event retryable.
+        return -1, f"Error in evaluation template: {exc}"
 
     if local_media_paths:
         # Prepended, not appended: a provider without native file support
@@ -91,11 +132,10 @@ def _evaluate_llm_judge(
             response_mime_type="application/json",
             disable_safety=disable_safety,
             max_response_timeout_seconds=judge_config.max_response_timeout_seconds,
+            max_retries=JUDGE_MAX_RETRIES,
         )
-        parsed = json.loads(result.text)
-        if isinstance(parsed, list):
-            parsed = parsed[0] if parsed and isinstance(parsed[0], dict) else {}
-        if not isinstance(parsed, dict):
+        parsed = parse_json_object(result.text)
+        if parsed is None:
             return -1, f"Error: LLM response did not parse as a dict: {result.text}"
 
         reasoning = parsed.get("reasoning", "")
@@ -118,7 +158,7 @@ def _evaluate_similarity(
     criteria: str,
     candidate_response: str,
     judge_config: JudgeConfig,
-) -> tuple[int, str]:
+) -> JudgeScore:
     """Execute similarity evaluation using embedding cosine similarity.
 
     Args:
@@ -158,7 +198,7 @@ def _evaluate_assert(
     criteria: str,
     candidate_response: str,
     judge_config: JudgeConfig,
-) -> tuple[int, str]:
+) -> JudgeScore:
     """Execute evaluation using a vanilla Python assertion lambda.
 
     Args:
@@ -234,6 +274,51 @@ class TempPrompt:
     criteria: str
 
 
+def _side_provider(kind: str, judge_config: JudgeConfig) -> str | None:
+    """Which provider one side of an evaluation will actually contact.
+
+    Args:
+        kind: A judge_type, or a global_criteria mode.
+        judge_config: JudgeConfig instance.
+
+    Returns:
+        The provider name, or None when the side makes no call at all.
+    """
+    if kind == JUDGE_TYPE_LLM:
+        return judge_config.test_judge.provider
+    if kind == JUDGE_TYPE_SIMILARITY:
+        return judge_config.similarity_judge.provider
+    if kind == JUDGE_TYPE_ASSERT:
+        # An assert lambda may call similarity() and embed through the same
+        # judge, so it counts as reaching that provider.
+        return judge_config.similarity_judge.provider
+    return None
+
+
+def _any_side_is_local(prompt, judge_config: JudgeConfig) -> bool:
+    """Whether either side of this evaluation reaches a local backend.
+
+    The gate used to read test_judge.provider alone, but that is only the
+    judge the "llm-judge" evaluators use: "similarity" and "assert" embed
+    through similarity_judge, whose default is ollama. A project judging with
+    a remote test_judge and similarity criteria therefore looked remote and
+    fired two concurrent embedding requests at the local backend, which is
+    exactly what the sequential branch exists to prevent.
+
+    Args:
+        prompt: The TestCaseResult or TempPrompt being evaluated.
+        judge_config: JudgeConfig instance.
+
+    Returns:
+        True if either the task or the global side is served locally.
+    """
+    sides = (
+        _side_provider(getattr(prompt, "judge_type", JUDGE_TYPE_LLM), judge_config),
+        _side_provider(getattr(judge_config.global_criteria, "mode", GLOBAL_MODE_NONE), judge_config),
+    )
+    return any(p and is_local_provider(p) for p in sides)
+
+
 def evaluate_with_judge(
     prompt: TestCaseResult,
     candidate_response: str,
@@ -256,6 +341,21 @@ def evaluate_with_judge(
     Returns:
         Dict with keys: score, reasoning, global_score, global_reasoning.
     """
+    def _guard(side: str, evaluate):
+        """Contain one side's failure to that side.
+
+        The dispatcher's own except catches whatever escapes either evaluator
+        and zeroes BOTH scores. In the parallel branch that threw away a global
+        score already computed and paid for, and in the sequential branch the
+        global side was never even attempted: the same fault produced two
+        different outcomes depending on where the judge happened to run.
+        """
+        try:
+            return evaluate()
+        except Exception as exc:
+            logger.log_error(f"{side} evaluation failed: {exc}")
+            return -1, f"Error: {side} evaluation failed: {exc}"
+
     def run_task_eval():
         judge_type = getattr(prompt, "judge_type", JUDGE_TYPE_LLM)
         if judge_type == JUDGE_TYPE_LLM:
@@ -286,9 +386,9 @@ def evaluate_with_judge(
         # A local backend serves one model at a time, so running the task and
         # global judges concurrently would only queue them against each other,
         # or force a second load into VRAM.
-        if is_local_provider(judge_config.test_judge.provider):
-            score, reasoning = run_task_eval()
-            global_score, global_reasoning = run_global_eval()
+        if _any_side_is_local(prompt, judge_config):
+            score, reasoning = _guard("Task", run_task_eval)
+            global_score, global_reasoning = _guard("Global", run_global_eval)
             return {
                 "score": score,
                 "reasoning": reasoning,
@@ -297,8 +397,8 @@ def evaluate_with_judge(
             }
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-            future_task = executor.submit(run_task_eval)
-            future_global = executor.submit(run_global_eval)
+            future_task = executor.submit(_guard, "Task", run_task_eval)
+            future_global = executor.submit(_guard, "Global", run_global_eval)
             score, reasoning = future_task.result()
             global_score, global_reasoning = future_global.result()
 

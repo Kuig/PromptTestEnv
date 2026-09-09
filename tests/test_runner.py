@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from prompttestenv.models import (
+    OUTPUT_MODES,
     Candidate,
     CandidatePerformance,
     GlobalCriteria,
@@ -245,6 +246,34 @@ class TestRunProject(LoggerResetTestCase):
         result = run_project(self.project_dir, output_mode="winner_only")
         self.assertIn("configuration has changed", result)
 
+    def test_a_config_edited_mid_run_never_renames_the_log(self):
+        """The mid-run re-read is a pure read and must not judge the log.
+
+        Two Streamlit apps are meant to run side by side, one executing and one
+        editing, so a config saved during a benchmark is ordinary. A plain load
+        would rename the log the phases just filled to .bak, throwing away
+        every paid call, and append_event would then recreate it with no meta
+        line - which makes the NEXT run drop its first real event.
+        """
+        def _edit_the_config(*args, **kwargs):
+            path = Path(self.project_dir) / "judge_config.json"
+            data = json.loads(path.read_text(encoding="utf-8"))
+            data["repetitions"] = data.get("repetitions", 1) + 6
+            path.write_text(json.dumps(data), encoding="utf-8")
+
+        with patch("prompttestenv.runner.run_generation_phase") as mock_gen, \
+             patch("prompttestenv.runner.run_evaluation_phase", side_effect=_edit_the_config), \
+             patch("prompttestenv.runner.generate_verdict", return_value="V"), \
+             patch("prompttestenv.runner.teardown"):
+            mock_gen.return_value = [{"fake": "pending_eval"}]
+            run_project(self.project_dir, output_mode="md")
+
+        self.assertFalse(
+            (Path(self.project_dir) / "progress.jsonl.bak").exists(),
+            "the mid-run re-read renamed the log it had just written",
+        )
+        self.assertTrue((Path(self.project_dir) / "progress.jsonl").exists())
+
     def _seed_failed_run(self, with_verdict=True):
         """A finished run whose only repetition failed on both phases."""
         from prompttestenv.progress import calculate_config_hash
@@ -430,6 +459,164 @@ class TestRunProject(LoggerResetTestCase):
              patch("prompttestenv.runner.teardown"):
             result = run_project(self.project_dir, output_mode="winner_only")
         self.assertIn("No results produced", result)
+
+
+class TestOutputModeGate(LoggerResetTestCase):
+    """An unknown output_mode is refused, not rendered as HTML.
+
+    argparse was the only check, so the library, the MCP tools and both GUIs
+    each accepted any string and fell through to a full HTML report. For an
+    agent driving this over MCP that silently defeats the one lever the tool
+    docs offer for keeping the report out of its context.
+    """
+
+    def setUp(self):
+        self.project_dir = make_temp_project()
+        self.addCleanup(shutil.rmtree, self.project_dir, ignore_errors=True)
+
+    def test_run_project_refuses_before_touching_anything(self):
+        with patch("prompttestenv.runner.Candidate.load_all") as mock_load:
+            result = run_project(self.project_dir, output_mode="markdown")
+        self.assertTrue(result.startswith("Error: unknown output_mode"), result)
+        mock_load.assert_not_called()
+
+    def test_the_check_is_case_sensitive(self):
+        self.assertTrue(run_project(self.project_dir, output_mode="HTML").startswith("Error:"))
+
+    def test_render_from_progress_refuses_too(self):
+        result = render_from_progress(self.project_dir, output_mode="markdown")
+        self.assertTrue(result.startswith("Error: unknown output_mode"), result)
+
+    def test_every_documented_mode_is_accepted(self):
+        for mode in OUTPUT_MODES:
+            with self.subTest(mode):
+                result = render_from_progress(self.project_dir, output_mode=mode)
+                self.assertFalse(result.startswith("Error: unknown output_mode"), result)
+
+    def test_an_unlisted_mode_is_never_silently_rendered_as_html(self):
+        """_generate_output used to end in a bare call to the HTML renderer."""
+        with patch("prompttestenv.runner.generate_html_report") as mock_html:
+            out = _generate_output(
+                "markdown", [], [], self.project_dir, JudgeConfig(), GlobalCriteria(),
+                ProgressState(verdict="stored"),
+            )
+        mock_html.assert_not_called()
+        self.assertTrue(out.startswith("Error:"), out)
+
+
+class TestConfigValidationGate(LoggerResetTestCase):
+    """run_project runs the same pre-flight the editing surfaces run.
+
+    Without it a project both editors call invalid could still be run, and the
+    most expensive case is silent: two candidates sharing a name key the same
+    progress.jsonl events, so they merge into one and the report describes
+    results that never existed.
+    """
+
+    def setUp(self):
+        self.project_dir = make_temp_project()
+        self.addCleanup(shutil.rmtree, self.project_dir, ignore_errors=True)
+
+    def _write(self, name, data):
+        (Path(self.project_dir) / name).write_text(json.dumps(data), encoding="utf-8")
+
+    def _json(self, name):
+        return json.loads((Path(self.project_dir) / name).read_text(encoding="utf-8"))
+
+    def test_a_duplicate_candidate_name_aborts_before_any_llm_call(self):
+        cands = self._json("candidates.json")
+        cands[1]["name"] = cands[0]["name"]
+        self._write("candidates.json", cands)
+
+        with patch("prompttestenv.runner.run_generation_phase") as mock_gen:
+            result = run_project(self.project_dir, output_mode="winner_only")
+
+        self.assertTrue(result.startswith("Error:"), result)
+        self.assertIn("used more than once", result)
+        mock_gen.assert_not_called()
+        # The gate precedes ProgressState.load, so a refused project is not
+        # even given an empty log.
+        self.assertFalse((Path(self.project_dir) / "progress.jsonl").exists())
+
+    def test_a_malformed_test_judge_block_is_refused_instead_of_crashing(self):
+        """JudgeConfig.load raises AttributeError on this, which the old except
+        tuple did not catch: the run died with a traceback."""
+        self._write("judge_config.json", {"test_judge": "oops"})
+
+        result = run_project(self.project_dir, output_mode="winner_only")
+
+        self.assertTrue(result.startswith("Error:"), result)
+        self.assertIn("must be an object", result)
+
+    def test_every_problem_is_listed_not_just_the_first(self):
+        """A pre-flight that reveals one of four duplicates costs four runs."""
+        cands = self._json("candidates.json")
+        cands[1]["name"] = cands[0]["name"]
+        self._write("candidates.json", cands)
+        tests = self._json("test_cases.json")
+        tests[1]["id"] = tests[0]["id"]
+        self._write("test_cases.json", tests)
+
+        result = run_project(self.project_dir, output_mode="winner_only")
+
+        self.assertIn("Candidate name", result)
+        self.assertIn("Test case id", result)
+
+    def test_a_warning_only_project_still_runs(self):
+        """Warnings inform, they never block. Half the decision rests on this."""
+        cands = self._json("candidates.json")
+        cands[0]["system_prompt_file"] = "not_there.txt"
+        self._write("candidates.json", cands)
+
+        with patch("prompttestenv.runner.run_generation_phase") as mock_gen, \
+             patch("prompttestenv.runner.run_evaluation_phase"), \
+             patch("prompttestenv.runner.generate_verdict", return_value="V"), \
+             patch("prompttestenv.runner.teardown"):
+            mock_gen.return_value = [{"fake": "pending_eval"}]
+            run_project(self.project_dir, output_mode="md")
+
+        mock_gen.assert_called_once()
+
+    def test_the_gate_does_not_promote_a_missing_attachment_to_its_own_error(self):
+        """validate warns about anything outside test_files/, which is a lint on
+        the editor's convention. _missing_attachments is what decides whether a
+        declared file actually exists, and it accepts any path the run can read.
+        Merging the two would refuse a project that works."""
+        data_dir = Path(self.project_dir) / "data"
+        data_dir.mkdir()
+        (data_dir / "note.txt").write_text("ground truth", encoding="utf-8")
+        tests = self._json("test_cases.json")
+        tests[0]["file"] = "data/note.txt"
+        self._write("test_cases.json", tests)
+
+        with patch("prompttestenv.runner.run_generation_phase") as mock_gen, \
+             patch("prompttestenv.runner.run_evaluation_phase"), \
+             patch("prompttestenv.runner.generate_verdict", return_value="V"), \
+             patch("prompttestenv.runner.teardown"):
+            mock_gen.return_value = [{"fake": "pending_eval"}]
+            result = run_project(self.project_dir, output_mode="md")
+
+        self.assertNotIn("Error", result)
+        mock_gen.assert_called_once()
+
+    def test_render_skips_the_gate(self):
+        """render only consumes stored results, so it must keep working on a
+        project the gate would refuse."""
+        from prompttestenv.progress import calculate_config_hash
+        cands = self._json("candidates.json")
+        cands[1]["name"] = cands[0]["name"]
+        self._write("candidates.json", cands)
+        (Path(self.project_dir) / "progress.jsonl").write_text(
+            json.dumps({"type": "meta", "config_hash": calculate_config_hash(self.project_dir)})
+            + "\n"
+            + json.dumps({"type": "verdict", "content": "Stored verdict."})
+            + "\n",
+            encoding="utf-8",
+        )
+
+        result = render_from_progress(self.project_dir, output_mode="md")
+
+        self.assertNotIn("invalid project configuration", result)
 
 
 class TestAnalyzeProject(LoggerResetTestCase):

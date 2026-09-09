@@ -6,6 +6,7 @@ from unittest.mock import patch
 from types import SimpleNamespace
 
 from prompttestenv.generation import run_generation_phase
+from prompttestenv.progress import GEN_ERROR_TEXT, GEN_TIMEOUT_TEXT, is_failed_gen
 from testutils import ResidencyResetTestCase
 from prompttestenv.models import (
     Candidate,
@@ -203,6 +204,56 @@ class TestRunGenerationPhaseTimeout(ResidencyResetTestCase):
     def test_timeout_does_not_evict_a_remote_model_either(self):
         _, mock_unload = self._timed_out_run("google")
         mock_unload.assert_not_called()
+
+
+class TestRunGenerationPhaseProviderError(ResidencyResetTestCase):
+    """A provider that raises must not end the benchmark.
+
+    call_ai raises once its retries are spent, and this phase passes
+    GENERATION_MAX_RETRIES = 0, so before this a single 429 ended the whole run
+    with a traceback. No test covered the path, which is why the gap survived.
+    """
+
+    def _failed_run(self):
+        jc = _judge_config()
+        results = [_result()]
+        events = []
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("provider down")
+
+        with patch("prompttestenv.generation.get_llm_response", side_effect=boom),              patch("prompttestenv.generation.warm_up_for_run"),              patch("prompttestenv.generation.append_event", side_effect=lambda _d, e: events.append(e)):
+            pending = run_generation_phase(
+                [_candidate()], results, jc, "/fake/project", ProgressState()
+            )
+        return pending, events
+
+    def test_the_run_survives_and_stores_the_error_placeholder(self):
+        pending, events = self._failed_run()
+        self.assertEqual(pending[0]["output"], GEN_ERROR_TEXT)
+        self.assertEqual(events[0]["output"], GEN_ERROR_TEXT)
+
+    def test_the_placeholder_is_not_the_timeout_one(self):
+        """Reusing it would make the log claim a timeout for a 429."""
+        _, events = self._failed_run()
+        self.assertNotEqual(events[0]["output"], GEN_TIMEOUT_TEXT)
+
+    def test_the_exception_is_kept_out_of_the_payload_but_not_lost(self):
+        """output is compared by equality and is what the judge scores, so the
+        message goes in its own field."""
+        _, events = self._failed_run()
+        self.assertNotIn("provider down", events[0]["output"])
+        self.assertIn("provider down", events[0]["error"])
+
+    def test_elapsed_is_not_measured_rather_than_a_fast_failure_time(self):
+        """A 429 returned in milliseconds measures nothing about the model, and
+        calculate_stats filters anything below zero out of time_mean."""
+        _, events = self._failed_run()
+        self.assertEqual(events[0]["elapsed"], -1.0)
+
+    def test_the_stored_event_is_retryable(self):
+        _, events = self._failed_run()
+        self.assertTrue(is_failed_gen(events[0]))
 
 
 class TestRunGenerationPhaseWarmUp(unittest.TestCase):

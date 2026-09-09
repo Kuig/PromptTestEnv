@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import concurrent.futures
+import json
 import math
+import threading
 from typing import Any, Callable
 
 from unified_ai_client import (
@@ -19,11 +20,28 @@ from prompttestenv.config import get_app_config
 from prompttestenv.models import LlmResult
 
 # Added to max_response_timeout_seconds to derive the provider-level network
-# timeout: it must expire slightly AFTER the outer call_with_timeout deadline,
-# never before it (which would trigger call_ai's own retries prematurely) and
-# never much later (which would leave an abandoned thread hanging around long
-# after PromptTestEnv itself has given up).
-PROVIDER_TIMEOUT_BUFFER_SECONDS = 5
+# timeout. Zero, so the abandoned call's socket closes at the same moment we
+# stop waiting for it.
+#
+# It used to be 5, then 2, to guarantee that OUR deadline expired first: if the
+# provider's fired first, call_ai raised, and generation.py had no except around
+# get_llm_response, so a plain timeout surfaced as a traceback instead of a
+# placeholder. generation.py now catches that and writes GEN_ERROR_TEXT, so
+# losing the race costs nothing and the buffer has no job left.
+#
+# What the buffer cost is why it is gone: until the provider timeout closes the
+# socket, the abandoned call is still running, and on Ollama the next request is
+# issued the moment we log the timeout. For the length of the buffer two
+# requests were live against the same model, and with OLLAMA_NUM_PARALLEL=1 the
+# second one queued, putting that wait inside the next measured elapsed.
+#
+# What remains is a boundary case, and it is diagnostic only: right at the
+# deadline the two timers are simultaneous, so a genuine timeout can be recorded
+# as GEN_ERROR_TEXT if the provider's exception lands first. Both are
+# placeholders and both are retryable. In practice ours still expires first,
+# because the provider's timer starts later, at the socket operation, downstream
+# of building the payload.
+PROVIDER_TIMEOUT_BUFFER_SECONDS = 0
 
 # Ollama's keep_alive is the idle timer that starts when a request FINISHES,
 # not a budget for the request itself: a model serving a call is never evicted
@@ -177,10 +195,10 @@ def get_llm_response(
         max_response_timeout_seconds: The judge_config value that
             call_with_timeout enforces around this call from outside. When
             given, the underlying network timeout is set to this value plus
-            PROVIDER_TIMEOUT_BUFFER_SECONDS, so the provider layer never times
-            out before the outer deadline (which would trigger call_ai's own
-            retries prematurely) nor leaves the call hanging around long after
-            it. When None, call_ai's own default applies. It has no bearing on
+            PROVIDER_TIMEOUT_BUFFER_SECONDS, which is 0, so the socket of a
+            call we have given up on closes when we stop waiting rather than
+            outliving the deadline into the next measured call. When None,
+            call_ai's own default applies. It has no bearing on
             how long a local model stays resident: see LOCAL_KEEP_ALIVE.
         max_retries: How many times call_ai retries a retryable failure before
             giving up. Defaults to 5 for judge/verdict/reasoning calls;
@@ -234,7 +252,10 @@ def get_llm_response(
         output_tokens=response.output_tokens,
         reasoning_tokens=response.reasoning_tokens,
         reasoning_text=response.reasoning_text or "",
-        reasoning_is_summary=bool(getattr(response, "reasoning_is_summary", False)),
+        # Direct, not getattr with a default: AiResponse declares this field,
+        # so a defensive read would quietly turn a rename in the client into
+        # "raw" on every trace instead of failing where we could see it.
+        reasoning_is_summary=bool(response.reasoning_is_summary),
     )
 
 
@@ -255,7 +276,10 @@ def _note_local_model_resident(provider: str, model_name: str) -> None:
 
 
 def release_previous_candidate(provider: str, model_name: str) -> None:
-    """Free the VRAM of the candidate that ran before this one.
+    """Free the VRAM of whatever this process last pinned.
+
+    Usually the candidate that ran before this one, which is where the name
+    comes from, but a judge preload goes through it too.
 
     Local models are pinned for the whole run (see LOCAL_KEEP_ALIVE), so
     something has to let them go, or every model a benchmark touches would be
@@ -363,6 +387,21 @@ def preload_model_for_run(
         context_size: Context window to allocate, in tokens. Ignored when None.
     """
     if provider.lower() == "ollama":
+        # A preload is a load, so it follows the same discipline as
+        # get_llm_response and warm_up_for_run: release whatever this process
+        # has pinned, then record what is resident now. This was the one loader
+        # exempt from it, and the cost was real. Without the release, phase 3
+        # ran its reasoning judge while the last candidate's model still held
+        # VRAM; without the record, release_previous_candidate could never let
+        # the judge's own model go, so it stayed pinned until teardown.
+        #
+        # release_previous_candidate returns early when the slot already holds
+        # this pair, so a judge reusing the candidate's model pays no reload.
+        #
+        # The guard is == "ollama" rather than is_local_provider because
+        # context_size is an Ollama notion and that is all this function is
+        # still for. Another local backend does not come through here at all.
+        release_previous_candidate(provider, model_name)
         extra = {"context_size": context_size} if context_size else {}
         preload_model(
             provider=provider,
@@ -370,6 +409,7 @@ def preload_model_for_run(
             keep_alive=LOCAL_KEEP_ALIVE,
             **extra,
         )
+        _note_local_model_resident(provider, model_name)
 
 
 def teardown() -> None:
@@ -407,7 +447,37 @@ def call_with_timeout(
     fn_kwargs: dict | None = None,
     timeout: float,
 ) -> tuple[Any, bool]:
-    """Run fn in a single-worker executor with a timeout.
+    """Run fn in an abandonable daemon thread with a real deadline.
+
+    A single daemon thread rather than a ThreadPoolExecutor, because the pool
+    could not deliver the deadline it existed for. `with ThreadPoolExecutor(...)`
+    calls shutdown(wait=True) on exit, so returning after a timeout still waited
+    for the very call it had given up on: measured, a 0.5s deadline over a 3s
+    call returned at 3.0s. shutdown(wait=False) only moves that block, since
+    concurrent.futures registers an atexit hook that joins its workers - the CLI
+    would print the report path and then hang until the socket died. A daemon
+    thread is the only shape that is abandonable in both places, and the pool
+    was never a pool anyway: one submit, one worker, no reuse.
+
+    Abandoning the worker is safe HERE specifically because it writes nothing
+    durable. append_event is called by our caller, after this returns, never
+    inside fn; the worker only touches process-lifetime caches (the residency
+    slot, UnifiedAiClient's loaded-model registry, GoogleProvider's upload
+    cache), all of which die with the process.
+
+    On the generation path the worker does not outlive the deadline at all:
+    max_retries is 0 and PROVIDER_TIMEOUT_BUFFER_SECONDS is 0, so the provider
+    timeout closes the socket at the same moment we stop waiting, and an
+    abandoned generation cannot overlap the next measured call. The judge path
+    is the one that can, since one deadline covers two calls with a retry each.
+    Note the limit on Google: UnifiedAiClient wraps its SDK call in a pool of
+    its own whose threads are not daemons, so there the process exit is bounded
+    by the SDK, not by us.
+
+    Relying on UnifiedAiClient's own timeout instead was considered and does not
+    work: it is per attempt, not total ((max_retries + 1) x timeout plus
+    backoff), it is a socket timeout covering only the HTTP leg, and it cannot
+    bound evaluate_with_judge, which is two calls plus a nested pool.
 
     This deliberately does **not** touch model residency. It used to release
     the model on timeout, on the theory that a call this process had given up
@@ -437,11 +507,74 @@ def call_with_timeout(
     Returns:
         Tuple of (result, timed_out). When timed_out is True, result is None
         and the caller builds its own fallback value.
+
+    Raises:
+        BaseException: Whatever fn raised, re-raised in the calling thread.
+            Future.result() gave this for free and callers depend on it: a
+            phase that fails must still propagate out of run_project.
     """
     fn_kwargs = fn_kwargs or {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(fn, *args, **fn_kwargs)
+    outcome: list[tuple[Any, BaseException | None]] = []
+
+    def _run() -> None:
         try:
-            return future.result(timeout=timeout), False
-        except concurrent.futures.TimeoutError:
-            return None, True
+            outcome.append((fn(*args, **fn_kwargs), None))
+        except BaseException as exc:  # noqa: BLE001 - mirrors Future.result()
+            outcome.append((None, exc))
+
+    worker = threading.Thread(target=_run, name="ptenv-timed-call", daemon=True)
+    worker.start()
+    worker.join(timeout)
+
+    # A non-empty `outcome` is the exact discriminant, not worker.is_alive():
+    # the thread is still alive for a moment after appending its result, so
+    # is_alive() would report a timeout for a call that had just succeeded.
+    if not outcome:
+        return None, True
+    result, exc = outcome[0]
+    if exc is not None:
+        raise exc
+    return result, False
+
+
+def _strip_code_fence(text: str) -> str:
+    """Strip a wrapping Markdown code fence from LLM output, if present.
+
+    Args:
+        text: Response text, already .strip()-ed.
+
+    Returns:
+        text with the first/last fence lines removed if text starts with
+        ``` and ends with a lone ``` line; otherwise text unchanged.
+    """
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if len(lines) >= 2 and lines[-1].strip() == "```":
+            return "\n".join(lines[1:-1]).strip()
+    return text
+
+
+def parse_json_object(text: str) -> dict | None:
+    """Parse a judge's JSON reply, tolerating a fence or a one-element list.
+
+    Every judge call asks for response_mime_type="application/json", which
+    makes a wrapped or list-wrapped reply the rare case rather than the
+    common one, but it is not guaranteed for every backend the way it is for
+    Google: Ollama and OpenAI-compatible providers do not enforce JSON mode.
+    Without this, a wrapped reply loses an already-paid-for call silently.
+
+    Args:
+        text: Raw response text, not yet stripped or parsed.
+
+    Returns:
+        The parsed dict, or None if the text is not valid JSON, or parses to
+        something that is neither a dict nor a list whose first element is one.
+    """
+    stripped = _strip_code_fence(text.strip())
+    try:
+        data = json.loads(stripped)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if isinstance(data, list):
+        data = data[0] if data and isinstance(data[0], dict) else None
+    return data if isinstance(data, dict) else None

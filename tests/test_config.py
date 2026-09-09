@@ -88,6 +88,37 @@ class TestInitProject(LoggerResetTestCase):
         self.assertEqual(prompt_path.read_text(encoding="utf-8"), "Be nice.")
 
 
+class TestInitProjectLineEndings(unittest.TestCase):
+    """Every scaffolded file is LF, on every platform.
+
+    The eight open(..., "w") here had no newline= argument, so Python turned
+    each "
+" into CRLF on Windows while projectio.seed_project wrote the same
+    templates with newline="
+". The two scaffolds therefore produced different
+    bytes for the same project, and three of these files are hashed as raw
+    bytes to decide whether a run may resume.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="prompttestenv_test_")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.project_dir = os.path.join(self.tmp, "proj")
+        cwd = os.getcwd()
+        os.chdir(self.tmp)          # secrets.json is written into the CWD
+        self.addCleanup(os.chdir, cwd)
+        config.init_project(self.project_dir)
+
+    def test_no_scaffolded_file_holds_crlf(self):
+        found = []
+        for root, _dirs, files in os.walk(self.project_dir):
+            for name in files:
+                path = os.path.join(root, name)
+                if b"\r\n" in open(path, "rb").read():
+                    found.append(os.path.relpath(path, self.project_dir))
+        self.assertEqual(found, [], f"CRLF in {found}")
+
+
 class TestSecretsScaffold(LoggerResetTestCase):
     """Credentials are UnifiedAiClient's job; this project only scaffolds the file.
 

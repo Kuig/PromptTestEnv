@@ -5,8 +5,45 @@ import time
 import prompttestenv.logger as logger
 from prompttestenv.api import call_with_timeout, preload_model_for_run
 from prompttestenv.progress import JUDGE_TIMEOUT_TEXT, append_event
-from prompttestenv.models import JudgeConfig, ProgressState
+from prompttestenv.models import JUDGE_TYPE_LLM, JudgeConfig, ProgressState, RunKey
 from prompttestenv.test_judge import evaluate_with_judge
+
+
+def _eval_key(task: dict) -> RunKey:
+    """The (candidate, test, repetition) key of one pending evaluation."""
+    return RunKey(task["cand_id"], task["test_result"].test_id, task["rep"])
+
+
+def _test_judge_will_be_called(
+    pending_evals: list[dict],
+    judge_config: JudgeConfig,
+    progress_state: ProgressState,
+    redo_keys: frozenset[RunKey],
+) -> bool:
+    """Whether any evaluation this phase runs actually reaches the test_judge.
+
+    Only the "llm-judge" evaluators do: "similarity" embeds through
+    judge_config.similarity_judge and "assert" is a lambda over the response
+    text. The resume state counts too, since a key already scored and not being
+    redone makes no call at all, so a fully resumed phase preloads nothing.
+
+    Args:
+        pending_evals: The evaluations this phase was handed.
+        judge_config: JudgeConfig instance.
+        progress_state: Current progress state.
+        redo_keys: Keys to be judged again despite being in the log.
+
+    Returns:
+        True if at least one call will go to the test_judge.
+    """
+    global_is_llm = getattr(judge_config.global_criteria, "mode", None) == JUDGE_TYPE_LLM
+    for task in pending_evals:
+        key = _eval_key(task)
+        if key in progress_state.completed_eval and key not in redo_keys:
+            continue
+        if global_is_llm or task["test_result"].judge_type == JUDGE_TYPE_LLM:
+            return True
+    return False
 
 
 def run_evaluation_phase(
@@ -14,7 +51,7 @@ def run_evaluation_phase(
     judge_config: JudgeConfig,
     project_dir: str,
     progress_state: ProgressState,
-    redo_keys: frozenset[tuple[str, str, int]] = frozenset(),
+    redo_keys: frozenset[RunKey] = frozenset(),
 ) -> None:
     """Execute Phase 2: judge evaluation of all generated responses.
 
@@ -34,10 +71,13 @@ def run_evaluation_phase(
     pass_media = judge_config.pass_media_to_judge
     eval_delay = judge_config.evaluation_delay_seconds
 
-    j_provider = judge_config.test_judge.provider
-    j_model = judge_config.test_judge.model
-
-    preload_model_for_run(j_provider, j_model)
+    # Conditional: only the llm-judge evaluators reach test_judge, so a project
+    # scoring everything with similarity or assert used to load a model into
+    # VRAM that no call would ever use, beside the one that would.
+    if _test_judge_will_be_called(pending_evals, judge_config, progress_state, redo_keys):
+        preload_model_for_run(
+            judge_config.test_judge.provider, judge_config.test_judge.model
+        )
 
     best_scores: dict = {}
     current_cand = None
@@ -64,7 +104,7 @@ def run_evaluation_phase(
         m_paths = test_result.media_file_paths if pass_media else None
 
         # Resume logic
-        key = (cand_id, test_result.test_id, rep)
+        key = _eval_key(eval_task)
         if key in progress_state.completed_eval and key not in redo_keys:
             event = progress_state.eval_events[key]
             score = event["score"]

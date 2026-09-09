@@ -5,7 +5,7 @@ import os
 import re
 
 import prompttestenv.logger as logger
-from prompttestenv.api import get_llm_response
+from prompttestenv.api import _strip_code_fence, get_llm_response
 from prompttestenv.config import get_app_config
 from prompttestenv.models import (
     TestCaseResult,
@@ -106,23 +106,6 @@ def parse_grouped_verdict(verdict_text: str) -> dict | None:
     except Exception:
         return None
     return data if data.get("is_grouped") else None
-
-
-def _strip_code_fence(text: str) -> str:
-    """Strip a wrapping Markdown code fence from LLM output, if present.
-
-    Args:
-        text: Response text, already .strip()-ed.
-
-    Returns:
-        text with the first/last fence lines removed if text starts with
-        ``` and ends with a lone ``` line; otherwise text unchanged.
-    """
-    if text.startswith("```"):
-        lines = text.splitlines()
-        if len(lines) >= 2 and lines[-1].strip() == "```":
-            return "\n".join(lines[1:-1]).strip()
-    return text
 
 
 def _format_score(mean: float, std: float, with_std: bool) -> str:
@@ -470,11 +453,16 @@ def _source_cell(analyses: list[dict]) -> str:
         "summary", "raw", "unknown", or "mixed".
     """
     flags = {a.get("reasoning_is_summary") for a in analyses}
-    if flags == {None}:
+    known = flags - {None}
+    if not known:
+        # Covers the empty pool too, which used to fall through to "raw".
         return "unknown"
-    if len(flags - {None}) > 1:
+    if len(known) > 1 or None in flags:
+        # An unreported flag beside a known one cannot be labelled either way.
+        # The dangerous half is {None, False}: it used to answer "raw", which
+        # is the one claim this function exists to refuse.
         return "mixed"
-    return "summary" if True in flags else "raw"
+    return "summary" if True in known else "raw"
 
 
 def _build_overall_aggregate(
@@ -556,8 +544,9 @@ def _build_overall_aggregate(
         "Legend: alt = alternative approaches explored, corr = self-corrections, "
         "align = how faithfully the response followed the trace (1-10), "
         "drift = trace/response embedding similarity, repet = repeated-trigram share, "
-        "n = traces analysed, source = raw chain of thought, provider summary, or "
-        "unknown when the provider did not report it. "
+        "n = traces analysed, source = raw chain of thought, provider summary, "
+        "unknown when the provider did not report it, or mixed when the pooled "
+        "traces are not all of the same kind. "
         "A summarised trace is not the model's own wording: never rank it against a raw "
         "one on length, composition or self-correction counts.\n"
     )

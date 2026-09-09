@@ -13,6 +13,7 @@ from prompttestenv.models import (
     Candidate,
     CandidatePerformance,
     pool_by_candidate,
+    project_name,
     JudgeConfig,
     TestCaseResult,
     GlobalCriteria,
@@ -160,7 +161,10 @@ def md_to_html(md_text):
         html_parts.append('</tbody></table>\n')
         return "".join(html_parts)
 
-    output = html.escape(md_text, quote=False)
+    # quote=True (the default): the link rule below builds href="..." out
+    # of this same text, so an unescaped quote in a verdict the judge wrote
+    # would close the attribute and inject markup.
+    output = html.escape(md_text)
     output = re.sub(r'```(.*?)```', r'<pre><code>\1</code></pre>', output, flags=re.DOTALL)
     table_pattern = r'(?:^\s*\|.*?\|\s*\n)(?:^\s*\|[\s\-\:\|]+\|\s*\n)(?:^\s*\|.*?\|\s*(?:\n|$))*'
     output = re.sub(table_pattern, _process_table, output, flags=re.MULTILINE)
@@ -180,14 +184,47 @@ def md_to_html(md_text):
     return output
 
 
-def generate_html_report(project_dir: str, results: list[TestCaseResult], candidates: list[Candidate], verdict_text: str, global_criteria: GlobalCriteria, judge_config: JudgeConfig, filename: str = "report_benchmark.html"):
+def generate_html_report(
+    project_dir: str,
+    results: list[TestCaseResult],
+    candidates: list[Candidate],
+    verdict_text: str,
+    global_criteria: GlobalCriteria,
+    judge_config: JudgeConfig,
+    filename: str = "report_benchmark.html",
+) -> str:
+    """Render the full HTML report and write it under Report/.
+
+    Same inputs as generate_json_report, the JSON alternative renderer — both
+    read the pooled figures from pool_by_candidate and the reasoning profile
+    from aggregate_reasoning_stats, so the two surfaces cannot disagree.
+
+    This is the only surface with the colour-coded reasoning traces; the
+    other three output modes (md, json, winner_only) are cheaper renderings
+    of the same underlying results.
+
+    Args:
+        project_dir: Path to the benchmark project directory.
+        results: Completed test case results, reasoning already attached.
+        candidates: Resolved candidate configurations.
+        verdict_text: The verdict as stored, grouped JSON or plain text.
+        global_criteria: The project's global criteria.
+        judge_config: The project's judge configuration.
+        filename: Report file name, written under ``Report/``.
+
+    Returns:
+        Path to the written HTML file.
+    """
     verdict_data = parse_grouped_verdict(verdict_text)
     is_grouped = verdict_data is not None
 
     if is_grouped:
         verdict_html = ""
         for g in verdict_data["groups"]:
-            verdict_html += f"<details>\n<summary><strong>Verdict for Group: {g['group_name']}</strong></summary>\n<div style='padding-top: 10px;'>\n"
+            # Escaped: this whole string reaches the template through |safe,
+            # and the group name is author-written free text.
+            group_name = html.escape(str(g["group_name"]))
+            verdict_html += f"<details>\n<summary><strong>Verdict for Group: {group_name}</strong></summary>\n<div style='padding-top: 10px;'>\n"
             verdict_html += md_to_html(g["verdict"])
             verdict_html += "\n</div>\n</details>\n<br>\n"
         verdict_html += "<details open>\n<summary><strong>Global Verdict</strong></summary>\n<div style='padding-top: 10px;'>\n"
@@ -209,7 +246,7 @@ def generate_html_report(project_dir: str, results: list[TestCaseResult], candid
     template_text = importlib.resources.files("prompttestenv").joinpath("templates/report_template.html").read_text(encoding="utf-8")
     template = jinja2.Template(template_text, autoescape=True)
     html_content = template.render(
-        project_name=os.path.basename(project_dir),
+        project_name=project_name(project_dir),
         verdict_html=verdict_html,
         candidates=candidates,
         results=results,

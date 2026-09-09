@@ -28,6 +28,7 @@ from prompttestenv.api import (
     get_llm_response,
     get_text_embedding,
     is_local_provider,
+    parse_json_object,
 )
 from prompttestenv.config import ReasoningSchema, UnitSplittingConfig, get_app_config
 from prompttestenv.models import (
@@ -366,13 +367,14 @@ def _ask_judge(prompt: str, judge_config: JudgeConfig) -> dict | None:
         )
         return None
     try:
-        data = json.loads(result.text)
-    except (json.JSONDecodeError, TypeError, AttributeError) as exc:
+        text = result.text
+    except AttributeError as exc:
         logger.log_error(f"Reasoning judge returned unparseable JSON: {exc}")
         return None
-    if isinstance(data, list):
-        data = data[0] if data and isinstance(data[0], dict) else None
-    return data if isinstance(data, dict) else None
+    data = parse_json_object(text)
+    if data is None:
+        logger.log_error(f"Reasoning judge returned unparseable JSON: {text!r}")
+    return data
 
 
 def _parse_scores(

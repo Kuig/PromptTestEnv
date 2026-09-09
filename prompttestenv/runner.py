@@ -11,8 +11,9 @@ from prompttestenv.verdict import generate_verdict, evaluate_best_candidate_fast
 from prompttestenv.generation import run_generation_phase
 from prompttestenv.reporting import generate_html_report
 from prompttestenv.json_report import generate_json_report
-from prompttestenv.models import TestCaseResult, CandidatePerformance, Candidate, TestCase, JudgeConfig, GlobalCriteria, ProgressState
+from prompttestenv.models import TestCaseResult, CandidatePerformance, Candidate, TestCase, JudgeConfig, GlobalCriteria, ProgressState, OUTPUT_MODES
 from prompttestenv.progress import append_event, failed_eval_keys, failed_gen_keys
+import prompttestenv.projectio as pio
 
 
 def _initialize_test_results(test_cases: list[TestCase], project_dir: str) -> list[TestCaseResult]:
@@ -152,12 +153,41 @@ def _generate_output(
         logger.log_save(f"Markdown report: {md_file}")
         return f"Markdown generated: {md_file}"
 
-    html_file = generate_html_report(
-        project_dir, results, candidates, verdict, global_criteria, judge_config,
-        filename=f"{base_filename}.html",
+    if output_mode == "html":
+        html_file = generate_html_report(
+            project_dir, results, candidates, verdict, global_criteria, judge_config,
+            filename=f"{base_filename}.html",
+        )
+        logger.log_success(f"HTML report saved: {html_file}")
+        return f"Full process complete. HTML Report: {html_file}"
+
+    # Explicit rather than a fall-through: HTML used to be whatever was left,
+    # so an unlisted mode was silently rendered as a full report. Unreachable
+    # while the entry points gate on OUTPUT_MODES, and here so that a mode added
+    # to that tuple without a branch of its own fails loudly instead.
+    return f"Error: no renderer for output_mode {output_mode!r}."
+
+
+def _invalid_output_mode(output_mode: str) -> str | None:
+    """The error string for an unknown output mode, or None when it is valid.
+
+    Gated at the entry points rather than in _generate_output, which runs after
+    the whole benchmark has been paid for. And in the core rather than only in
+    argparse, because the CLI was the only caller that checked: the library, the
+    MCP tools and both GUIs passed anything straight through.
+
+    Args:
+        output_mode: The requested report format.
+
+    Returns:
+        A descriptive error string, or None when output_mode is valid.
+    """
+    if output_mode in OUTPUT_MODES:
+        return None
+    return (
+        f"Error: unknown output_mode {output_mode!r}. "
+        f"Valid: {', '.join(OUTPUT_MODES)}."
     )
-    logger.log_success(f"HTML report saved: {html_file}")
-    return f"Full process complete. HTML Report: {html_file}"
 
 
 def run_project(
@@ -181,16 +211,52 @@ def run_project(
             global mode 'none' are never retried.
 
     Returns:
-        Path to the generated report or an error description string.
+        A one-line status string, never a bare path: `Error: ...` (or
+        `ERROR: ...`) on failure, otherwise a confirmation naming the report
+        file, e.g. `Full process complete. HTML Report: <path>`. Use
+        gui/common.report_path to recover the path from it.
     """
+    # An argument error, so it precedes every check about state.
+    invalid = _invalid_output_mode(output_mode)
+    if invalid:
+        return invalid
+
     if not os.path.exists(project_dir):
         return f"ERROR: Project folder '{project_dir}' does not exist. Use 'init' first."
+
+    # Pre-flight, before the loaders and before any LLM call. The same check
+    # both editing surfaces run, so a project cannot be accepted by one and
+    # silently mishandled by the other: a duplicate candidate name, say, keys
+    # every progress.jsonl event, so two candidates would merge into one and
+    # the report would describe results that never existed.
+    #
+    # Ahead of the loaders because projectio.load_project is total where they
+    # are strict, so a malformed file is described here rather than raising an
+    # AttributeError out of a dataclass constructor.
+    #
+    # Errors only. The warnings are informational and MUST stay that way: they
+    # include "attachment outside test_files/", which is a lint on the editor's
+    # convention, not on the run - a project may legitimately keep attachments
+    # anywhere, and _missing_attachments below is what actually decides whether
+    # a declared file exists. The two checks look alike and are not: do not
+    # merge them.
+    draft = pio.load_project(project_dir)
+    config_errors, config_warnings = pio.validate(draft)
+    for warning in config_warnings:
+        logger.log_warning(f"Config check: {warning}")
+    if config_errors:
+        return "Error: invalid project configuration: " + "; ".join(config_errors)
 
     try:
         candidates = Candidate.load_all(project_dir)
         judge_config = JudgeConfig.load(project_dir)
         test_cases = TestCase.load_all(project_dir)
-    except (FileNotFoundError, ValueError) as exc:
+    except (FileNotFoundError, ValueError, TypeError, AttributeError, KeyError) as exc:
+        # Wider than the two the loaders document, because validate above
+        # cannot enumerate every malformed shape and an entry point owes the
+        # caller a string, not a traceback. Explicit tuple rather than
+        # `except Exception`, so a real bug still surfaces. Confined to the
+        # loaders: the phases below deliberately propagate.
         return f"Error: {exc}"
 
     if not candidates:
@@ -271,7 +337,19 @@ def run_project(
         # Re-read the log: the snapshot taken before the phases predates every
         # event they just appended, and the analysis phase reads its input
         # (the stored traces) from exactly those events.
-        progress_state = ProgressState.load(project_dir, force_restart=False)
+        #
+        # readonly, like analyze and render, and for a reason of its own: this
+        # is a pure read, but a plain load renames the log to .bak on a hash
+        # mismatch. A config saved from the editor while a benchmark runs - two
+        # Streamlit apps meant to run side by side make that ordinary - would
+        # therefore destroy the events phases 1 and 2 just wrote, and
+        # append_event would then recreate the file with no meta line.
+        #
+        # A mismatch here still yields hash_match=False, but with the events
+        # loaded, which is what this call needs. run_project does not recheck
+        # hash_match after this line and must not start to: these events are
+        # the ones this very run just appended.
+        progress_state = ProgressState.load(project_dir, readonly=True)
 
         # Reasoning analysis reads the traces the generation phase already
         # stored, so it is a separate resumable pass rather than a step nested
@@ -372,8 +450,15 @@ def render_from_progress(project_dir: str, output_mode: str = "html") -> str:
         output_mode: Report format — 'html', 'md', 'json' or 'winner_only'.
 
     Returns:
-        Report path string or partial progress summary.
+        A one-line status string, never a bare path: a confirmation naming
+        the report file (see run_project's own Returns) when the log holds a
+        verdict, `Error: ...` on failure, or a partial-progress summary when
+        the log has no verdict yet to render from.
     """
+    invalid = _invalid_output_mode(output_mode)
+    if invalid:
+        return invalid
+
     progress_state = ProgressState.load(project_dir, readonly=True)
     if not progress_state.events:
         return f"No progress found in {project_dir}"
@@ -410,9 +495,11 @@ def render_from_progress(project_dir: str, output_mode: str = "html") -> str:
         test_result = results_by_id.get(test_id)
         if test_result:
             cand_perf = test_result.candidates_perf.setdefault(cand_id, CandidatePerformance())
-            cand_perf.tokens.append(event["tokens"])
-            cand_perf.reasoning_tokens.append(event["reasoning_tokens"])
-            cand_perf.times.append(event["elapsed"])
+            # .get with defaults, matching generation.py's resume branch: a log
+            # written before a field existed must still render.
+            cand_perf.tokens.append(event.get("tokens", 0))
+            cand_perf.reasoning_tokens.append(event.get("reasoning_tokens", 0))
+            cand_perf.times.append(event.get("elapsed", -1.0))
 
     for (cand_id, test_id, rep), event in progress_state.eval_events.items():
         test_result = results_by_id.get(test_id)
@@ -421,16 +508,17 @@ def render_from_progress(project_dir: str, output_mode: str = "html") -> str:
             # test would otherwise raise KeyError on a lookup that has no
             # reason to assume the two logs cover the same keys.
             cand_perf = test_result.candidates_perf.setdefault(cand_id, CandidatePerformance())
-            cand_perf.scores.append(event["score"])
-            cand_perf.global_scores.append(event["global_score"])
+            score = event.get("score", -1)
+            cand_perf.scores.append(score)
+            cand_perf.global_scores.append(event.get("global_score", -1))
             score_key = (cand_id, test_id)
-            if event["score"] > best_scores.get(score_key, -1):
-                best_scores[score_key] = event["score"]
+            if score > best_scores.get(score_key, -1):
+                best_scores[score_key] = score
                 gen_event = progress_state.gen_events.get((cand_id, test_id, rep))
                 if gen_event:
-                    cand_perf.best_output = gen_event["output"]
-                cand_perf.best_reason = event["reason"]
-                cand_perf.best_global_reason = event["g_reason"]
+                    cand_perf.best_output = gen_event.get("output", "")
+                cand_perf.best_reason = event.get("reason", "")
+                cand_perf.best_global_reason = event.get("g_reason", "")
 
     attach_reasoning(
         results,
@@ -446,6 +534,17 @@ def render_from_progress(project_dir: str, output_mode: str = "html") -> str:
         logger.log_warning(
             f"{len(progress_state.stale_eval_keys)} evaluation(s) in this log score a "
             "response that was regenerated afterwards. Run the project again to rejudge them."
+        )
+    if progress_state.stale_reasoning_keys:
+        # Pointed at `analyze`, not `run`, unlike the two above: analyze may
+        # repair, since it already buys reasoning-judge calls. The stale ones
+        # matter here because their unit offsets index a trace that has since
+        # been replaced, so the report would colour the wrong words rather
+        # than fail.
+        logger.log_warning(
+            f"{len(progress_state.stale_reasoning_keys)} reasoning analysis(es) in this log "
+            "describe a trace that was regenerated afterwards. Run 'prompttestenv analyze' "
+            "to redo them."
         )
     if progress_state.stale_verdict:
         logger.log_warning(

@@ -8,6 +8,7 @@ from __future__ import annotations
 import subprocess
 import sys
 from pathlib import Path
+from types import ModuleType
 
 _ERROR_PREFIXES = ("Error:", "ERROR:")
 _INCOMPLETE_PREFIXES = (
@@ -101,3 +102,38 @@ def pick_directory(initialdir: str) -> str | None:
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr.strip() or f"exit code {proc.returncode}")
     return proc.stdout.strip() or None
+
+
+def browse_button(st_module: ModuleType, session_state_key: str) -> None:
+    """Render the "Browse..." button that opens a native folder picker.
+
+    Identical in app.py and editor.py apart from which session_state key
+    holds the path, which is why it takes the key as a parameter instead of
+    living twice. Takes the streamlit module itself as a parameter, rather
+    than importing it here, to keep this module's own "no streamlit import"
+    rule: the caller already has it imported, and a plain unit test can pass
+    a stub in its place.
+
+    Args:
+        st_module: The caller's already-imported `streamlit` module.
+        session_state_key: Key in st.session_state holding the path string.
+    """
+    if not st_module.button("📁 Browse...", width="stretch"):
+        return
+    current = st_module.session_state[session_state_key]
+    init_dir = current or str(Path.cwd())
+    if not Path(init_dir).is_absolute():
+        init_dir = str(Path.cwd() / init_dir)
+
+    picked = None
+    try:
+        picked = pick_directory(init_dir)
+    except Exception as exc:
+        st_module.warning(f"Folder picker unavailable: {exc}. Type the path manually.")
+
+    if picked:
+        try:
+            st_module.session_state[session_state_key] = Path(picked).relative_to(Path.cwd()).as_posix()
+        except ValueError:
+            st_module.session_state[session_state_key] = Path(picked).as_posix()
+        st_module.rerun()

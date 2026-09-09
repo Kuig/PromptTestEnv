@@ -354,10 +354,26 @@ def _asset_plan(draft: pio.ProjectDraft, errors: list[str]) -> list[tuple[str, s
     Deletion is checked against the POST-patch draft, so dropping a system
     prompt and the candidate that used it in the same call is allowed, while
     dropping one still referenced is not.
+
+    Every staged name goes through projectio's filename check here, deletions
+    included: this is the one chokepoint both kinds of operation pass, and the
+    write side was already guarded twice (_apply_assets and write_asset) while
+    the delete side was guarded nowhere, so a patch naming '../x' reached
+    unlink() and removed a file outside the project directory. check_filename
+    rather than check_asset_name on the delete side, matching delete_asset:
+    a stray .md hand-dropped into system_prompts/ must stay removable.
     """
     plan: list[tuple[str, str, object]] = []
     for kind in pio.ASSET_KINDS:
         for name, content in (draft.pending_assets.get(kind) or {}).items():
+            problem = (
+                pio.check_filename(name) if content is None
+                else pio.check_asset_name(kind, name)
+            )
+            if problem:
+                verb = "delete" if content is None else "write"
+                errors.append(f"Cannot {verb} {kind}/{name}: {problem}")
+                continue
             if content is None:
                 users = pio.asset_users(draft, kind, name)
                 if users:
@@ -482,7 +498,11 @@ def edit_project(
         deleted = []
         for kind, name, content in plan:
             if content is None:
-                (draft.asset_dir(kind) / name).unlink()
+                # Through projectio, like the write side, so the filename and
+                # "still used by" guards cannot differ between the editor and
+                # this path. _asset_plan has checked both already; delete_asset
+                # repeating them is the point, not redundancy.
+                pio.delete_asset(draft, kind, name)
                 deleted.append(f"{kind}/{name}")
             else:
                 pio.write_asset(draft, kind, name, content)
@@ -498,7 +518,13 @@ def edit_project(
             stored_hash=status.stored_hash,
             new_hash=status.would_be_hash,
         )
-    except (OSError, ValueError) as exc:
+    except Exception as exc:
+        # As wide as the docstring's "never raises" promises. The two the
+        # loaders document are not the only shapes a hand-written config can
+        # take: validate() reads raw dicts, so a judge block that is a string
+        # or a candidate list that holds bare strings used to escape as
+        # AttributeError, straight out of `show` and `edit` as a traceback.
+        # This path exists to REPAIR such a project, so it must survive it.
         return _failure([str(exc)])
 
 

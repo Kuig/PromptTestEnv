@@ -23,11 +23,19 @@ HASHED_FILENAMES = (
 # What a file that does not exist contributes to the hash.
 MISSING_FILE_BYTES = b"missing"
 
-# The two placeholder payloads a run stores in place of a real model answer.
-# They are not error messages written for a human to read: they are the values
+# The placeholder payloads a run stores in place of a real model answer. They
+# are not error messages written for a human to read: they are the values
 # --retry-errors matches on, they are what the judge ends up scoring, and they
 # are what the report renders, so each has exactly one definition.
+#
+# GEN_ERROR_TEXT is distinct from GEN_TIMEOUT_TEXT rather than reusing it,
+# because the two say different things about the model: a timeout is a fact
+# about how long it took, a provider error is not a fact about the model at
+# all. Reusing one placeholder would make the log claim "timeout" for a 429.
+# The exception's own message goes in the event's "error" field, never in the
+# payload, so `output` stays comparable by equality.
 GEN_TIMEOUT_TEXT = "⛔ [TIMEOUT EXCEEDED]"
+GEN_ERROR_TEXT = "⛔ [GENERATION FAILED]"
 JUDGE_TIMEOUT_TEXT = "⛔ [JUDGE TIMEOUT EXCEEDED]"
 
 # Every -1 reason the framework writes on its own initiative starts with one of
@@ -58,10 +66,11 @@ def is_failed_gen(event: dict) -> bool:
         event: A "gen" event read back from progress.jsonl.
 
     Returns:
-        True only for the timeout placeholder. An empty response is a real
-        measurement about the model, not a failure to obtain one.
+        True for either framework placeholder, the timeout and the provider
+        error. An empty response is a real measurement about the model, not a
+        failure to obtain one, so it is never matched here.
     """
-    return event.get("output") == GEN_TIMEOUT_TEXT
+    return event.get("output") in (GEN_TIMEOUT_TEXT, GEN_ERROR_TEXT)
 
 
 def is_failed_eval(event: dict) -> bool:
@@ -95,7 +104,7 @@ def is_failed_eval(event: dict) -> bool:
     )
 
 
-def failed_gen_keys(gen_events: dict) -> set[tuple[str, str, int]]:
+def failed_gen_keys(gen_events: dict) -> set[RunKey]:
     """Select the generation keys whose stored answer is a placeholder.
 
     Takes the plain dict rather than a ProgressState so this module keeps its
@@ -110,7 +119,7 @@ def failed_gen_keys(gen_events: dict) -> set[tuple[str, str, int]]:
     return {key for key, event in gen_events.items() if is_failed_gen(event)}
 
 
-def failed_eval_keys(eval_events: dict) -> set[tuple[str, str, int]]:
+def failed_eval_keys(eval_events: dict) -> set[RunKey]:
     """Select the evaluation keys whose stored score is a framework failure.
 
     Args:

@@ -329,11 +329,12 @@ class TestAnalyzeReasoning(unittest.TestCase):
     def overlapping_calls(self) -> bool:
         """Run an analysis and report whether any two judge calls overlapped in time.
 
-        Measured on the calls themselves rather than on ThreadPoolExecutor:
-        call_with_timeout wraps every single call in a pool of its own, so
-        patching the executor proves nothing about the dimension fan-out (and,
-        because the patch lands on the shared concurrent.futures module, it also
-        breaks that wrapper).
+        Measured on the calls themselves rather than on ThreadPoolExecutor.
+        The pool the dimension fan-out uses is not the only concurrency in
+        play, so patching the shared concurrent.futures module would prove
+        nothing about the fan-out while disturbing everything else that runs
+        underneath. Wall-clock overlap between the calls is the property this
+        test is actually about, and it is observable directly.
         """
         units = len(split_into_units(self.TRACE, SPLITTING))
         payload = self.scores_for(units, 1)

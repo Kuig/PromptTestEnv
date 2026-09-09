@@ -35,6 +35,7 @@ from prompttestenv.models import (
     CandidatePerformance,
     calculate_stats,
     pool_by_candidate,
+    project_name,
     JudgeConfig,
     TestCaseResult,
     GlobalCriteria,
@@ -295,7 +296,7 @@ def generate_json_report(
     payload = {
         "schema_version": JSON_SCHEMA_VERSION,
         "generated_at": datetime.datetime.now().isoformat(timespec="seconds"),
-        "project_name": os.path.basename(project_dir),
+        "project_name": project_name(project_dir),
         "verdict": _verdict_block(verdict_text),
         "configuration": _configuration_block(candidates, global_criteria, judge_config),
         "aggregate": aggregate,

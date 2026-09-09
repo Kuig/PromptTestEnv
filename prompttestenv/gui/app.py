@@ -1,17 +1,18 @@
 from __future__ import annotations
 
-import sys
 import webbrowser
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# No sys.path manipulation: streamlit run executes this file by path, but the
+# package is installed, so importing prompttestenv works without help. Inserting
+# the repo root here published the package's own generic module names to every
+# import that followed.
 
 import streamlit as st
 
 import prompttestenv.logger as logger
 from prompttestenv.api import configure_ai_logging
 from prompttestenv.config import init_project
-from prompttestenv.gui.common import pick_directory, report_path, status_of
+from prompttestenv.gui.common import browse_button, report_path, status_of
 from prompttestenv.runner import analyze_project, run_project, render_from_progress
 
 logger.set_backend("streamlit")
@@ -33,23 +34,7 @@ with st.sidebar:
     )
     st.session_state.project_dir = project_dir
 
-    if st.button("📁 Browse...", width="stretch"):
-        init_dir = st.session_state.project_dir or str(Path.cwd())
-        if not Path(init_dir).is_absolute():
-            init_dir = str(Path.cwd() / init_dir)
-
-        picked = None
-        try:
-            picked = pick_directory(init_dir)
-        except Exception as exc:
-            st.warning(f"Folder picker unavailable: {exc}. Type the path manually.")
-
-        if picked:
-            try:
-                st.session_state.project_dir = Path(picked).relative_to(Path.cwd()).as_posix()
-            except ValueError:
-                st.session_state.project_dir = Path(picked).as_posix()
-            st.rerun()
+    browse_button(st, "project_dir")
 
     st.divider()
     output_mode = st.selectbox("Output mode", ["html", "md", "json", "winner_only"])
@@ -113,7 +98,7 @@ if pending:
                 result = analyze_project(pdir, force_reanalyze)
                 st.session_state.last_result = (status_of(result), result)
             elif action == "render":
-                result = render_from_progress(pdir)
+                result = render_from_progress(pdir, output_mode)
                 st.session_state.last_result = (status_of(result), result)
         except Exception as exc:
             st.session_state.last_result = ("error", f"Error: {exc}")

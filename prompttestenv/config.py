@@ -366,32 +366,35 @@ def init_project(project_dir: str, custom_candidates: list[dict] | None = None) 
     # 2. Judge Configuration
     judge_file = os.path.join(project_dir, "judge_config.json")
     if not os.path.exists(judge_file):
-        with open(judge_file, "w", encoding="utf-8") as f:
+        with open(judge_file, "w", encoding="utf-8", newline="\n") as f:
             f.write(_load_template("default_judge_config.json"))
 
     # 3. Candidates Configuration
     cand_file = os.path.join(project_dir, "candidates.json")
-    if custom_candidates is not None:
+    # `and not os.path.exists`, like the elif below: the docstring promises to
+    # skip files that already exist, and this branch used to overwrite a
+    # hand-written candidates.json without saying so.
+    if custom_candidates is not None and not os.path.exists(cand_file):
         processed_candidates = []
         for i, cand in enumerate(custom_candidates):
             if "system_prompt_text" in cand:
                 filename = f"custom_prompt_{i}.txt"
                 filepath = os.path.join(sys_dir, filename)
-                with open(filepath, "w", encoding="utf-8") as f:
+                with open(filepath, "w", encoding="utf-8", newline="\n") as f:
                     f.write(cand["system_prompt_text"])
                 new_cand = {k: v for k, v in cand.items() if k != "system_prompt_text"}
                 new_cand["system_prompt_file"] = filename
                 processed_candidates.append(new_cand)
             else:
                 processed_candidates.append(cand)
-        with open(cand_file, "w", encoding="utf-8") as f:
+        with open(cand_file, "w", encoding="utf-8", newline="\n") as f:
             json.dump(processed_candidates, f, indent=4)
     elif not os.path.exists(cand_file):
         default_prompt_filename = "pirate_prompt.txt"
         default_prompt_filepath = os.path.join(sys_dir, default_prompt_filename)
-        with open(default_prompt_filepath, "w", encoding="utf-8") as f:
+        with open(default_prompt_filepath, "w", encoding="utf-8", newline="\n") as f:
             f.write(_load_template("default_pirate_prompt.txt"))
-        with open(cand_file, "w", encoding="utf-8") as f:
+        with open(cand_file, "w", encoding="utf-8", newline="\n") as f:
             f.write(_load_template("default_candidates.json"))
 
     # 4. Test Cases
@@ -399,14 +402,14 @@ def init_project(project_dir: str, custom_candidates: list[dict] | None = None) 
     if not os.path.exists(test_file):
         sample_txt_path = os.path.join(project_dir, "test_files", "sample.txt")
         if not os.path.exists(sample_txt_path):
-            with open(sample_txt_path, "w", encoding="utf-8") as f:
+            with open(sample_txt_path, "w", encoding="utf-8", newline="\n") as f:
                 f.write(_load_template("default_sample.txt"))
-        with open(test_file, "w", encoding="utf-8") as f:
+        with open(test_file, "w", encoding="utf-8", newline="\n") as f:
             f.write(_load_template("default_test_cases.json"))
 
     # 5. Global Criteria (JSON)
     global_file = os.path.join(project_dir, "global_criteria.json")
     if not os.path.exists(global_file):
-        with open(global_file, "w", encoding="utf-8") as f:
+        with open(global_file, "w", encoding="utf-8", newline="\n") as f:
             f.write(_load_template("default_global_criteria.json"))
 

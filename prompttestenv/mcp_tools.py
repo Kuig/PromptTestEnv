@@ -153,7 +153,9 @@ def register_tools(mcp: "FastMCP") -> None:
                 an assert lambda is never retried.
 
         Returns:
-            Path to the generated report or an error description.
+            A one-line status string, never the raw report content or a bare
+            path: a confirmation naming the report file (e.g. `Full process
+            complete. HTML Report: <path>`), or `Error: ...` on failure.
         """
         try:
             from prompttestenv.runner import run_project
@@ -207,7 +209,9 @@ def register_tools(mcp: "FastMCP") -> None:
                     call entirely.
 
         Returns:
-            Report content or error description.
+            A one-line status string, never the raw report content: a
+            confirmation naming the report file (same shape as
+            prompttest_run_project's), or `Error: ...` on failure.
         """
         try:
             from prompttestenv.runner import render_from_progress

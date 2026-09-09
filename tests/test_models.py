@@ -12,6 +12,7 @@ from pathlib import Path
 from prompttestenv.models import (
     CandidatePerformance,
     Candidate,
+    RunKey,
     TestCaseResult,
     pool_by_candidate,
     GlobalCriteria,
@@ -21,8 +22,43 @@ from prompttestenv.models import (
     attachment_paths,
     calculate_stats,
     compute_cost_per_point,
+    project_name,
 )
 from testutils import LoggerResetTestCase
+
+
+class TestRunKey(unittest.TestCase):
+    """A NamedTuple standing in for the plain 3-tuple it replaced: every use
+    as a dict key, set member, and unpacking target must keep working
+    against code that still builds or expects a literal (a, b, c)."""
+
+    def test_equal_to_the_literal_tuple_it_replaces(self):
+        self.assertEqual(RunKey("gpt", "t1", 0), ("gpt", "t1", 0))
+
+    def test_hashes_the_same_as_the_literal_tuple(self):
+        self.assertEqual(hash(RunKey("gpt", "t1", 0)), hash(("gpt", "t1", 0)))
+
+    def test_a_literal_tuple_looks_up_a_dict_keyed_by_runkey(self):
+        events = {RunKey("gpt", "t1", 0): {"score": 7}}
+        self.assertEqual(events[("gpt", "t1", 0)], {"score": 7})
+
+    def test_a_runkey_looks_up_a_dict_keyed_by_the_literal_tuple(self):
+        events = {("gpt", "t1", 0): {"score": 7}}
+        self.assertEqual(events[RunKey("gpt", "t1", 0)], {"score": 7})
+
+    def test_positional_unpacking(self):
+        cand, test_id, rep = RunKey("gpt", "t1", 2)
+        self.assertEqual((cand, test_id, rep), ("gpt", "t1", 2))
+
+    def test_field_access(self):
+        key = RunKey("gpt", "t1", 2)
+        self.assertEqual(key.candidate, "gpt")
+        self.assertEqual(key.test_id, "t1")
+        self.assertEqual(key.repetition, 2)
+
+    def test_membership_in_a_set_of_literal_tuples(self):
+        completed = {("gpt", "t1", 0), ("gpt", "t1", 1)}
+        self.assertIn(RunKey("gpt", "t1", 0), completed)
 
 
 class TestCalculateStats(unittest.TestCase):
@@ -238,6 +274,32 @@ class TestReasoningScopeParsing(unittest.TestCase):
                 mock_warning.assert_called_once()
 
 
+class TestSettingsFromDict(unittest.TestCase):
+    """Exercised indirectly through JudgeConfig.from_dict elsewhere; these
+    pin the helper's own contract directly against the dataclass it fills."""
+
+    def test_empty_dict_uses_the_dataclasss_own_defaults(self):
+        from prompttestenv.models import TestJudgeSettings, _settings_from_dict
+
+        settings = _settings_from_dict(TestJudgeSettings, {})
+        self.assertEqual(settings, TestJudgeSettings())
+
+    def test_an_unknown_key_is_dropped_rather_than_raising(self):
+        from prompttestenv.models import TestJudgeSettings, _settings_from_dict
+
+        settings = _settings_from_dict(
+            TestJudgeSettings, {"provider": "ollama", "not_a_real_field": "x"}
+        )
+        self.assertEqual(settings.provider, "ollama")
+
+    def test_a_known_key_overrides_the_default(self):
+        from prompttestenv.models import TestJudgeSettings, _settings_from_dict
+
+        settings = _settings_from_dict(TestJudgeSettings, {"temperature": 0.9})
+        self.assertEqual(settings.temperature, 0.9)
+        self.assertEqual(settings.provider, TestJudgeSettings().provider)
+
+
 class TestJudgeConfigFromDict(unittest.TestCase):
     def test_empty_dict_uses_all_defaults(self):
         jc = JudgeConfig.from_dict({})
@@ -330,6 +392,38 @@ class TestProgressStateLoad(LoggerResetTestCase):
         self.assertTrue(progress_file.exists())
         meta = json.loads(progress_file.read_text(encoding="utf-8").splitlines()[0])
         self.assertEqual(meta["type"], "meta")
+
+    def test_a_line_of_the_wrong_shape_is_skipped_not_fatal(self):
+        """One odd line must not cost the whole log.
+
+        The reader caught JSONDecodeError but then indexed event["type"], so a
+        line that is valid JSON of the wrong shape raised TypeError out of
+        load() - and since run, analyze and render all go through here, that
+        made the project unreadable by every command, render included.
+        """
+        ProgressState.load(self.project_dir)
+        good = {"type": "gen", "cand_id": "C", "test_id": "t", "rep": 0,
+                "output": "real answer", "tokens": 5, "reasoning_tokens": 0,
+                "reasoning_text": "", "elapsed": 1.0}
+        with open(Path(self.project_dir) / "progress.jsonl", "a", encoding="utf-8") as f:
+            print(json.dumps("a bare string line"), file=f)
+            print(json.dumps({"no_type": "at all"}), file=f)
+            print(json.dumps([1, 2, 3]), file=f)
+            print(json.dumps(good), file=f)
+
+        state = ProgressState.load(self.project_dir)
+
+        self.assertIn(("C", "t", 0), state.completed_gen)
+        self.assertEqual(state.gen_events[("C", "t", 0)]["output"], "real answer")
+
+    def test_an_event_missing_a_key_the_reader_needs_is_skipped(self):
+        ProgressState.load(self.project_dir)
+        with open(Path(self.project_dir) / "progress.jsonl", "a", encoding="utf-8") as f:
+            print(json.dumps({"type": "gen", "cand_id": "C"}), file=f)
+
+        state = ProgressState.load(self.project_dir)
+
+        self.assertEqual(state.completed_gen, set())
 
     def test_hash_mismatch_renames_to_bak(self):
         ProgressState.load(self.project_dir)  # creates progress.jsonl with current hash
@@ -744,3 +838,17 @@ class TestConfigWriters(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestProjectName(unittest.TestCase):
+    """A trailing separator is what shell completion produces on Windows."""
+
+    def test_a_trailing_separator_does_not_empty_the_name(self):
+        for value in ("Projects/MyBench", "Projects/MyBench/",
+                      "Projects\\MyBench", "Projects\\MyBench\\"):
+            with self.subTest(value):
+                self.assertEqual(project_name(value), "MyBench")
+
+    def test_a_bare_name_is_returned_unchanged(self):
+        self.assertEqual(project_name("MyBench"), "MyBench")
+

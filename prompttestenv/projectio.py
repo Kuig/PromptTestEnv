@@ -660,12 +660,24 @@ def validate(draft: ProjectDraft) -> tuple[list[str], list[str]]:
     prompts = set(draft.system_prompt_names())
     attachments = {f"{TEST_FILES_DIR}/{n}" for n in draft.test_file_names()}
 
+    # An entry of the wrong shape is reported, never tripped over. load_project
+    # is total by design (it reads a hand-written file to be fixed, not to be
+    # trusted), so this function has to be total too, or it crashes on exactly
+    # the input it exists to reject. The index is the file's, so the message
+    # still points at the right entry after the malformed ones are skipped.
+    bad_candidates = [i for i, c in enumerate(draft.candidates, start=1) if not isinstance(c, dict)]
+    for index in bad_candidates:
+        errors.append(f"Candidate #{index} is not an object.")
+    candidates = [
+        (i, c) for i, c in enumerate(draft.candidates, start=1) if isinstance(c, dict)
+    ]
+
     # Candidates: name keys every progress.jsonl event and pools the results,
     # so a duplicate silently merges two candidates into one.
-    names = [str(c.get("name") or "") for c in draft.candidates]
+    names = [str(c.get("name") or "") for _, c in candidates]
     for dupe in _duplicates([n for n in names if n]):
         errors.append(f"Candidate name '{dupe}' is used more than once.")
-    for index, cand in enumerate(draft.candidates, start=1):
+    for index, cand in candidates:
         label = cand.get("name") or f"#{index}"
         if not cand.get("name"):
             errors.append(f"Candidate #{index} has no name.")
@@ -683,10 +695,15 @@ def validate(draft: ProjectDraft) -> tuple[list[str], list[str]]:
             )
 
     # Test cases: id keys the same events.
-    ids = [str(t.get("id") or "") for t in draft.tests]
+    for index, test in enumerate(draft.tests, start=1):
+        if not isinstance(test, dict):
+            errors.append(f"Test case #{index} is not an object.")
+    tests = [(i, t) for i, t in enumerate(draft.tests, start=1) if isinstance(t, dict)]
+
+    ids = [str(t.get("id") or "") for _, t in tests]
     for dupe in _duplicates([i for i in ids if i]):
         errors.append(f"Test case id '{dupe}' is used more than once.")
-    for index, test in enumerate(draft.tests, start=1):
+    for index, test in tests:
         label = test.get("id") or f"#{index}"
         if not test.get("id"):
             errors.append(f"Test case #{index} has no id.")
@@ -707,8 +724,18 @@ def validate(draft: ProjectDraft) -> tuple[list[str], list[str]]:
                     f"Test case '{label}' refers to attachment '{path}', which is missing."
                 )
 
-    # Judge config.
-    test_judge = draft.judge.get("test_judge") or {}
+    # Judge config. `or {}` alone is not enough: it falls through for None and
+    # for an empty dict, but a truthy non-mapping ("oops") reaches .get and
+    # raises. That shape is a plausible hand edit, and the loaders raise on it
+    # too, so it has to be reported here rather than crash the check.
+    def _block(key: str) -> dict:
+        value = draft.judge.get(key)
+        if value is not None and not isinstance(value, dict):
+            errors.append(f"judge_config.{key} must be an object.")
+            return {}
+        return value or {}
+
+    test_judge = _block("test_judge")
     template = test_judge.get("evaluation_template")
     if isinstance(template, str) and template:
         error, warning = check_evaluation_template(template)
@@ -717,7 +744,7 @@ def validate(draft: ProjectDraft) -> tuple[list[str], list[str]]:
         if warning:
             warnings.append(f"test_judge.evaluation_template {warning}")
 
-    verdict_judge = draft.judge.get("verdict_judge") or {}
+    verdict_judge = _block("verdict_judge")
     if not (verdict_judge.get("verdict_template") or "").strip():
         warnings.append("verdict_judge.verdict_template is empty — no verdict will be written.")
     if draft.judge.get("group_verdicts") and not (
@@ -734,12 +761,13 @@ def validate(draft: ProjectDraft) -> tuple[list[str], list[str]]:
         if problem:
             errors.append(f"global_criteria.assert_criteria {problem}")
 
-    # Orphans, in both directions.
-    used_prompts = {c.get("system_prompt_file") for c in draft.candidates}
+    # Orphans, in both directions. Over the well-formed entries only: a
+    # malformed one is already an error, and it has no references to honour.
+    used_prompts = {c.get("system_prompt_file") for _, c in candidates}
     for name in sorted(prompts - {p for p in used_prompts if p}):
         warnings.append(f"System prompt '{name}' is not used by any candidate.")
     used_files = set()
-    for test in draft.tests:
+    for _, test in tests:
         try:
             used_files.update(attachment_paths(test.get("file")))
         except ValueError:
@@ -948,7 +976,7 @@ def seed_project(project_dir: str) -> list[str]:
     """Scaffold a new project from the packaged templates.
 
     Deliberately does NOT call config.init_project(): that also writes a
-    secrets.json into os.getcwd() (config.py:314) — which, for a GUI, is
+    secrets.json into os.getcwd() (config.py:356) — which, for a GUI, is
     wherever the user happened to launch the command from, not the project being
     created. The editor must not scatter files outside the project directory.
     Everything else init_project does is reproduced here.

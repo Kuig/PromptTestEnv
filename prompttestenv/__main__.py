@@ -23,16 +23,17 @@ from pathlib import Path
 
 # UTF-8 console setup is handled once by prompttestenv/__init__.py, which
 # always runs first when this module is imported as part of the package.
-sys.path.insert(0, str(Path(__file__).parent))
-
+#
+# There is deliberately no sys.path manipulation here. This module is only ever
+# reached as prompttestenv.__main__, so the package is importable by
+# construction; inserting its own directory at the front of sys.path only
+# published modules with names as generic as config, api, models and logger to
+# every dependency imported afterwards, streamlit and the provider SDKs
+# included.
 from unified_ai_client import silence_sdks
 
 from prompttestenv.api import configure_ai_logging
-
-# The report formats every entry point offers. "md" is a text summary of the
-# verdict alone, "json" the same content the HTML carries in machine-readable
-# form (see report.schema.json), "winner_only" writes no file at all.
-OUTPUT_MODES = ["html", "md", "json", "winner_only"]
+from prompttestenv.models import OUTPUT_MODES
 
 
 def cmd_init(args: argparse.Namespace) -> None:

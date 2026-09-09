@@ -15,6 +15,7 @@ import json
 import shutil
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from prompttestenv import projectedit as pe
 from prompttestenv import projectio as pio
@@ -240,6 +241,63 @@ class TestDelete(ProjectEditTestCase):
         self.assertTrue(result.ok, result.errors)
         self.assertEqual(result.deleted, ["system_prompts/terse.txt"])
         self.assertFalse((Path(self.project_dir) / "system_prompts" / "terse.txt").exists())
+
+
+class TestAssetPathTraversal(ProjectEditTestCase):
+    """A delete name is a bare filename, never a path.
+
+    The write side was guarded from the start; the delete side reached unlink()
+    unchecked, so a patch could remove a file outside the project directory.
+    This path is the one an LLM or a script drives through MCP, so its caller
+    is not the project owner and cannot be trusted with a path.
+    """
+
+    BAD_NAMES = ["..", "sub/x.txt", "/etc/passwd", "C:/Windows/x.txt"]
+
+    def test_a_traversal_in_delete_reaches_nothing_and_is_refused(self):
+        """The depths matter: from <project>/system_prompts/, '../x' lands in
+        the project directory and '../../x' lands outside it entirely. Both
+        escape the asset directory, and both files must survive.
+
+        Each target is made to EXIST, or the pre-fix code would refuse it as
+        'does not exist' and the test would pass for the wrong reason.
+        """
+        in_project = Path(self.project_dir) / "sentinel.txt"
+        outside = Path(self.project_dir).parent / "sentinel_outside.txt"
+        for sentinel in (in_project, outside):
+            sentinel.write_text("do not delete me", encoding="utf-8")
+            self.addCleanup(sentinel.unlink, missing_ok=True)
+
+        traversals = ["../sentinel.txt", "../../sentinel_outside.txt"]
+        for kind in ("system_prompts", "test_files"):
+            for name in traversals + self.BAD_NAMES:
+                with self.subTest(kind=kind, name=name):
+                    result = pe.edit_project(self.project_dir, {"delete": {kind: [name]}})
+                    self.assertFalse(result.ok)
+                    self.assertTrue(
+                        any("Cannot delete" in e for e in result.errors), result.errors,
+                    )
+                    self.assertTrue(in_project.exists(), f"{name} deleted a file in the project")
+                    self.assertTrue(outside.exists(), f"{name} deleted a file outside the project")
+
+    def test_delete_goes_through_projectio_delete_asset(self):
+        """The direct unlink() must not come back: delete_asset is where the
+        filename, existence and 'still used by' guards live."""
+        pe.edit_project(self.project_dir, {"system_prompts": {"gone.txt": "bye"}})
+        with patch("prompttestenv.projectedit.pio.delete_asset") as mock_delete:
+            result = pe.edit_project(
+                self.project_dir, {"delete": {"system_prompts": ["gone.txt"]}},
+            )
+        self.assertTrue(result.ok, result.errors)
+        mock_delete.assert_called_once()
+        self.assertEqual(mock_delete.call_args.args[1:], ("system_prompts", "gone.txt"))
+
+    def test_a_traversal_is_refused_on_a_dry_run_too(self):
+        """The check sits in _asset_plan, which runs before the dry_run branch."""
+        result = pe.edit_project(
+            self.project_dir, {"delete": {"test_files": ["../x.txt"]}}, dry_run=True,
+        )
+        self.assertFalse(result.ok)
 
 
 class TestOrder(ProjectEditTestCase):

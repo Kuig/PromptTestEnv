@@ -6,6 +6,7 @@ import statistics
 import tempfile
 from dataclasses import dataclass, field, fields, asdict
 from pathlib import Path
+from typing import NamedTuple
 
 import prompttestenv.logger as logger
 
@@ -22,6 +23,18 @@ REASONING_SCOPE_NONE = "none"
 REASONING_SCOPE_BEST = "best"
 REASONING_SCOPE_ALL = "all"
 REASONING_SCOPES = (REASONING_SCOPE_NONE, REASONING_SCOPE_BEST, REASONING_SCOPE_ALL)
+
+# The report formats every entry point offers. "md" is the verdict alone, "json"
+# the machine-readable twin of the HTML (see report.schema.json), "winner_only"
+# writes no file at all.
+#
+# Here rather than in __main__ because argparse used to be the ONLY gate: the
+# library, the MCP server and the GUI each accepted any string and fell through
+# to HTML, so an agent asking for "markdown" got a full HTML report and no
+# warning. Here rather than in runner because build_parser() needs it at module
+# level, and importing runner there would drag jinja2 and unified_ai_client into
+# the startup of every subcommand.
+OUTPUT_MODES = ("html", "md", "json", "winner_only")
 
 # Axes of the reasoning profile. Mirrored as fields on ReasoningUnit and
 # ReasoningStats as real fields rather than a dict, so changing this
@@ -101,6 +114,24 @@ def compute_cost_per_point(numerator: float, denominator: float) -> float:
     return numerator / denominator
 
 
+def project_name(project_dir: str) -> str:
+    """The benchmark's display name: the last component of its directory.
+
+    os.path.basename alone returns "" for a path ending in a separator, which
+    is exactly what shell completion produces on Windows, so a run launched as
+    Projects\MyBench\ gave the report an empty title and the JSON an empty
+    project_name. Lives here because both renderers need it and they are
+    deliberately kept free of any import of each other.
+
+    Args:
+        project_dir: Path to the benchmark project directory.
+
+    Returns:
+        The directory's own name, with any trailing separator ignored.
+    """
+    return os.path.basename(os.path.normpath(project_dir))
+
+
 def calculate_stats(scores_list: list[float], default_val: float = 0.0) -> tuple[float, float]:
     valid_scores = [s for s in scores_list if s >= 0]
     if not valid_scores:
@@ -111,6 +142,24 @@ def calculate_stats(scores_list: list[float], default_val: float = 0.0) -> tuple
     except statistics.StatisticsError:
         std = 0.0
     return mean, std
+
+
+class RunKey(NamedTuple):
+    """Identifies one repetition: a candidate x test_case x repetition triple.
+
+    Indexes every event in progress.jsonl and every set/dict built from it
+    (completed_gen, gen_events, stale_eval_keys, ...). A NamedTuple rather
+    than a dataclass because it must behave exactly like the plain 3-tuple
+    it replaces: equality, hashing, positional unpacking and use as a dict
+    key are all structural, so a literal (cand, test_id, rep) still matches
+    a RunKey holding the same three values, and nothing written to
+    progress.jsonl changes (the key itself is never serialised, only the
+    fields that compose it).
+    """
+
+    candidate: str
+    test_id: str
+    repetition: int
 
 
 @dataclass
@@ -414,7 +463,7 @@ class Candidate:
 
     @staticmethod
     def save_all(
-        project_dir: str, data: list[dict], *,
+        project_dir: str | Path, data: list[dict], *,
         trailing_newline: bool = True, newline: str = "\n",
     ) -> None:
         """Write candidates.json from raw dicts.
@@ -497,7 +546,7 @@ class TestCase:
 
     @staticmethod
     def save_all(
-        project_dir: str, data: list[dict], *,
+        project_dir: str | Path, data: list[dict], *,
         trailing_newline: bool = True, newline: str = "\n",
     ) -> None:
         """Write test_cases.json from raw dicts.
@@ -731,19 +780,19 @@ class GlobalCriteria:
         try:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            return cls(
-                mode=data.get("mode", JUDGE_TYPE_LLM),
-                llm_judge_criteria=data.get("llm_judge_criteria", ""),
-                similarity_criteria=data.get("similarity_criteria", ""),
-                assert_criteria=data.get("assert_criteria", ""),
-            )
+            # Same dict-to-dataclass shape JudgeConfig.from_dict already uses
+            # for every judge sub-block, reused here rather than hand-rolled a
+            # second time. A key missing from data falls back to the dataclass
+            # field's own default, which is JUDGE_TYPE_LLM for `mode` — the
+            # same value this used to pass explicitly.
+            return _settings_from_dict(cls, data)
         except Exception as exc:
             logger.log_error(f"Error reading {path}: {exc}")
             return cls(mode=GLOBAL_MODE_NONE)
 
     @staticmethod
     def save(
-        project_dir: str, data: dict, *,
+        project_dir: str | Path, data: dict, *,
         trailing_newline: bool = True, newline: str = "\n",
     ) -> None:
         """Write global_criteria.json from a raw dict.
@@ -764,9 +813,14 @@ class GlobalCriteria:
 def _settings_from_dict(cls: type, data: dict):
     """Populate a settings dataclass from a dict, using its own field defaults for missing keys.
 
-    Assumes every field of `cls` has a plain literal default (no default_factory) —
-    true for all 4 current call sites (TestJudgeSettings, SimilarityJudgeSettings,
-    VerdictJudgeSettings, ReasoningJudgeSettings).
+    Filters to known fields and leaves the rest to cls's own constructor,
+    rather than reading f.default for every field: that used to assume every
+    field had a plain literal default, and would have silently passed
+    dataclasses.MISSING as the value for a future default_factory field
+    instead of calling the factory. None of the current call sites
+    (TestJudgeSettings, SimilarityJudgeSettings, VerdictJudgeSettings,
+    ReasoningJudgeSettings, GlobalCriteria) has one yet, but nothing here
+    should assume it.
 
     Args:
         cls: The settings dataclass to construct.
@@ -775,7 +829,8 @@ def _settings_from_dict(cls: type, data: dict):
     Returns:
         A populated instance of cls.
     """
-    return cls(**{f.name: data.get(f.name, f.default) for f in fields(cls)})
+    known = {f.name for f in fields(cls)}
+    return cls(**{k: v for k, v in data.items() if k in known})
 
 
 def _parse_reasoning_scope(value) -> str:
@@ -851,12 +906,7 @@ class JudgeConfig:
 
         gc_data = data.get("global_criteria", {})
         if isinstance(gc_data, dict):
-            global_criteria = GlobalCriteria(
-                mode=gc_data.get("mode", JUDGE_TYPE_LLM),
-                llm_judge_criteria=gc_data.get("llm_judge_criteria", ""),
-                similarity_criteria=gc_data.get("similarity_criteria", ""),
-                assert_criteria=gc_data.get("assert_criteria", ""),
-            )
+            global_criteria = _settings_from_dict(GlobalCriteria, gc_data)
         elif isinstance(gc_data, GlobalCriteria):
             global_criteria = gc_data
         else:
@@ -904,7 +954,7 @@ class JudgeConfig:
 
     @staticmethod
     def save(
-        project_dir: str, data: dict, *,
+        project_dir: str | Path, data: dict, *,
         trailing_newline: bool = True, newline: str = "\n",
     ) -> None:
         """Write judge_config.json from a raw dict.
@@ -957,16 +1007,16 @@ class ProgressState:
     """
 
     hash_match: bool = True
-    completed_gen: set[tuple[str, str, int]] = field(default_factory=set)
-    completed_eval: set[tuple[str, str, int]] = field(default_factory=set)
+    completed_gen: set[RunKey] = field(default_factory=set)
+    completed_eval: set[RunKey] = field(default_factory=set)
     events: list[dict] = field(default_factory=list)
     verdict: str | None = None
     last_hash: str | None = None
-    gen_events: dict[tuple[str, str, int], dict] = field(default_factory=dict)
-    eval_events: dict[tuple[str, str, int], dict] = field(default_factory=dict)
-    reasoning_events: dict[tuple[str, str, int], dict] = field(default_factory=dict)
-    stale_eval_keys: frozenset[tuple[str, str, int]] = frozenset()
-    stale_reasoning_keys: frozenset[tuple[str, str, int]] = frozenset()
+    gen_events: dict[RunKey, dict] = field(default_factory=dict)
+    eval_events: dict[RunKey, dict] = field(default_factory=dict)
+    reasoning_events: dict[RunKey, dict] = field(default_factory=dict)
+    stale_eval_keys: frozenset[RunKey] = frozenset()
+    stale_reasoning_keys: frozenset[RunKey] = frozenset()
     stale_verdict: bool = False
 
     @classmethod
@@ -1013,21 +1063,21 @@ class ProgressState:
             os.remove(progress_file)
 
         hash_match = True
-        completed_gen: set[tuple[str, str, int]] = set()
-        completed_eval: set[tuple[str, str, int]] = set()
+        completed_gen: set[RunKey] = set()
+        completed_eval: set[RunKey] = set()
         events: list[dict] = []
         verdict: str | None = None
         last_hash: str | None = None
-        gen_events: dict[tuple[str, str, int], dict] = {}
-        eval_events: dict[tuple[str, str, int], dict] = {}
-        reasoning_events: dict[tuple[str, str, int], dict] = {}
+        gen_events: dict[RunKey, dict] = {}
+        eval_events: dict[RunKey, dict] = {}
+        reasoning_events: dict[RunKey, dict] = {}
         # Line ordinals of the NEWEST line of each kind, per key. Only ever
         # compared with each other, so the gaps an unparseable line leaves in
         # the numbering are harmless. See the class docstring for what they
         # are evidence of.
-        gen_line: dict[tuple[str, str, int], int] = {}
-        eval_line: dict[tuple[str, str, int], int] = {}
-        reasoning_line: dict[tuple[str, str, int], int] = {}
+        gen_line: dict[RunKey, int] = {}
+        eval_line: dict[RunKey, int] = {}
+        reasoning_line: dict[RunKey, int] = {}
         verdict_line: int | None = None
         last_result_line = -1
 
@@ -1064,28 +1114,39 @@ class ProgressState:
                         continue
                     try:
                         event = json.loads(line)
+                        if not isinstance(event, dict) or "type" not in event:
+                            # Valid JSON of the wrong shape. Without this the
+                            # indexing below raised TypeError out of load(),
+                            # and since every command goes through here a
+                            # single odd line made the project unreadable by
+                            # all of them, render included.
+                            continue
                         events.append(event)
                         if event["type"] == "gen":
-                            key = (event["cand_id"], event["test_id"], event["rep"])
+                            key = RunKey(event["cand_id"], event["test_id"], event["rep"])
                             completed_gen.add(key)
                             gen_events[key] = event
                             gen_line[key] = position
                             last_result_line = position
                         elif event["type"] == "eval":
-                            key = (event["cand_id"], event["test_id"], event["rep"])
+                            key = RunKey(event["cand_id"], event["test_id"], event["rep"])
                             completed_eval.add(key)
                             eval_events[key] = event
                             eval_line[key] = position
                             last_result_line = position
                         elif event["type"] == "reasoning":
-                            key = (event["cand_id"], event["test_id"], event["rep"])
+                            key = RunKey(event["cand_id"], event["test_id"], event["rep"])
                             reasoning_events[key] = event
                             reasoning_line[key] = position
                         elif event["type"] == "verdict":
                             verdict = event["content"]
                             verdict_line = position
-                    except json.JSONDecodeError:
-                        pass  # ignore broken lines at the end of file (crash mid-write)
+                    except (json.JSONDecodeError, TypeError, KeyError):
+                        # Broken lines at the end of file (crash mid-write),
+                        # and events missing a key this reader needs. Skipping
+                        # one line costs at most one repetition, which resume
+                        # then redoes; raising would cost the whole log.
+                        pass
 
         if not readonly and not os.path.exists(progress_file):
             with open(progress_file, "w", encoding="utf-8") as f:

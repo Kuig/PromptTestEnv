@@ -18,7 +18,9 @@ from prompttestenv.api import is_local_provider, preload_model_for_run
 from prompttestenv.models import (
     REASONING_SCOPE_BEST,
     JudgeConfig,
+    ProgressState,
     ReasoningStats,
+    RunKey,
     TestCaseResult,
 )
 from prompttestenv.progress import append_event
@@ -26,9 +28,9 @@ from prompttestenv.reasoning import analyze_reasoning
 
 
 def _best_key(
-    keys: list[tuple[str, str, int]],
-    eval_events: dict[tuple[str, str, int], dict],
-) -> tuple[str, str, int]:
+    keys: list[RunKey],
+    eval_events: dict[RunKey, dict],
+) -> RunKey:
     """Pick the highest-scoring repetition out of one candidate x test group.
 
     Sole definition of "best" in the codebase: the analysis phase uses it to
@@ -50,11 +52,11 @@ def _best_key(
 
 
 def keys_to_analyze(
-    progress_state,
+    progress_state: ProgressState,
     scope: str,
     force_reanalyze: bool,
-    force_keys: frozenset[tuple[str, str, int]] = frozenset(),
-) -> list[tuple[str, str, int]]:
+    force_keys: frozenset[RunKey] = frozenset(),
+) -> list[RunKey]:
     """List the traces this run should spend judge calls on.
 
     Args:
@@ -79,7 +81,7 @@ def keys_to_analyze(
     ]
 
     if scope == REASONING_SCOPE_BEST:
-        by_group: dict[tuple[str, str], list[tuple[str, str, int]]] = {}
+        by_group: dict[tuple[str, str], list[RunKey]] = {}
         for key in with_trace:
             by_group.setdefault((key[0], key[1]), []).append(key)
         with_trace = [
@@ -99,10 +101,10 @@ def run_analysis_phase(
     results: list[TestCaseResult],
     judge_config: JudgeConfig,
     project_dir: str,
-    progress_state,
+    progress_state: ProgressState,
     force_reanalyze: bool = False,
-    force_keys: frozenset[tuple[str, str, int]] = frozenset(),
-) -> dict[tuple[str, str, int], dict]:
+    force_keys: frozenset[RunKey] = frozenset(),
+) -> dict[RunKey, dict]:
     """Analyze the stored reasoning traces that have no analysis yet.
 
     Which traces those are depends on judge_config.reasoning_analysis: "all"
@@ -131,7 +133,7 @@ def run_analysis_phase(
     logger.log_info("PHASE 3: Reasoning Analysis")
 
     tests_by_id = {row.test_id: row for row in results}
-    analyzed: dict[tuple[str, str, int], dict] = dict(progress_state.reasoning_events)
+    analyzed: dict[RunKey, dict] = dict(progress_state.reasoning_events)
 
     scope = judge_config.reasoning_analysis
     pending = [
@@ -200,9 +202,9 @@ def run_analysis_phase(
 
 def attach_reasoning(
     results: list[TestCaseResult],
-    reasoning_events: dict[tuple[str, str, int], dict],
-    eval_events: dict[tuple[str, str, int], dict],
-    gen_events: dict[tuple[str, str, int], dict],
+    reasoning_events: dict[RunKey, dict],
+    eval_events: dict[RunKey, dict],
+    gen_events: dict[RunKey, dict],
 ) -> None:
     """Populate the reasoning fields of every CandidatePerformance in place.
 

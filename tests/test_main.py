@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import shutil
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -223,3 +224,38 @@ class TestCmdEdit(LoggerResetTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSysPathHygiene(unittest.TestCase):
+    """The CLI must not publish the package's own module names globally.
+
+    __main__ used to insert its own directory at the front of sys.path, which
+    put modules called config, api, models, logger and progress ahead of
+    everything installed. Every dependency imported afterwards, streamlit and
+    the provider SDKs included, would have received ours for a bare
+    `import config`. It was also unnecessary: this module only ever runs as
+    prompttestenv.__main__, so the package is importable already.
+    """
+
+    def test_the_package_directory_is_not_on_sys_path(self):
+        import prompttestenv
+        package_dir = str(Path(prompttestenv.__file__).parent)
+        self.assertNotIn(package_dir, sys.path)
+
+    def test_the_streamlit_scripts_do_not_manipulate_sys_path(self):
+        """A textual guard, deliberately: both scripts are executed by path in
+        another process, where an assertion on sys.path would be ambiguous."""
+        import prompttestenv
+        for name in ("app.py", "editor.py"):
+            with self.subTest(name):
+                source = (Path(prompttestenv.__file__).parent / "gui" / name).read_text(encoding="utf-8")
+                self.assertNotIn("sys.path.insert", source)
+
+
+class TestOutputModesConstant(unittest.TestCase):
+    def test_the_cli_enforces_the_one_the_runner_enforces(self):
+        """A second copy would let argparse and the core disagree."""
+        from prompttestenv import models
+        from prompttestenv import __main__ as cli
+        self.assertIs(cli.OUTPUT_MODES, models.OUTPUT_MODES)
+

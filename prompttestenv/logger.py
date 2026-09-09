@@ -10,6 +10,7 @@ Usage:
     log_success("Operation complete")   # compact HTML via st.markdown
 """
 from __future__ import annotations
+import html
 import sys
 from typing import Callable, NamedTuple
 
@@ -72,9 +73,12 @@ def set_backend(backend: str) -> None:
         import streamlit as st
 
         def _st_emit(emoji: str, msg: str, color: str) -> None:
+            # Escaped: log lines routinely carry exception text, and a
+            # TypeError naming <class 'dict'> was rendered as an unknown tag
+            # and vanished from the screen, exactly when it was needed.
             st.markdown(
                 f'<div style="color:{color};font-family:monospace;'
-                f'line-height:1.4;margin:2px 0">{emoji} {msg}</div>',
+                f'line-height:1.4;margin:2px 0">{emoji} {html.escape(msg)}</div>',
                 unsafe_allow_html=True,
             )
 

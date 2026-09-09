@@ -10,9 +10,9 @@ from prompttestenv.api import (
     warm_up_for_run,
 )
 from prompttestenv.config import get_app_config
-from prompttestenv.progress import GEN_TIMEOUT_TEXT, append_event
+from prompttestenv.progress import GEN_ERROR_TEXT, GEN_TIMEOUT_TEXT, append_event
 from prompttestenv.models import (
-    Candidate, TestCaseResult, CandidatePerformance, JudgeConfig, LlmResult, ProgressState,
+    Candidate, TestCaseResult, CandidatePerformance, JudgeConfig, LlmResult, ProgressState, RunKey,
 )
 
 # Candidate generation does not retry: a retry lands on the measured elapsed
@@ -28,7 +28,7 @@ def _pending_tests(
     results: list[TestCaseResult],
     repetitions: int,
     progress_state: ProgressState,
-    redo_keys: frozenset[tuple[str, str, int]] = frozenset(),
+    redo_keys: frozenset[RunKey] = frozenset(),
 ) -> list[TestCaseResult]:
     """The test cases this candidate still has generation work left for.
 
@@ -56,8 +56,8 @@ def _pending_tests(
         test_result
         for test_result in results
         if any(
-            (cand_id, test_result.test_id, rep) not in progress_state.completed_gen
-            or (cand_id, test_result.test_id, rep) in redo_keys
+            RunKey(cand_id, test_result.test_id, rep) not in progress_state.completed_gen
+            or RunKey(cand_id, test_result.test_id, rep) in redo_keys
             for rep in range(repetitions)
         )
     ]
@@ -68,7 +68,7 @@ def _warm_up_candidate(
     results: list[TestCaseResult],
     repetitions: int,
     progress_state: ProgressState,
-    redo_keys: frozenset[tuple[str, str, int]] = frozenset(),
+    redo_keys: frozenset[RunKey] = frozenset(),
     max_response_timeout_seconds: float | None = None,
 ) -> None:
     """Pay this candidate's one-off provider costs before the clock starts.
@@ -122,7 +122,7 @@ def run_generation_phase(
     judge_config: JudgeConfig,
     project_dir: str,
     progress_state: ProgressState,
-    redo_keys: frozenset[tuple[str, str, int]] = frozenset(),
+    redo_keys: frozenset[RunKey] = frozenset(),
 ) -> list[dict]:
     """Execute Phase 1: generate LLM responses for all candidates x test cases.
 
@@ -178,55 +178,81 @@ def run_generation_phase(
                 prefix = f"[Rep {rep + 1}/{repetitions}] " if repetitions > 1 else ""
 
                 # Resume logic
-                key = (cand_id, test_result.test_id, rep)
+                key = RunKey(cand_id, test_result.test_id, rep)
                 if key in progress_state.completed_gen and key not in redo_keys:
+                    # .get throughout: a log written before a field existed is
+                    # still a log this run can resume from, and half these
+                    # reads already tolerated that while the other half raised
+                    # KeyError two lines away.
                     event = progress_state.gen_events[key]
-                    cand_perf.tokens.append(event["tokens"])
-                    cand_perf.reasoning_tokens.append(event["reasoning_tokens"])
-                    cand_perf.times.append(event["elapsed"])
+                    cand_perf.tokens.append(event.get("tokens", 0))
+                    cand_perf.reasoning_tokens.append(event.get("reasoning_tokens", 0))
+                    cand_perf.times.append(event.get("elapsed", -1.0))
                     pending_evals.append({
                         "cand_id": cand_id,
                         "cand_model": cand.model,
                         "test_result": test_result,
                         "cand_perf": cand_perf,
-                        "output": event["output"],
+                        "output": event.get("output", ""),
                         "reasoning_text": event.get("reasoning_text", ""),
-                        "reasoning_is_summary": event.get("reasoning_is_summary", False),
+                        "reasoning_is_summary": event.get("reasoning_is_summary"),
                         "rep": rep,
                         "repetitions": repetitions,
-                        "elapsed": event["elapsed"],
+                        "elapsed": event.get("elapsed", -1.0),
                     })
                     logger.log_info(f"{prefix}Resumed from log.")
                     continue
 
                 t_start = time.time()
-                result, timed_out = call_with_timeout(
-                    get_llm_response,
-                    fn_kwargs=dict(
-                        provider=provider,
-                        model_name=cand.model,
-                        system_instruction=sys_instr,
-                        user_prompt=test_result.prompt,
-                        local_media_paths=test_result.media_file_paths or None,
-                        temp=cand.temperature,
-                        thinking=thinking,
-                        disable_safety=cand.disable_safety,
-                        max_response_timeout_seconds=timeout_val,
-                        max_retries=GENERATION_MAX_RETRIES,
-                    ),
-                    timeout=timeout_val,
-                )
+                failure = None
+                try:
+                    result, timed_out = call_with_timeout(
+                        get_llm_response,
+                        fn_kwargs=dict(
+                            provider=provider,
+                            model_name=cand.model,
+                            system_instruction=sys_instr,
+                            user_prompt=test_result.prompt,
+                            local_media_paths=test_result.media_file_paths or None,
+                            temp=cand.temperature,
+                            thinking=thinking,
+                            disable_safety=cand.disable_safety,
+                            max_response_timeout_seconds=timeout_val,
+                            max_retries=GENERATION_MAX_RETRIES,
+                        ),
+                        timeout=timeout_val,
+                    )
+                except Exception as exc:
+                    # call_ai raises once its retries are spent, and this phase
+                    # passes GENERATION_MAX_RETRIES = 0, so a single 429 or a
+                    # dropped connection used to end the whole benchmark with a
+                    # traceback. A placeholder instead makes the sentence above
+                    # ("a failed generation is left for resume / --retry-errors
+                    # to redo") true of every failure and not only of timeouts.
+                    result, timed_out = LlmResult(text=GEN_ERROR_TEXT), False
+                    failure = f"{type(exc).__name__}: {exc}"
+                    logger.log_error(f"{prefix}Generation failed: {failure}")
+
                 if timed_out:
                     result = LlmResult(text=GEN_TIMEOUT_TEXT)
                     elapsed = timeout_val
                     logger.log_warning(f"{prefix}Timeout hit ({timeout_val}s).")
+                elif failure is not None:
+                    # -1, not the real wall clock, and unlike the timeout above,
+                    # which stores its deadline. A timeout is a measurement (the
+                    # model took at least that long); a provider error that came
+                    # back in 0.3s measures nothing about the model, and letting
+                    # it into times would drag time_mean down. calculate_stats
+                    # filters anything below zero.
+                    elapsed = -1.0
                 else:
                     elapsed = time.time() - t_start
                 output = result.text
                 tokens = result.output_tokens
                 reasoning_tokens = result.reasoning_tokens
 
-                logger.log_metric(f"{prefix}Generated ({elapsed:.2f}s) — tokens: {tokens}")
+                if failure is None:
+                    logger.log_metric(f"{prefix}Generated ({elapsed:.2f}s) — tokens: {tokens}")
                 cand_perf.tokens.append(tokens)
                 cand_perf.reasoning_tokens.append(reasoning_tokens)
                 cand_perf.times.append(elapsed)
@@ -244,7 +270,7 @@ def run_generation_phase(
                     "elapsed": elapsed,
                 })
 
-                append_event(project_dir, {
+                event = {
                     "type": "gen",
                     "cand_id": cand_id,
                     "test_id": test_result.test_id,
@@ -255,7 +281,13 @@ def run_generation_phase(
                     "reasoning_text": result.reasoning_text,
                     "reasoning_is_summary": result.reasoning_is_summary,
                     "elapsed": elapsed,
-                })
+                }
+                if failure is not None:
+                    # Diagnostic only, and kept out of "output" on purpose:
+                    # is_failed_gen compares the payload by equality, and the
+                    # judge would otherwise score the exception text.
+                    event["error"] = failure
+                append_event(project_dir, event)
 
                 if rep_delay > 0 and rep < repetitions - 1:
                     time.sleep(rep_delay)

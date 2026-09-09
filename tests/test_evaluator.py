@@ -5,7 +5,7 @@ import unittest
 from unittest.mock import patch
 
 from prompttestenv.evaluator import run_evaluation_phase
-from prompttestenv.models import CandidatePerformance, JudgeConfig, ProgressState, TestCaseResult
+from prompttestenv.models import CandidatePerformance, GlobalCriteria, JudgeConfig, ProgressState, TestCaseResult
 
 
 def _judge_config(timeout=5.0, eval_delay=0.0, reasoning_analysis="none"):
@@ -221,3 +221,68 @@ class TestRunEvaluationPhaseBestScoreTracking(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestJudgePreloadIsConditional(unittest.TestCase):
+    """The test_judge is only reached by the llm-judge evaluators.
+
+    Preloading it unconditionally put a model into VRAM that no call would use,
+    next to the one that would, on exactly the setups where VRAM is scarce.
+    """
+
+    def _pending(self, judge_type):
+        task, _perf = _pending_eval()
+        task["test_result"].judge_type = judge_type
+        return [task]
+
+    def _run(self, pending, jc, progress=None, redo=frozenset()):
+        with patch("prompttestenv.evaluator.preload_model_for_run") as mock_preload,              patch("prompttestenv.evaluator.evaluate_with_judge",
+                   return_value={"score": 8, "reasoning": "r",
+                                 "global_score": -1, "global_reasoning": "N/A"}),              patch("prompttestenv.evaluator.append_event"):
+            run_evaluation_phase(pending, jc, "/fake/project",
+                                 progress or ProgressState(), redo)
+        return mock_preload
+
+    def test_no_preload_when_every_judge_type_is_similarity(self):
+        jc = _judge_config()
+        jc.global_criteria = GlobalCriteria(mode="none")
+        self._run(self._pending("similarity"), jc).assert_not_called()
+
+    def test_no_preload_when_every_judge_type_is_assert(self):
+        jc = _judge_config()
+        jc.global_criteria = GlobalCriteria(mode="none")
+        self._run(self._pending("assert"), jc).assert_not_called()
+
+    def test_preloaded_when_a_test_case_uses_the_llm_judge(self):
+        jc = _judge_config()
+        jc.global_criteria = GlobalCriteria(mode="none")
+        self._run(self._pending("llm-judge"), jc).assert_called_once()
+
+    def test_preloaded_when_only_the_global_mode_is_llm_judge(self):
+        """The case a naive check on judge_type alone would get wrong."""
+        jc = _judge_config()
+        jc.global_criteria = GlobalCriteria(mode="llm-judge")
+        self._run(self._pending("similarity"), jc).assert_called_once()
+
+    def test_a_fully_resumed_phase_preloads_nothing(self):
+        jc = _judge_config()
+        jc.global_criteria = GlobalCriteria(mode="none")
+        pending = self._pending("llm-judge")
+        progress = ProgressState(
+            completed_eval={("A", "t1", 0)},
+            eval_events={("A", "t1", 0): {"score": 7, "global_score": -1,
+                                          "reason": "r", "g_reason": "N/A"}},
+        )
+        self._run(pending, jc, progress).assert_not_called()
+
+    def test_a_redo_key_still_counts_as_pending(self):
+        jc = _judge_config()
+        jc.global_criteria = GlobalCriteria(mode="none")
+        pending = self._pending("llm-judge")
+        progress = ProgressState(
+            completed_eval={("A", "t1", 0)},
+            eval_events={("A", "t1", 0): {"score": 7, "global_score": -1,
+                                          "reason": "r", "g_reason": "N/A"}},
+        )
+        self._run(pending, jc, progress, frozenset({("A", "t1", 0)})).assert_called_once()
+
