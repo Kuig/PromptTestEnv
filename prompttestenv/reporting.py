@@ -14,6 +14,7 @@ from prompttestenv.models import (
     CandidatePerformance,
     pool_by_candidate,
     project_name,
+    render_measured,
     JudgeConfig,
     TestCaseResult,
     GlobalCriteria,
@@ -138,9 +139,9 @@ def format_cost_per_point(cost: float) -> str:
         cost: The ratio, or -1.0 when it was not measurable.
 
     Returns:
-        The rounded figure, or "N/A".
+        The rounded figure, or the NOT_MEASURED sentinel.
     """
-    return "N/A" if cost < 0 else f"{cost:.0f}"
+    return render_measured(cost, f"{cost:.0f}")
 
 
 def md_to_html(md_text):
@@ -244,7 +245,14 @@ def generate_html_report(
     }
 
     template_text = importlib.resources.files("prompttestenv").joinpath("templates/report_template.html").read_text(encoding="utf-8")
-    template = jinja2.Template(template_text, autoescape=True)
+    env = jinja2.Environment(autoescape=True)
+    # Pipe-friendly argument order (text | measured(value)), swapped from
+    # render_measured's own (value, text): the -1/"not measured" wording is
+    # decided in one place (models.render_measured) for both the verdict
+    # payload and this template, so the two surfaces cannot show different
+    # text for the same sentinel.
+    env.filters["measured"] = lambda text, value: render_measured(value, text)
+    template = env.from_string(template_text)
     html_content = template.render(
         project_name=project_name(project_dir),
         verdict_html=verdict_html,

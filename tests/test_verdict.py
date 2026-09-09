@@ -9,7 +9,6 @@ from unittest.mock import patch
 
 from prompttestenv.models import (
     LlmResult,
-    ProgressState,
     REASONING_DIMENSIONS,
     REASONING_SCOPE_ALL,
     REASONING_SCOPE_BEST,
@@ -22,6 +21,7 @@ from prompttestenv.models import (
     TestCaseResult,
 )
 from prompttestenv.config import get_app_config
+from prompttestenv.progress import ProgressState
 from prompttestenv.runner import _generate_output
 from prompttestenv.verdict import (
     _source_cell,
@@ -250,15 +250,15 @@ class TestBuildSummaryData(_SummaryFixture, unittest.TestCase):
         row = self._row()
         for perf in row.candidates_perf.values():
             perf.reasoning_tokens.clear()
-        self.assertIn("n/a", self._aggregate([row]))
+        self.assertIn("N/A", self._aggregate([row]))
 
     def test_aggregate_task_column_is_not_available_when_never_scored(self):
-        """Every task-judge call failing must read n/a, not 0.00."""
+        """Every task-judge call failing must read N/A, not 0.00."""
         row = self._row()
         row.candidates_perf["Alpha"].scores.clear()
         rows = self._table_rows(self._aggregate([row]))
         alpha_row = next(line for line in rows if "Alpha" in line)
-        self.assertIn("n/a", alpha_row)
+        self.assertIn("N/A", alpha_row)
 
     def test_global_criteria_legend_is_part_of_the_metadata(self):
         """Living in metadata_text (appended to the system prompt), not a
@@ -391,7 +391,7 @@ class TestAggregateReasoningProfile(_SummaryFixture, unittest.TestCase):
             reasoning_analysis=REASONING_SCOPE_ALL,
         )
         rows = "\n".join(self._table_rows(aggregate))
-        self.assertIn("n/a", rows)
+        self.assertIn("N/A", rows)
         self.assertNotIn("-1", rows, "the not-measured sentinel leaked into a cell")
 
     def test_source_says_unknown_rather_than_claiming_a_raw_trace(self):
@@ -529,8 +529,8 @@ class TestFormatReasoningProfile(unittest.TestCase):
         out = _format_reasoning_profile(
             [_reasoning_analysis(alt_path=-1, coverage_solving=-1.0)]
         )
-        self.assertIn("solving not measured", out)
-        self.assertIn("Alternatives explored: not measured", out)
+        self.assertIn("solving N/A", out)
+        self.assertIn("Alternatives explored: N/A", out)
 
     def test_flags_a_provider_summary(self):
         out = _format_reasoning_profile([_reasoning_analysis(reasoning_is_summary=True)])

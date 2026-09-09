@@ -10,10 +10,10 @@ from prompttestenv.api import (
     warm_up_for_run,
 )
 from prompttestenv.config import get_app_config
-from prompttestenv.progress import GEN_ERROR_TEXT, GEN_TIMEOUT_TEXT, append_event
+from prompttestenv.progress import GEN_ERROR_TEXT, GEN_TIMEOUT_TEXT, ProgressState, RunKey, append_event
 from prompttestenv.models import (
     Candidate, TestCaseResult, CandidatePerformance, GenerationOutcome, JudgeConfig, LlmResult,
-    ProgressState, RunKey, apply_gen_event,
+    apply_gen_event,
 )
 
 # Candidate generation does not retry: a retry lands on the measured elapsed

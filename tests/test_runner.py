@@ -12,10 +12,10 @@ from prompttestenv.models import (
     CandidatePerformance,
     GlobalCriteria,
     JudgeConfig,
-    ProgressState,
     TestCase,
     TestCaseResult,
 )
+from prompttestenv.progress import ProgressState
 from prompttestenv.runner import (
     analyze_project,
     _generate_output,
@@ -630,6 +630,16 @@ class TestAnalyzeProject(LoggerResetTestCase):
         data["reasoning_analysis"] = scope
         self.judge_path.write_text(json.dumps(data), encoding="utf-8")
 
+    def test_missing_project_dir_returns_error(self):
+        result = analyze_project("/definitely/does/not/exist")
+        self.assertIn("ERROR", result)
+
+    def test_a_malformed_test_judge_block_is_refused_instead_of_crashing(self):
+        self.judge_path.write_text(json.dumps({"test_judge": "oops"}), encoding="utf-8")
+        result = analyze_project(self.project_dir)
+        self.assertTrue(result.startswith("Error:"), result)
+        self.assertIn("has no attribute", result)
+
     def test_none_scope_is_refused_instead_of_silently_doing_nothing(self):
         self._set_scope("none")
         result = analyze_project(self.project_dir)
@@ -669,6 +679,29 @@ class TestRenderFromProgress(LoggerResetTestCase):
     def setUp(self):
         self.project_dir = make_temp_project()
         self.addCleanup(shutil.rmtree, self.project_dir, ignore_errors=True)
+
+    def test_missing_project_dir_returns_error(self):
+        result = render_from_progress("/definitely/does/not/exist")
+        self.assertIn("ERROR", result)
+
+    def test_empty_candidates_returns_error(self):
+        """Pins the crash the guard exists for: a winner_only render on an
+        empty candidates.json used to reach max() on an empty dict inside
+        evaluate_best_candidate_fast and raise ValueError uncaught, instead of
+        the clean error run_project already gave for the same input."""
+        (Path(self.project_dir) / "candidates.json").write_text("[]", encoding="utf-8")
+        result = render_from_progress(self.project_dir, output_mode="winner_only")
+        self.assertIn("No candidates configured", result)
+
+    def test_a_malformed_test_judge_block_is_refused_instead_of_crashing(self):
+        """JudgeConfig.load raises AttributeError on this; the old except tuple
+        here did not catch it, so render died with a traceback."""
+        (Path(self.project_dir) / "judge_config.json").write_text(
+            json.dumps({"test_judge": "oops"}), encoding="utf-8"
+        )
+        result = render_from_progress(self.project_dir)
+        self.assertTrue(result.startswith("Error:"), result)
+        self.assertIn("has no attribute", result)
 
     def test_no_progress_file_reports_none_found(self):
         result = render_from_progress(self.project_dir)

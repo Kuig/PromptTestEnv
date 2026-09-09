@@ -21,6 +21,7 @@ from prompttestenv.models import (
     REASONING_SCOPE_ALL,
     REASONING_SCOPE_BEST,
     pool_by_candidate,
+    render_measured,
 )
 from prompttestenv.reasoning import aggregate_reasoning_stats
 
@@ -119,11 +120,8 @@ def _format_score(mean: float, std: float, with_std: bool) -> str:
     Returns:
         Formatted score string.
     """
-    if mean < 0:
-        return "N/A"
-    if with_std:
-        return f"{mean:.2f} ± {std:.2f}/10"
-    return f"{mean:.2f}/10"
+    text = f"{mean:.2f} ± {std:.2f}/10" if with_std else f"{mean:.2f}/10"
+    return render_measured(mean, text)
 
 
 def _format_global_score(perf: CandidatePerformance, with_std: bool) -> str:
@@ -153,7 +151,7 @@ def _format_task_score(perf: CandidatePerformance, with_std: bool) -> str:
 
 
 def _format_metric(agg: dict, key: str, suffix: str = "", scale: float = 1.0) -> str:
-    """Format one aggregated figure, or "not measured" when it has no value.
+    """Format one aggregated figure, or the NOT_MEASURED sentinel when it has no value.
 
     Args:
         agg: Aggregated reasoning stats.
@@ -162,13 +160,12 @@ def _format_metric(agg: dict, key: str, suffix: str = "", scale: float = 1.0) ->
         scale: Multiplier applied before formatting.
 
     Returns:
-        A "mean ± sd" string, or "not measured".
+        A "mean ± sd" string, or NOT_MEASURED.
     """
     mean = agg.get(f"avg_{key}", -1)
-    if mean is None or mean < 0:
-        return "not measured"
     std = agg.get(f"std_{key}", 0) or 0
-    return f"{mean * scale:.1f}{suffix} ± {std * scale:.1f}{suffix}"
+    text = f"{mean * scale:.1f}{suffix} ± {std * scale:.1f}{suffix}" if mean is not None else ""
+    return render_measured(mean, text)
 
 
 def _format_reasoning_profile(analyses: list[dict], scope: str = REASONING_SCOPE_ALL) -> str:
@@ -395,25 +392,24 @@ def _metric_cell(
         decimals: Digits after the decimal point.
 
     Returns:
-        The formatted value, or "n/a" when it was not measured.
+        The formatted value, or the NOT_MEASURED sentinel when it was not measured.
     """
     mean = agg.get(f"avg_{key}", -1)
-    if mean is None or mean < 0:
-        return "n/a"
-    return f"{mean * scale:.{decimals}f}{suffix}"
+    text = f"{mean * scale:.{decimals}f}{suffix}" if mean is not None else ""
+    return render_measured(mean, text)
 
 
 def _format_cost_cell(perf: CandidatePerformance) -> str:
-    """Format reasoning cost per point, or "n/a" when it was not measurable.
+    """Format reasoning cost per point, or the NOT_MEASURED sentinel when not measurable.
 
     Args:
         perf: Pooled performance record.
 
     Returns:
-        The rounded ratio, or "n/a".
+        The rounded ratio, or NOT_MEASURED.
     """
     cost = perf.reasoning_cost_per_point
-    return "n/a" if cost < 0 else f"{cost:.0f}"
+    return render_measured(cost, f"{cost:.0f}")
 
 
 def _format_cost_suffix(perf: CandidatePerformance) -> str:
@@ -490,7 +486,7 @@ def _build_overall_aggregate(
         [
             [
                 name,
-                "n/a" if perf.score_mean < 0 else f"{perf.score_mean:.2f}",
+                render_measured(perf.score_mean, f"{perf.score_mean:.2f}"),
                 _format_global_score(perf, with_std=False),
                 f"{perf.time_mean:.2f}s",
                 f"{perf.tokens_mean:.0f}",

@@ -14,10 +14,10 @@ from prompttestenv.models import (
     REASONING_SCOPE_NONE,
     CandidatePerformance,
     JudgeConfig,
-    ProgressState,
     ReasoningStats,
     TestCaseResult,
 )
+from prompttestenv.progress import ProgressState
 
 
 def _state(gen: dict, evals: dict = None, reasoning: dict = None) -> ProgressState:

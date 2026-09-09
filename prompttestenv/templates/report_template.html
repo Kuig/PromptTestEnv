@@ -55,7 +55,7 @@
                     <th class="sys-col">
                         {{ cand.name }}
                         <span class="header-badge" title="Average of Task & Global Means">
-                            {% if s.combined_avg >= 0 %}{{ "{:.1f}".format(s.combined_avg) }}{% else %}N/A{% endif %}
+                            {{ ("{:.1f}".format(s.combined_avg)) | measured(s.combined_avg) }}
                         </span>
                     </th>
                 {% endfor %}
@@ -68,8 +68,8 @@
                 {% for cand in candidates %}
                     {% set s = stats[cand.name] %}
                     <td class="stats-cell">
-                        Task: {% if s.score_mean >= 0 %}{{ "{:.2f}".format(s.score_mean) }} &plusmn; {{ "{:.2f}".format(s.score_std) }}{% else %}N/A{% endif %}<br>
-                        Global: {% if s.global_score_mean >= 0 %}{{ "{:.2f}".format(s.global_score_mean) }} &plusmn; {{ "{:.2f}".format(s.global_score_std) }}{% else %}N/A{% endif %}<br>
+                        Task: {{ ("{:.2f} &plusmn; {:.2f}".format(s.score_mean, s.score_std)) | measured(s.score_mean) | safe }}<br>
+                        Global: {{ ("{:.2f} &plusmn; {:.2f}".format(s.global_score_mean, s.global_score_std)) | measured(s.global_score_mean) | safe }}<br>
                         <span style="font-size:0.85em; color:#666; margin-top:4px; display:inline-block;">
                             Tokens: {{ "{:.0f}".format(s.tokens_mean) }} &plusmn; {{ "{:.0f}".format(s.tokens_std) }} (💭 {{ "{:.0f}".format(s.reasoning_tokens_mean) }} &plusmn; {{ "{:.0f}".format(s.reasoning_tokens_std) }}{% if s.reasoning_cost_per_point >= 0 %} | <span title="Thinking tokens per point of task score, so lower is cheaper. A diagnostic, not a ranking key: a candidate that thinks little and fails also scores well here.">{{ format_cost_per_point(s.reasoning_cost_per_point) }}/point</span>{% endif %}) | ⏱️ {{ "{:.2f}".format(s.time_mean) }}s &plusmn; {{ "{:.2f}".format(s.time_std) }}s
                         </span>
@@ -85,12 +85,12 @@
                                 </div>
                                 {% endif %}
                                 <div class="density-note">
-                                    Alt paths <b>{% if rs.avg_alt_path >= 0 %}{{ "{:.1f}".format(rs.avg_alt_path) }}&plusmn;{{ "{:.1f}".format(rs.std_alt_path) }}{% else %}n/a{% endif %}</b>
-                                    &nbsp;| Self-corrections <b>{% if rs.avg_autocorrect >= 0 %}{{ "{:.1f}".format(rs.avg_autocorrect) }}&plusmn;{{ "{:.1f}".format(rs.std_autocorrect) }}{% else %}n/a{% endif %}</b>
-                                    &nbsp;| Alignment <b>{% if rs.avg_alignment_score >= 0 %}{{ "{:.1f}".format(rs.avg_alignment_score) }}&plusmn;{{ "{:.1f}".format(rs.std_alignment_score) }}{% else %}n/a{% endif %}</b>
-                                    &nbsp;| Trace/response similarity <b>{% if rs.avg_trace_response_drift >= 0 %}{{ "{:.2f}".format(rs.avg_trace_response_drift) }}&plusmn;{{ "{:.2f}".format(rs.std_trace_response_drift) }}{% else %}n/a{% endif %}</b>
-                                    &nbsp;| Density <b>{% if rs.avg_density >= 0 %}{{ "{:.2f}".format(rs.avg_density) }}&plusmn;{{ "{:.2f}".format(rs.std_density) }}{% else %}n/a{% endif %}</b>
-                                    &nbsp;| Repetition rate <b>{% if rs.avg_repetition_rate >= 0 %}{{ "{:.0f}".format(rs.avg_repetition_rate * 100) }}&plusmn;{{ "{:.0f}".format(rs.std_repetition_rate * 100) }}%{% else %}n/a{% endif %}</b>
+                                    Alt paths <b>{{ ("{:.1f}&plusmn;{:.1f}".format(rs.avg_alt_path, rs.std_alt_path)) | measured(rs.avg_alt_path) | safe }}</b>
+                                    &nbsp;| Self-corrections <b>{{ ("{:.1f}&plusmn;{:.1f}".format(rs.avg_autocorrect, rs.std_autocorrect)) | measured(rs.avg_autocorrect) | safe }}</b>
+                                    &nbsp;| Alignment <b>{{ ("{:.1f}&plusmn;{:.1f}".format(rs.avg_alignment_score, rs.std_alignment_score)) | measured(rs.avg_alignment_score) | safe }}</b>
+                                    &nbsp;| Trace/response similarity <b>{{ ("{:.2f}&plusmn;{:.2f}".format(rs.avg_trace_response_drift, rs.std_trace_response_drift)) | measured(rs.avg_trace_response_drift) | safe }}</b>
+                                    &nbsp;| Density <b>{{ ("{:.2f}&plusmn;{:.2f}".format(rs.avg_density, rs.std_density)) | measured(rs.avg_density) | safe }}</b>
+                                    &nbsp;| Repetition rate <b>{{ ("{:.0f}&plusmn;{:.0f}%".format(rs.avg_repetition_rate * 100, rs.std_repetition_rate * 100)) | measured(rs.avg_repetition_rate) | safe }}</b>
                                 </div>
                                 {% for dim in reasoning_dimensions %}
                                     {% set cov = rs.get('avg_coverage_' ~ dim.name, -1) %}
@@ -98,7 +98,7 @@
                                     <div class="dim-row" title="{{ dim.definition }}">
                                         <span class="dim-name">{{ dim.name }}</span>
                                         <span class="dim-track">{% if cov >= 0 %}<span class="dim-fill" style="width:{{ (cov * 100) | round(1) }}%; background:{{ dim.color }};"></span>{% endif %}</span>
-                                        <span class="dim-val">{% if cov >= 0 %}{{ "{:.0f}".format(cov * 100) }}&plusmn;{{ "{:.0f}".format(cstd * 100) }}%{% else %}n/a{% endif %}</span>
+                                        <span class="dim-val">{{ ("{:.0f}&plusmn;{:.0f}%".format(cov * 100, cstd * 100)) | measured(cov) | safe }}</span>
                                     </div>
                                 {% endfor %}
                             </div>
@@ -175,19 +175,19 @@
                                         <summary><strong>🧠 Reasoning Analysis</strong></summary>
                                         <div style="font-size:0.8em; margin-top:8px; color:#444;">
                                             <b>Best repetition, the same one shown above.</b><br>
-                                            Alt paths <b>{% if ra.alt_path >= 0 %}{{ ra.alt_path }}{% else %}n/a{% endif %}</b> &nbsp;|
-                                            Self-corrections <b>{% if ra.autocorrect >= 0 %}{{ ra.autocorrect }}{% else %}n/a{% endif %}</b> &nbsp;|
-                                            Alignment <b>{% if ra.alignment_score >= 0 %}{{ ra.alignment_score }}/10{% else %}n/a{% endif %}</b>
+                                            Alt paths <b>{{ (ra.alt_path | string) | measured(ra.alt_path) }}</b> &nbsp;|
+                                            Self-corrections <b>{{ (ra.autocorrect | string) | measured(ra.autocorrect) }}</b> &nbsp;|
+                                            Alignment <b>{{ (ra.alignment_score ~ "/10") | measured(ra.alignment_score) }}</b>
                                             {% if ra.trace_response_drift >= 0 %}&nbsp;| Trace/response similarity <b>{{ "{:.2f}".format(ra.trace_response_drift) }}</b>{% endif %}
-                                            &nbsp;| Density <b>{% if ra.density >= 0 %}{{ "{:.2f}".format(ra.density) }}{% else %}n/a{% endif %}</b>
-                                            &nbsp;| Repetition rate <b>{% if ra.repetition_rate >= 0 %}{{ "{:.0f}".format(ra.repetition_rate * 100) }}%{% else %}n/a{% endif %}</b>
+                                            &nbsp;| Density <b>{{ ("{:.2f}".format(ra.density)) | measured(ra.density) }}</b>
+                                            &nbsp;| Repetition rate <b>{{ ("{:.0f}%".format(ra.repetition_rate * 100)) | measured(ra.repetition_rate) }}</b>
                                             <br><br>
                                             {% for dim in reasoning_dimensions %}
                                                 {% set cov = ra.coverage(dim.name) %}
                                                 <div class="dim-row" title="{{ dim.definition }}">
                                                     <span class="dim-name">{{ dim.name }}</span>
                                                     <span class="dim-track">{% if cov >= 0 %}<span class="dim-fill" style="width:{{ (cov * 100) | round(1) }}%; background:{{ dim.color }};"></span>{% endif %}</span>
-                                                    <span class="dim-val">{% if cov >= 0 %}{{ "{:.0f}".format(cov * 100) }}%{% else %}n/a{% endif %}</span>
+                                                    <span class="dim-val">{{ ("{:.0f}%".format(cov * 100)) | measured(cov) }}</span>
                                                 </div>
                                             {% endfor %}
                                             <div class="reasoning-legend" style="margin:6px 0;">

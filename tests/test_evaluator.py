@@ -6,8 +6,9 @@ from unittest.mock import patch
 
 from prompttestenv.evaluator import run_evaluation_phase
 from prompttestenv.models import (
-    CandidatePerformance, GenerationOutcome, GlobalCriteria, JudgeConfig, ProgressState, TestCaseResult,
+    CandidatePerformance, GenerationOutcome, GlobalCriteria, JudgeConfig, TestCaseResult,
 )
+from prompttestenv.progress import ProgressState
 
 
 def _judge_config(timeout=5.0, eval_delay=0.0, reasoning_analysis="none"):

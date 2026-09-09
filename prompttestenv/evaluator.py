@@ -4,9 +4,9 @@ import time
 
 import prompttestenv.logger as logger
 from prompttestenv.api import call_with_timeout, preload_model_for_run
-from prompttestenv.progress import JUDGE_TIMEOUT_TEXT, append_event
+from prompttestenv.progress import JUDGE_TIMEOUT_TEXT, ProgressState, RunKey, append_event
 from prompttestenv.models import (
-    JUDGE_TYPE_LLM, GenerationOutcome, JudgeConfig, ProgressState, RunKey, apply_eval_event,
+    JUDGE_TYPE_LLM, GenerationOutcome, JudgeConfig, apply_eval_event,
 )
 from prompttestenv.test_judge import evaluate_with_judge
 

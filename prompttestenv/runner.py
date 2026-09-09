@@ -11,8 +11,8 @@ from prompttestenv.verdict import generate_verdict, evaluate_best_candidate_fast
 from prompttestenv.generation import run_generation_phase
 from prompttestenv.reporting import generate_html_report
 from prompttestenv.json_report import generate_json_report
-from prompttestenv.models import TestCaseResult, CandidatePerformance, Candidate, TestCase, JudgeConfig, GlobalCriteria, ProgressState, OUTPUT_MODES, apply_eval_event, apply_gen_event
-from prompttestenv.progress import append_event, failed_eval_keys, failed_gen_keys
+from prompttestenv.models import TestCaseResult, CandidatePerformance, Candidate, TestCase, JudgeConfig, GlobalCriteria, OUTPUT_MODES, apply_eval_event, apply_gen_event
+from prompttestenv.progress import ProgressState, append_event, failed_eval_keys, failed_gen_keys
 import prompttestenv.projectio as pio
 
 
@@ -190,6 +190,60 @@ def _invalid_output_mode(output_mode: str) -> str | None:
     )
 
 
+# Wider than the two the loaders document (FileNotFoundError only), because a
+# malformed JSON shape can raise ValueError/TypeError/AttributeError/KeyError
+# out of any of the three regardless of which entry point called them - they
+# read the same files. Explicit tuple rather than `except Exception`, so a
+# real bug still surfaces.
+_LOADER_EXCEPTIONS = (FileNotFoundError, ValueError, TypeError, AttributeError, KeyError)
+
+
+def _load_project_config(
+    project_dir: str,
+    *,
+    load_candidates: bool = True,
+) -> tuple[list[Candidate] | None, JudgeConfig, list[TestCase]] | str:
+    """Directory, loader and non-empty checks shared by the three entry points.
+
+    Every one of run_project/analyze_project/render_from_progress needs the
+    project directory to exist and the config it loads to be non-degenerate
+    before doing anything else; they differ only in whether candidates.json
+    matters at all (analyze_project never reads it, since reasoning analysis
+    re-scores traces already stored, not candidates) and in what each does
+    next about the progress log, which stays each caller's own concern below
+    this helper.
+
+    Args:
+        project_dir: Path to the benchmark project directory.
+        load_candidates: Whether candidates.json is loaded and checked for
+            emptiness. False for analyze_project.
+
+    Returns:
+        (candidates, judge_config, test_cases) on success - candidates is
+        None when load_candidates is False - or an "Error: ..."/"ERROR: ..."
+        string ready to be returned verbatim, matching every entry point's
+        own documented "never raise, always return a descriptive string"
+        contract.
+    """
+    if not os.path.exists(project_dir):
+        return f"ERROR: Project folder '{project_dir}' does not exist. Use 'init' first."
+
+    try:
+        candidates = Candidate.load_all(project_dir) if load_candidates else None
+        judge_config = JudgeConfig.load(project_dir)
+        test_cases = TestCase.load_all(project_dir)
+    except _LOADER_EXCEPTIONS as exc:
+        return f"Error: {exc}"
+
+    if load_candidates and not candidates:
+        return f"Error: No candidates configured in {project_dir}"
+
+    if not test_cases:
+        return f"Error: No test cases found in {project_dir}"
+
+    return candidates, judge_config, test_cases
+
+
 def run_project(
     project_dir: str,
     output_mode: str = "html",
@@ -247,23 +301,10 @@ def run_project(
     if config_errors:
         return "Error: invalid project configuration: " + "; ".join(config_errors)
 
-    try:
-        candidates = Candidate.load_all(project_dir)
-        judge_config = JudgeConfig.load(project_dir)
-        test_cases = TestCase.load_all(project_dir)
-    except (FileNotFoundError, ValueError, TypeError, AttributeError, KeyError) as exc:
-        # Wider than the two the loaders document, because validate above
-        # cannot enumerate every malformed shape and an entry point owes the
-        # caller a string, not a traceback. Explicit tuple rather than
-        # `except Exception`, so a real bug still surfaces. Confined to the
-        # loaders: the phases below deliberately propagate.
-        return f"Error: {exc}"
-
-    if not candidates:
-        return f"Error: No candidates configured in {project_dir}"
-
-    if not test_cases:
-        return f"Error: No test cases found in {project_dir}"
+    loaded = _load_project_config(project_dir)
+    if isinstance(loaded, str):
+        return loaded
+    candidates, judge_config, test_cases = loaded
 
     # Before ProgressState.load, so a typo'd path does not even create an empty
     # progress.jsonl, and before any LLM call is made. analyze_project and
@@ -397,17 +438,10 @@ def analyze_project(project_dir: str, force_reanalyze: bool = False) -> str:
     Returns:
         A summary string, or a descriptive error. Never raises.
     """
-    if not os.path.exists(project_dir):
-        return f"ERROR: Project folder '{project_dir}' does not exist. Use 'init' first."
-
-    try:
-        judge_config = JudgeConfig.load(project_dir)
-        test_cases = TestCase.load_all(project_dir)
-    except (FileNotFoundError, ValueError) as exc:
-        return f"Error: {exc}"
-
-    if not test_cases:
-        return f"Error: No test cases found in {project_dir}"
+    loaded = _load_project_config(project_dir, load_candidates=False)
+    if isinstance(loaded, str):
+        return loaded
+    _, judge_config, test_cases = loaded
 
     if not judge_config.reasoning_enabled:
         return (
@@ -460,6 +494,11 @@ def render_from_progress(project_dir: str, output_mode: str = "html") -> str:
     if invalid:
         return invalid
 
+    loaded = _load_project_config(project_dir)
+    if isinstance(loaded, str):
+        return loaded
+    candidates, judge_config, test_cases = loaded
+
     progress_state = ProgressState.load(project_dir, readonly=True)
     if not progress_state.events:
         return f"No progress found in {project_dir}"
@@ -469,16 +508,6 @@ def render_from_progress(project_dir: str, output_mode: str = "html") -> str:
             "Current configuration does not match the progress. "
             "Best-effort render will be performed."
         )
-
-    try:
-        candidates = Candidate.load_all(project_dir)
-        judge_config = JudgeConfig.load(project_dir)
-        test_cases = TestCase.load_all(project_dir)
-    except (FileNotFoundError, ValueError) as exc:
-        return f"Error: {exc}"
-
-    if not test_cases:
-        return f"Error: No test cases found in {project_dir}"
 
     global_criteria = GlobalCriteria.load(project_dir)
     judge_config.global_criteria = global_criteria

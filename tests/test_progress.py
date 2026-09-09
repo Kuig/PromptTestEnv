@@ -10,6 +10,8 @@ from prompttestenv.progress import (
     GEN_TIMEOUT_TEXT,
     HASHED_FILENAMES,
     JUDGE_TIMEOUT_TEXT,
+    ProgressState,
+    RunKey,
     append_event,
     calculate_config_hash,
     config_hash_from_bytes,
@@ -20,6 +22,7 @@ from prompttestenv.progress import (
     is_failed_gen,
     read_stored_hash,
 )
+from testutils import LoggerResetTestCase
 
 
 class TestCalculateConfigHash(unittest.TestCase):
@@ -276,6 +279,227 @@ class TestFailedKeySets(unittest.TestCase):
     def test_empty_log_selects_nothing(self):
         self.assertEqual(failed_gen_keys({}), set())
         self.assertEqual(failed_eval_keys({}), set())
+
+
+class TestRunKey(unittest.TestCase):
+    """A NamedTuple standing in for the plain 3-tuple it replaced: every use
+    as a dict key, set member, and unpacking target must keep working
+    against code that still builds or expects a literal (a, b, c)."""
+
+    def test_equal_to_the_literal_tuple_it_replaces(self):
+        self.assertEqual(RunKey("gpt", "t1", 0), ("gpt", "t1", 0))
+
+    def test_hashes_the_same_as_the_literal_tuple(self):
+        self.assertEqual(hash(RunKey("gpt", "t1", 0)), hash(("gpt", "t1", 0)))
+
+    def test_a_literal_tuple_looks_up_a_dict_keyed_by_runkey(self):
+        events = {RunKey("gpt", "t1", 0): {"score": 7}}
+        self.assertEqual(events[("gpt", "t1", 0)], {"score": 7})
+
+    def test_a_runkey_looks_up_a_dict_keyed_by_the_literal_tuple(self):
+        events = {("gpt", "t1", 0): {"score": 7}}
+        self.assertEqual(events[RunKey("gpt", "t1", 0)], {"score": 7})
+
+    def test_positional_unpacking(self):
+        cand, test_id, rep = RunKey("gpt", "t1", 2)
+        self.assertEqual((cand, test_id, rep), ("gpt", "t1", 2))
+
+    def test_field_access(self):
+        key = RunKey("gpt", "t1", 2)
+        self.assertEqual(key.candidate, "gpt")
+        self.assertEqual(key.test_id, "t1")
+        self.assertEqual(key.repetition, 2)
+
+    def test_membership_in_a_set_of_literal_tuples(self):
+        completed = {("gpt", "t1", 0), ("gpt", "t1", 1)}
+        self.assertIn(RunKey("gpt", "t1", 0), completed)
+
+
+class TestProgressStateLoad(LoggerResetTestCase):
+    def setUp(self):
+        self.project_dir = tempfile.mkdtemp(prefix="prompttestenv_test_")
+        self.addCleanup(shutil.rmtree, self.project_dir, ignore_errors=True)
+        # ProgressState.load hashes candidates/judge_config/test_cases/global_criteria.json,
+        # so give it something deterministic to hash even though it doesn't validate content.
+        for name in ("candidates.json", "judge_config.json", "test_cases.json", "global_criteria.json"):
+            (Path(self.project_dir) / name).write_text("{}", encoding="utf-8")
+
+    def test_no_existing_file_creates_one_with_meta_line(self):
+        state = ProgressState.load(self.project_dir)
+        self.assertTrue(state.hash_match)
+        self.assertEqual(state.events, [])
+        progress_file = Path(self.project_dir) / "progress.jsonl"
+        self.assertTrue(progress_file.exists())
+        meta = json.loads(progress_file.read_text(encoding="utf-8").splitlines()[0])
+        self.assertEqual(meta["type"], "meta")
+
+    def test_a_line_of_the_wrong_shape_is_skipped_not_fatal(self):
+        """One odd line must not cost the whole log.
+
+        The reader caught JSONDecodeError but then indexed event["type"], so a
+        line that is valid JSON of the wrong shape raised TypeError out of
+        load() - and since run, analyze and render all go through here, that
+        made the project unreadable by every command, render included.
+        """
+        ProgressState.load(self.project_dir)
+        good = {"type": "gen", "cand_id": "C", "test_id": "t", "rep": 0,
+                "output": "real answer", "tokens": 5, "reasoning_tokens": 0,
+                "reasoning_text": "", "elapsed": 1.0}
+        with open(Path(self.project_dir) / "progress.jsonl", "a", encoding="utf-8") as f:
+            print(json.dumps("a bare string line"), file=f)
+            print(json.dumps({"no_type": "at all"}), file=f)
+            print(json.dumps([1, 2, 3]), file=f)
+            print(json.dumps(good), file=f)
+
+        state = ProgressState.load(self.project_dir)
+
+        self.assertIn(("C", "t", 0), state.completed_gen)
+        self.assertEqual(state.gen_events[("C", "t", 0)]["output"], "real answer")
+
+    def test_an_event_missing_a_key_the_reader_needs_is_skipped(self):
+        ProgressState.load(self.project_dir)
+        with open(Path(self.project_dir) / "progress.jsonl", "a", encoding="utf-8") as f:
+            print(json.dumps({"type": "gen", "cand_id": "C"}), file=f)
+
+        state = ProgressState.load(self.project_dir)
+
+        self.assertEqual(state.completed_gen, set())
+
+    def test_hash_mismatch_renames_to_bak(self):
+        ProgressState.load(self.project_dir)  # creates progress.jsonl with current hash
+        # Now change a config file so the stored hash no longer matches.
+        (Path(self.project_dir) / "candidates.json").write_text('{"changed": true}', encoding="utf-8")
+        state = ProgressState.load(self.project_dir)
+        self.assertFalse(state.hash_match)
+        self.assertTrue((Path(self.project_dir) / "progress.jsonl.bak").exists())
+
+    def test_force_restart_discards_existing_progress(self):
+        ProgressState.load(self.project_dir)
+        progress_file = Path(self.project_dir) / "progress.jsonl"
+        with open(progress_file, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"type": "gen", "cand_id": "A", "test_id": "t1", "rep": 0, "output": "x", "tokens": 1, "reasoning_tokens": 0, "elapsed": 0.1}) + "\n")
+
+        state = ProgressState.load(self.project_dir, force_restart=True)
+        self.assertEqual(state.events, [])
+
+    def test_completed_gen_and_eval_sets_populated(self):
+        progress_file = Path(self.project_dir) / "progress.jsonl"
+        current_hash = calculate_config_hash(self.project_dir)
+        lines = [
+            json.dumps({"type": "meta", "config_hash": current_hash}),
+            json.dumps({"type": "gen", "cand_id": "A", "test_id": "t1", "rep": 0, "output": "x", "tokens": 1, "reasoning_tokens": 0, "elapsed": 0.1}),
+            json.dumps({"type": "eval", "cand_id": "A", "test_id": "t1", "rep": 0, "score": 8, "global_score": -1, "reason": "ok", "g_reason": "N/A"}),
+        ]
+        progress_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        state = ProgressState.load(self.project_dir)
+        self.assertIn(("A", "t1", 0), state.completed_gen)
+        self.assertIn(("A", "t1", 0), state.completed_eval)
+        self.assertEqual(len(state.events), 2)
+
+    def test_trailing_corrupted_line_is_ignored(self):
+        progress_file = Path(self.project_dir) / "progress.jsonl"
+        current_hash = calculate_config_hash(self.project_dir)
+        progress_file.write_text(
+            json.dumps({"type": "meta", "config_hash": current_hash}) + "\n" + "{not valid json\n",
+            encoding="utf-8",
+        )
+        state = ProgressState.load(self.project_dir)
+        self.assertTrue(state.hash_match)
+        self.assertEqual(state.events, [])
+
+
+class TestProgressStateStaleness(LoggerResetTestCase):
+    """The log's line ORDER is what records an interrupted retry.
+
+    An append-only log supersedes a failed step by adding a corrected event, so
+    an eval (or reasoning, or verdict) with newer results after it was computed
+    against text that is no longer stored. Nothing else in the state can see
+    that: the failure predicates read the surviving values, not their position.
+    """
+
+    KEY = ("A", "t1", 0)
+
+    def setUp(self):
+        self.project_dir = tempfile.mkdtemp(prefix="prompttestenv_test_")
+        self.addCleanup(shutil.rmtree, self.project_dir, ignore_errors=True)
+        for name in ("candidates.json", "judge_config.json", "test_cases.json", "global_criteria.json"):
+            (Path(self.project_dir) / name).write_text("{}", encoding="utf-8")
+
+    def _load(self, *events):
+        lines = [json.dumps({"type": "meta", "config_hash": calculate_config_hash(self.project_dir)})]
+        lines += [json.dumps(event) for event in events]
+        (Path(self.project_dir) / "progress.jsonl").write_text(
+            "\n".join(lines) + "\n", encoding="utf-8"
+        )
+        return ProgressState.load(self.project_dir, readonly=True)
+
+    def _gen(self, output="answer"):
+        return {"type": "gen", "cand_id": "A", "test_id": "t1", "rep": 0,
+                "output": output, "tokens": 1, "reasoning_tokens": 0,
+                "reasoning_text": "a trace", "elapsed": 0.1}
+
+    def _eval(self, score=8):
+        return {"type": "eval", "cand_id": "A", "test_id": "t1", "rep": 0,
+                "score": score, "global_score": -1, "reason": "ok", "g_reason": "N/A"}
+
+    def _reasoning(self):
+        return {"type": "reasoning", "cand_id": "A", "test_id": "t1", "rep": 0}
+
+    def test_a_gen_after_its_eval_makes_the_eval_stale(self):
+        state = self._load(self._gen(), self._eval(), self._gen("regenerated"))
+        self.assertEqual(state.stale_eval_keys, frozenset({self.KEY}))
+
+    def test_the_normal_order_is_not_stale(self):
+        state = self._load(self._gen(), self._eval())
+        self.assertEqual(state.stale_eval_keys, frozenset())
+
+    def test_a_gen_with_no_eval_is_not_stale(self):
+        """Unjudged, not stale: the evaluation phase already picks it up."""
+        state = self._load(self._gen())
+        self.assertEqual(state.stale_eval_keys, frozenset())
+
+    def test_staleness_is_self_healing(self):
+        """Once the eval is re-appended it follows the gen again, by itself."""
+        state = self._load(self._gen(), self._eval(), self._gen("regenerated"), self._eval(9))
+        self.assertEqual(state.stale_eval_keys, frozenset())
+
+    def test_a_gen_after_its_reasoning_makes_the_analysis_stale(self):
+        state = self._load(self._gen(), self._reasoning(), self._gen("regenerated"))
+        self.assertEqual(state.stale_reasoning_keys, frozenset({self.KEY}))
+
+    def test_results_after_the_verdict_make_it_stale(self):
+        state = self._load(
+            self._gen(), self._eval(), {"type": "verdict", "content": "V"},
+            self._gen("regenerated"), self._eval(9),
+        )
+        self.assertTrue(state.stale_verdict)
+
+    def test_a_verdict_written_last_is_not_stale(self):
+        state = self._load(self._gen(), self._eval(), {"type": "verdict", "content": "V"})
+        self.assertFalse(state.stale_verdict)
+
+    def test_no_verdict_at_all_is_not_stale(self):
+        state = self._load(self._gen(), self._eval())
+        self.assertFalse(state.stale_verdict)
+
+    def test_a_later_reasoning_event_does_not_stale_the_verdict(self):
+        """`analyze` is meant to be re-run over a finished project whenever the
+        schema is retuned, so it must not cost a verdict call every time."""
+        state = self._load(
+            self._gen(), self._eval(), {"type": "verdict", "content": "V"}, self._reasoning(),
+        )
+        self.assertFalse(state.stale_verdict)
+
+    def test_early_return_paths_leave_the_signals_at_their_defaults(self):
+        (Path(self.project_dir) / "progress.jsonl").write_text(
+            json.dumps({"type": "meta", "config_hash": "deadbeef"}) + "\n", encoding="utf-8"
+        )
+        state = ProgressState.load(self.project_dir, readonly=True)
+        self.assertFalse(state.hash_match)
+        self.assertEqual(state.stale_eval_keys, frozenset())
+        self.assertEqual(state.stale_reasoning_keys, frozenset())
+        self.assertFalse(state.stale_verdict)
 
 
 if __name__ == "__main__":

@@ -18,12 +18,10 @@ from prompttestenv.api import is_local_provider, preload_model_for_run
 from prompttestenv.models import (
     REASONING_SCOPE_BEST,
     JudgeConfig,
-    ProgressState,
     ReasoningStats,
-    RunKey,
     TestCaseResult,
 )
-from prompttestenv.progress import append_event
+from prompttestenv.progress import ProgressState, RunKey, append_event
 from prompttestenv.reasoning import analyze_reasoning
 
 

@@ -284,6 +284,19 @@ class TestReportStatsSurviveTheTemplate(unittest.TestCase):
         self.assertIn("N/A", content)
         self.assertNotIn("-1.0", content)
 
+    def test_reasoning_profile_cells_render_the_canonical_spelling(self):
+        """The template used to spell this sentinel "n/a" itself, independently
+        of every formatter in verdict.py/reporting.py (§3.5): confirms the
+        Jinja `measured` filter, not just the Python-side formatters, now
+        renders the one canonical N/A."""
+        self.judge_config.reasoning_analysis = REASONING_SCOPE_ALL
+        self.results[0].candidates_perf["Baseline"].reasoning_analyses.append(
+            ReasoningStats(alt_path=-1, autocorrect=3, alignment_score=8).to_dict()
+        )
+        content = self._render()
+        self.assertIn("N/A", content)
+        self.assertNotIn("n/a", content)
+
 
 if __name__ == "__main__":
     unittest.main()

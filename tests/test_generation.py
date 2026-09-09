@@ -6,13 +6,12 @@ from unittest.mock import patch
 from types import SimpleNamespace
 
 from prompttestenv.generation import run_generation_phase
-from prompttestenv.progress import GEN_ERROR_TEXT, GEN_TIMEOUT_TEXT, is_failed_gen
+from prompttestenv.progress import GEN_ERROR_TEXT, GEN_TIMEOUT_TEXT, ProgressState, is_failed_gen
 from testutils import ResidencyResetTestCase
 from prompttestenv.models import (
     Candidate,
     JudgeConfig,
     LlmResult,
-    ProgressState,
     TestCaseResult,
 )
 

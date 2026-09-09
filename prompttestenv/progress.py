@@ -3,6 +3,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import NamedTuple
+
+import prompttestenv.logger as logger
 
 
 # Keys of judge_config.json that do NOT invalidate a run when they change.
@@ -107,8 +112,9 @@ def is_failed_eval(event: dict) -> bool:
 def failed_gen_keys(gen_events: dict) -> set[RunKey]:
     """Select the generation keys whose stored answer is a placeholder.
 
-    Takes the plain dict rather than a ProgressState so this module keeps its
-    zero dependencies (models.py imports this one, not the other way round).
+    Takes the plain dict rather than a ProgressState so this signature works
+    from a literal too, since this module has no dependency on models.py to
+    make ProgressState a natural argument type here.
 
     Args:
         gen_events: ProgressState.gen_events, keyed by (candidate, test, rep).
@@ -230,3 +236,224 @@ def append_event(project_dir: str, event: dict) -> None:
     progress_file = os.path.join(project_dir, "progress.jsonl")
     with open(progress_file, "a", encoding="utf-8") as f:
         f.write(json.dumps(event) + "\n")
+
+
+class RunKey(NamedTuple):
+    """Identifies one repetition: a candidate x test_case x repetition triple.
+
+    Indexes every event in progress.jsonl and every set/dict built from it
+    (completed_gen, gen_events, stale_eval_keys, ...). A NamedTuple rather
+    than a dataclass because it must behave exactly like the plain 3-tuple
+    it replaces: equality, hashing, positional unpacking and use as a dict
+    key are all structural, so a literal (cand, test_id, rep) still matches
+    a RunKey holding the same three values, and nothing written to
+    progress.jsonl changes (the key itself is never serialised, only the
+    fields that compose it).
+    """
+
+    candidate: str
+    test_id: str
+    repetition: int
+
+
+@dataclass(frozen=True)
+class ProgressState:
+    """Read-only snapshot of a project's resume state, built once from progress.jsonl.
+
+    ``events`` intentionally stays a list of raw dicts rather than typed event
+    dataclasses: it is a direct in-memory mirror of heterogeneous JSONL log
+    lines (differently shaped per ``type``), which is exactly the "dynamic/opaque
+    data" case dict is meant for.
+
+    ``gen_events``/``eval_events``/``reasoning_events`` index the "gen"/"eval"/"reasoning" event dicts
+    already in ``events`` by their ``(cand_id, test_id, rep)`` key — built in
+    the same pass as ``completed_gen``/``completed_eval`` — so a resumed key
+    can be looked up in O(1) instead of scanning ``events`` linearly.
+
+    The three ``stale_*`` fields answer "does the log contradict itself?", and
+    they are computed here because this is the only place that knows the ORDER
+    of the lines, which is the whole evidence. The log is append-only, so a
+    retry supersedes a failed step by appending a corrected event: an "eval"
+    (or "reasoning") whose key has a NEWER "gen" line after it was therefore
+    computed against a response that is no longer the stored one, and a
+    "verdict" with "gen"/"eval" lines after it describes results that have
+    since been replaced. Both states are what an interrupted --retry-errors
+    run leaves behind, and neither is visible to the failure predicates above,
+    which only see the surviving values and not their positions.
+
+    The property is self-healing: once the phase re-appends its event, that
+    event's line follows the "gen" again and the key stops being stale on the
+    next load, so nothing has to be cleared.
+    """
+
+    hash_match: bool = True
+    completed_gen: set[RunKey] = field(default_factory=set)
+    completed_eval: set[RunKey] = field(default_factory=set)
+    events: list[dict] = field(default_factory=list)
+    verdict: str | None = None
+    last_hash: str | None = None
+    gen_events: dict[RunKey, dict] = field(default_factory=dict)
+    eval_events: dict[RunKey, dict] = field(default_factory=dict)
+    reasoning_events: dict[RunKey, dict] = field(default_factory=dict)
+    stale_eval_keys: frozenset[RunKey] = frozenset()
+    stale_reasoning_keys: frozenset[RunKey] = frozenset()
+    stale_verdict: bool = False
+
+    @classmethod
+    def load(
+        cls,
+        project_dir: str | Path,
+        force_restart: bool = False,
+        readonly: bool = False,
+    ) -> ProgressState:
+        """Initialize or read a project's progress.jsonl resume log.
+
+        If force_restart is True, or the stored config hash no longer matches
+        the current config files, the existing progress.jsonl is renamed to
+        progress.jsonl.bak (or, if force_restart, simply removed) instead of
+        being read.
+
+        ``readonly`` suppresses all of that: nothing is renamed, removed or
+        created, and a hash mismatch is reported through ``hash_match`` with
+        the events still loaded. Commands that only consume the log (rendering
+        a report, analysing stored traces) must use it, since they do not
+        depend on the config still matching and must not destroy the log they
+        were asked to read.
+
+        Args:
+            project_dir: Path to the benchmark project directory.
+            force_restart: If True, discard any existing progress.jsonl.
+            readonly: If True, never write to or rename the log.
+
+        Returns:
+            A ProgressState snapshot. Outside readonly mode, a stored config
+            hash that does not match the current one leaves ``hash_match``
+            False and every other field at its default (empty/None), so
+            callers must check ``hash_match`` before trusting the snapshot.
+        """
+        project_dir = str(project_dir)
+        progress_file = os.path.join(project_dir, "progress.jsonl")
+        current_hash = calculate_config_hash(project_dir)
+
+        if force_restart and not readonly and os.path.exists(progress_file):
+            os.remove(progress_file)
+
+        hash_match = True
+        completed_gen: set[RunKey] = set()
+        completed_eval: set[RunKey] = set()
+        events: list[dict] = []
+        verdict: str | None = None
+        last_hash: str | None = None
+        gen_events: dict[RunKey, dict] = {}
+        eval_events: dict[RunKey, dict] = {}
+        reasoning_events: dict[RunKey, dict] = {}
+        # Line ordinals of the NEWEST line of each kind, per key. Only ever
+        # compared with each other, so the gaps an unparseable line leaves in
+        # the numbering are harmless. See the class docstring for what they
+        # are evidence of.
+        gen_line: dict[RunKey, int] = {}
+        eval_line: dict[RunKey, int] = {}
+        reasoning_line: dict[RunKey, int] = {}
+        verdict_line: int | None = None
+        last_result_line = -1
+
+        if os.path.exists(progress_file):
+            with open(progress_file, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+
+            if lines:
+                try:
+                    meta = json.loads(lines[0])
+                    if meta.get("type") == "meta":
+                        last_hash = meta.get("config_hash")
+                        if last_hash != current_hash:
+                            hash_match = False
+                            if not readonly:
+                                logger.log_warning(
+                                    "Configuration hash mismatch! "
+                                    "Renaming invalid progress file to: progress.jsonl.bak"
+                                )
+                                os.replace(progress_file, progress_file + ".bak")
+                                return cls(hash_match=False, last_hash=last_hash)
+                except json.JSONDecodeError:
+                    if readonly:
+                        return cls(hash_match=False)
+                    logger.log_warning(
+                        "Corrupted progress file detected! Renaming to: progress.jsonl.bak"
+                    )
+                    os.replace(progress_file, progress_file + ".bak")
+                    return cls(hash_match=False)
+
+                for position, line in enumerate(lines[1:]):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        event = json.loads(line)
+                        if not isinstance(event, dict) or "type" not in event:
+                            # Valid JSON of the wrong shape. Without this the
+                            # indexing below raised TypeError out of load(),
+                            # and since every command goes through here a
+                            # single odd line made the project unreadable by
+                            # all of them, render included.
+                            continue
+                        events.append(event)
+                        if event["type"] == "gen":
+                            key = RunKey(event["cand_id"], event["test_id"], event["rep"])
+                            completed_gen.add(key)
+                            gen_events[key] = event
+                            gen_line[key] = position
+                            last_result_line = position
+                        elif event["type"] == "eval":
+                            key = RunKey(event["cand_id"], event["test_id"], event["rep"])
+                            completed_eval.add(key)
+                            eval_events[key] = event
+                            eval_line[key] = position
+                            last_result_line = position
+                        elif event["type"] == "reasoning":
+                            key = RunKey(event["cand_id"], event["test_id"], event["rep"])
+                            reasoning_events[key] = event
+                            reasoning_line[key] = position
+                        elif event["type"] == "verdict":
+                            verdict = event["content"]
+                            verdict_line = position
+                    except (json.JSONDecodeError, TypeError, KeyError):
+                        # Broken lines at the end of file (crash mid-write),
+                        # and events missing a key this reader needs. Skipping
+                        # one line costs at most one repetition, which resume
+                        # then redoes; raising would cost the whole log.
+                        pass
+
+        if not readonly and not os.path.exists(progress_file):
+            with open(progress_file, "w", encoding="utf-8") as f:
+                f.write(json.dumps({"type": "meta", "config_hash": current_hash}) + "\n")
+
+        # A key with a "gen" but no "eval" is not stale, it is simply unjudged,
+        # and the evaluation phase already picks it up: staleness is only about
+        # an event that exists and describes superseded text.
+        stale_eval_keys = frozenset(
+            key for key, line in eval_line.items() if gen_line.get(key, -1) > line
+        )
+        stale_reasoning_keys = frozenset(
+            key for key, line in reasoning_line.items() if gen_line.get(key, -1) > line
+        )
+        # "reasoning" lines deliberately do not count towards last_result_line:
+        # `analyze` is the cheap pass meant to be re-run over a finished project
+        # whenever the schema is retuned, so letting it invalidate the verdict
+        # would make retuning the measurement cost a verdict call every time.
+        stale_verdict = verdict_line is not None and last_result_line > verdict_line
+
+        return cls(
+            hash_match=hash_match,
+            completed_gen=completed_gen,
+            completed_eval=completed_eval,
+            events=events,
+            verdict=verdict,
+            last_hash=last_hash,
+            gen_events=gen_events,
+            eval_events=eval_events,
+            reasoning_events=reasoning_events,
+            stale_eval_keys=stale_eval_keys,
+            stale_reasoning_keys=stale_reasoning_keys,
+            stale_verdict=stale_verdict,
+        )
