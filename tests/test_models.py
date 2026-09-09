@@ -12,8 +12,11 @@ from pathlib import Path
 from prompttestenv.models import (
     CandidatePerformance,
     Candidate,
+    GenerationOutcome,
     RunKey,
     TestCaseResult,
+    apply_eval_event,
+    apply_gen_event,
     pool_by_candidate,
     GlobalCriteria,
     JudgeConfig,
@@ -740,6 +743,73 @@ class TestPoolByCandidate(unittest.TestCase):
         pool_by_candidate(self.candidates, rows)
         pool_by_candidate(self.candidates, rows)
         self.assertEqual(len(rows[0].candidates_perf["A"].scores), 1)
+
+
+class TestApplyGenEvent(unittest.TestCase):
+    """The one place a gen event's measurements become a CandidatePerformance."""
+
+    def test_appends_all_three_fields(self):
+        perf = CandidatePerformance()
+        apply_gen_event(perf, {"tokens": 10, "reasoning_tokens": 5, "elapsed": 1.5})
+        self.assertEqual(perf.tokens, [10])
+        self.assertEqual(perf.reasoning_tokens, [5])
+        self.assertEqual(perf.times, [1.5])
+
+    def test_missing_fields_fall_back_like_a_log_written_before_they_existed(self):
+        perf = CandidatePerformance()
+        apply_gen_event(perf, {})
+        self.assertEqual(perf.tokens, [0])
+        self.assertEqual(perf.reasoning_tokens, [0])
+        self.assertEqual(perf.times, [-1.0])
+
+    def test_two_events_append_in_order(self):
+        perf = CandidatePerformance()
+        apply_gen_event(perf, {"tokens": 1, "elapsed": 0.1})
+        apply_gen_event(perf, {"tokens": 2, "elapsed": 0.2})
+        self.assertEqual(perf.tokens, [1, 2])
+        self.assertEqual(perf.times, [0.1, 0.2])
+
+
+class TestApplyEvalEvent(unittest.TestCase):
+    """The one place an eval event's scores become a CandidatePerformance.
+
+    Deliberately does not touch best_output/best_reason: see
+    analysis.attach_best, the single place that's decided now.
+    """
+
+    def test_appends_both_scores(self):
+        perf = CandidatePerformance()
+        apply_eval_event(perf, {"score": 8, "global_score": 6})
+        self.assertEqual(perf.scores, [8])
+        self.assertEqual(perf.global_scores, [6])
+
+    def test_missing_fields_default_to_not_measured(self):
+        perf = CandidatePerformance()
+        apply_eval_event(perf, {})
+        self.assertEqual(perf.scores, [-1])
+        self.assertEqual(perf.global_scores, [-1])
+
+    def test_does_not_touch_best_fields(self):
+        perf = CandidatePerformance()
+        apply_eval_event(perf, {"score": 9, "global_score": 9})
+        self.assertEqual(perf.best_output, "")
+        self.assertEqual(perf.best_reason, "")
+
+
+class TestGenerationOutcome(unittest.TestCase):
+    """Replaces the pending_evals dict; only the fields evaluator.py reads."""
+
+    def test_round_trips_the_seven_live_fields(self):
+        test_result = TestCaseResult(test_id="t1", prompt="p", criteria="c")
+        perf = CandidatePerformance()
+        outcome = GenerationOutcome(
+            cand_id="A", cand_model="m", test_result=test_result, cand_perf=perf,
+            output="hi", rep=0, repetitions=1,
+        )
+        self.assertEqual(outcome.cand_id, "A")
+        self.assertIs(outcome.test_result, test_result)
+        self.assertIs(outcome.cand_perf, perf)
+        self.assertEqual(outcome.output, "hi")
 
 
 class TestConfigWriters(unittest.TestCase):

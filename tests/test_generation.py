@@ -59,7 +59,7 @@ class TestRunGenerationPhaseNormal(unittest.TestCase):
             pending = run_generation_phase([_candidate()], results, jc, "/fake/project", progress)
 
         self.assertEqual(len(pending), 1)
-        self.assertEqual(pending[0]["output"], "hello")
+        self.assertEqual(pending[0].output, "hello")
         self.assertEqual(results[0].candidates_perf["A"].tokens, [42])
         mock_append.assert_called_once()
         self.assertEqual(mock_append.call_args.args[1]["type"], "gen")
@@ -96,7 +96,7 @@ class TestRunGenerationPhaseResume(unittest.TestCase):
 
         mock_llm.assert_not_called()
         mock_append.assert_not_called()  # resumed entries are not re-logged
-        self.assertEqual(pending[0]["output"], "resumed output")
+        self.assertEqual(pending[0].output, "resumed output")
         self.assertEqual(results[0].candidates_perf["A"].tokens, [7])
 
 
@@ -125,7 +125,7 @@ class TestRunGenerationPhaseRedoKeys(unittest.TestCase):
 
         mock_llm.assert_called_once()
         mock_append.assert_called_once()
-        self.assertEqual(pending[0]["output"], "fresh")
+        self.assertEqual(pending[0].output, "fresh")
         # One entry, carrying the new value: the superseded event is not re-counted.
         self.assertEqual(results[0].candidates_perf["A"].tokens, [11])
 
@@ -140,7 +140,7 @@ class TestRunGenerationPhaseRedoKeys(unittest.TestCase):
             )
 
         mock_llm.assert_not_called()
-        self.assertEqual(pending[0]["output"], "resumed output")
+        self.assertEqual(pending[0].output, "resumed output")
 
     def test_a_candidate_whose_only_work_is_a_redo_is_warmed_up(self):
         """Otherwise the SDK import and the uploads land on the retried call's elapsed."""
@@ -188,7 +188,7 @@ class TestRunGenerationPhaseTimeout(ResidencyResetTestCase):
 
     def test_timeout_records_the_sentinel(self):
         pending, _ = self._timed_out_run("ollama")
-        self.assertEqual(pending[0]["output"], "⛔ [TIMEOUT EXCEEDED]")
+        self.assertEqual(pending[0].output, "⛔ [TIMEOUT EXCEEDED]")
 
     def test_timeout_does_not_evict_the_local_model(self):
         """The reload would be charged to the next repetition's own elapsed.
@@ -230,7 +230,7 @@ class TestRunGenerationPhaseProviderError(ResidencyResetTestCase):
 
     def test_the_run_survives_and_stores_the_error_placeholder(self):
         pending, events = self._failed_run()
-        self.assertEqual(pending[0]["output"], GEN_ERROR_TEXT)
+        self.assertEqual(pending[0].output, GEN_ERROR_TEXT)
         self.assertEqual(events[0]["output"], GEN_ERROR_TEXT)
 
     def test_the_placeholder_is_not_the_timeout_one(self):

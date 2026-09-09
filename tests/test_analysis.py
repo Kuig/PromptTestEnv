@@ -7,7 +7,7 @@ repetition, "best" only the highest-scoring one per candidate x test, which is
 import unittest
 from unittest.mock import patch
 
-from prompttestenv.analysis import attach_reasoning, keys_to_analyze, run_analysis_phase
+from prompttestenv.analysis import attach_best, attach_reasoning, keys_to_analyze, run_analysis_phase
 from prompttestenv.models import (
     REASONING_SCOPE_ALL,
     REASONING_SCOPE_BEST,
@@ -173,11 +173,133 @@ class TestAttachReasoningAgreesWithTheScope(unittest.TestCase):
         row = TestCaseResult(test_id="t1", prompt="p", criteria="c")
         row.candidates_perf["Alpha"] = CandidatePerformance()
         reasoning = {key: {"type": "reasoning"} for key in chosen}
+        # Both runner.py call sites run attach_best right before
+        # attach_reasoning; exercising the real sequence here, not just
+        # attach_reasoning alone, is what would have caught the two
+        # disagreeing before this test was written to assume they wouldn't.
+        attach_best([row], evals, gen)
         attach_reasoning([row], reasoning, evals, gen)
 
         perf = row.candidates_perf["Alpha"]
+        self.assertEqual(perf.best_output, "answer")
         self.assertEqual(perf.best_reasoning_text, "winning trace")
         self.assertIsNotNone(perf.best_reasoning_analysis)
+
+    def test_no_trace_shown_when_the_actual_winner_has_none(self):
+        """The bug this fixes: a winner with no trace used to borrow one.
+
+        Rep 1 wins on score but has no reasoning trace at all. Before the
+        fix, attach_reasoning restricted its own _best_key search to traced
+        keys and picked rep 0's trace instead — showing it next to rep 1's
+        response, a trace that belongs to a different, losing repetition.
+        """
+        gen = {
+            ("Alpha", "t1", 0): _gen(output="loser", reasoning_text="a trace that exists"),
+            ("Alpha", "t1", 1): _gen(output="winner", reasoning_text=""),
+        }
+        evals = {("Alpha", "t1", 0): {"score": 2}, ("Alpha", "t1", 1): {"score": 9}}
+        row = TestCaseResult(test_id="t1", prompt="p", criteria="c")
+        row.candidates_perf["Alpha"] = CandidatePerformance()
+        reasoning = {("Alpha", "t1", 0): {"type": "reasoning"}}
+
+        attach_best([row], evals, gen)
+        attach_reasoning([row], reasoning, evals, gen)
+
+        perf = row.candidates_perf["Alpha"]
+        self.assertEqual(perf.best_output, "winner")
+        self.assertEqual(perf.best_reasoning_text, "")
+        self.assertIsNone(perf.best_reasoning_analysis)
+
+
+class TestAttachBest(unittest.TestCase):
+    """The single computation of "which repetition wins", response side."""
+
+    def _row(self, test_id="t1"):
+        row = TestCaseResult(test_id=test_id, prompt="p", criteria="c")
+        row.candidates_perf["Alpha"] = CandidatePerformance()
+        return row
+
+    def test_picks_the_highest_scoring_repetition(self):
+        gen = {
+            ("Alpha", "t1", 0): _gen(output="mediocre"),
+            ("Alpha", "t1", 1): _gen(output="great"),
+        }
+        evals = {
+            ("Alpha", "t1", 0): {"score": 4, "reason": "meh", "g_reason": "meh"},
+            ("Alpha", "t1", 1): {"score": 9, "reason": "excellent", "g_reason": "excellent"},
+        }
+        row = self._row()
+        attach_best([row], evals, gen)
+        perf = row.candidates_perf["Alpha"]
+        self.assertEqual(perf.best_output, "great")
+        self.assertEqual(perf.best_reason, "excellent")
+
+    def test_a_tie_goes_to_the_earliest_repetition(self):
+        gen = {
+            ("Alpha", "t1", 0): _gen(output="first"),
+            ("Alpha", "t1", 1): _gen(output="second"),
+        }
+        evals = {k: {"score": 7, "reason": "ok", "g_reason": "ok"} for k in gen}
+        row = self._row()
+        attach_best([row], evals, gen)
+        self.assertEqual(row.candidates_perf["Alpha"].best_output, "first")
+
+    def test_winner_without_reasoning_trace_still_wins_the_response(self):
+        """The disagreement attach_reasoning used to hide: see that test too.
+
+        attach_best does not look at reasoning at all, so a repetition with
+        no trace is exactly as eligible to win as one with a trace — the
+        restriction belongs to attach_reasoning, applied on top afterwards.
+        """
+        gen = {
+            ("Alpha", "t1", 0): _gen(output="untraced winner", reasoning_text=""),
+            ("Alpha", "t1", 1): _gen(output="traced but worse"),
+        }
+        evals = {
+            ("Alpha", "t1", 0): {"score": 9, "reason": "excellent", "g_reason": "excellent"},
+            ("Alpha", "t1", 1): {"score": 3, "reason": "weak", "g_reason": "weak"},
+        }
+        row = self._row()
+        attach_best([row], evals, gen)
+        self.assertEqual(row.candidates_perf["Alpha"].best_output, "untraced winner")
+
+    def test_all_evaluations_failed_still_shows_the_earliest_repetitions_text(self):
+        """The one deliberate behavior change: no more silent blank best_output.
+
+        Every score is -1 ("not measured"), so nothing is a real evaluated
+        winner — but the response text is real, and the -1 rendered beside it
+        already says the evaluation failed. Showing it removes a special case
+        instead of adding one, and beats leaving the failure invisible.
+        """
+        gen = {
+            ("Alpha", "t1", 0): _gen(output="first attempt"),
+            ("Alpha", "t1", 1): _gen(output="second attempt"),
+        }
+        evals = {k: {"score": -1, "reason": "Error: judge down", "g_reason": "N/A"} for k in gen}
+        row = self._row()
+        attach_best([row], evals, gen)
+        perf = row.candidates_perf["Alpha"]
+        self.assertEqual(perf.best_output, "first attempt")
+        self.assertEqual(perf.best_reason, "Error: judge down")
+
+    def test_a_candidate_with_no_generated_keys_is_left_untouched(self):
+        row = self._row()
+        attach_best([row], {}, {})
+        perf = row.candidates_perf["Alpha"]
+        self.assertEqual(perf.best_output, "")
+
+    def test_only_considers_keys_for_this_candidate_and_test(self):
+        gen = {
+            ("Alpha", "t1", 0): _gen(output="alpha t1"),
+            ("Beta", "t1", 0): _gen(output="beta t1"),
+            ("Alpha", "t2", 0): _gen(output="alpha t2"),
+        }
+        evals = {k: {"score": 5, "reason": "ok", "g_reason": "ok"} for k in gen}
+        row = self._row("t1")
+        row.candidates_perf["Beta"] = CandidatePerformance()
+        attach_best([row], evals, gen)
+        self.assertEqual(row.candidates_perf["Alpha"].best_output, "alpha t1")
+        self.assertEqual(row.candidates_perf["Beta"].best_output, "beta t1")
 
 
 class TestReasoningEnabled(unittest.TestCase):

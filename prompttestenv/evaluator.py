@@ -5,17 +5,19 @@ import time
 import prompttestenv.logger as logger
 from prompttestenv.api import call_with_timeout, preload_model_for_run
 from prompttestenv.progress import JUDGE_TIMEOUT_TEXT, append_event
-from prompttestenv.models import JUDGE_TYPE_LLM, JudgeConfig, ProgressState, RunKey
+from prompttestenv.models import (
+    JUDGE_TYPE_LLM, GenerationOutcome, JudgeConfig, ProgressState, RunKey, apply_eval_event,
+)
 from prompttestenv.test_judge import evaluate_with_judge
 
 
-def _eval_key(task: dict) -> RunKey:
+def _eval_key(task: GenerationOutcome) -> RunKey:
     """The (candidate, test, repetition) key of one pending evaluation."""
-    return RunKey(task["cand_id"], task["test_result"].test_id, task["rep"])
+    return RunKey(task.cand_id, task.test_result.test_id, task.rep)
 
 
 def _test_judge_will_be_called(
-    pending_evals: list[dict],
+    pending_evals: list[GenerationOutcome],
     judge_config: JudgeConfig,
     progress_state: ProgressState,
     redo_keys: frozenset[RunKey],
@@ -41,13 +43,13 @@ def _test_judge_will_be_called(
         key = _eval_key(task)
         if key in progress_state.completed_eval and key not in redo_keys:
             continue
-        if global_is_llm or task["test_result"].judge_type == JUDGE_TYPE_LLM:
+        if global_is_llm or task.test_result.judge_type == JUDGE_TYPE_LLM:
             return True
     return False
 
 
 def run_evaluation_phase(
-    pending_evals: list[dict],
+    pending_evals: list[GenerationOutcome],
     judge_config: JudgeConfig,
     project_dir: str,
     progress_state: ProgressState,
@@ -79,20 +81,19 @@ def run_evaluation_phase(
             judge_config.test_judge.provider, judge_config.test_judge.model
         )
 
-    best_scores: dict = {}
     current_cand = None
     current_test = None
 
     for eval_task in pending_evals:
-        cand_id = eval_task["cand_id"]
-        test_result = eval_task["test_result"]
-        cand_perf = eval_task["cand_perf"]
-        output = eval_task["output"]
-        rep = eval_task["rep"]
-        repetitions = eval_task["repetitions"]
+        cand_id = eval_task.cand_id
+        test_result = eval_task.test_result
+        cand_perf = eval_task.cand_perf
+        output = eval_task.output
+        rep = eval_task.rep
+        repetitions = eval_task.repetitions
 
         if current_cand != cand_id:
-            logger.log_ai(f"Evaluation: {cand_id} [{eval_task['cand_model']}]")
+            logger.log_ai(f"Evaluation: {cand_id} [{eval_task.cand_model}]")
             current_cand = cand_id
             current_test = None
 
@@ -109,18 +110,8 @@ def run_evaluation_phase(
             event = progress_state.eval_events[key]
             score = event["score"]
             g_score = event["global_score"]
-            reason = event["reason"]
-            g_reason = event["g_reason"]
 
-            cand_perf.scores.append(score)
-            cand_perf.global_scores.append(g_score)
-
-            score_key = (cand_id, test_result.test_id)
-            if score > best_scores.get(score_key, -1):
-                best_scores[score_key] = score
-                cand_perf.best_output = output
-                cand_perf.best_reason = reason
-                cand_perf.best_global_reason = g_reason
+            apply_eval_event(cand_perf, event)
 
             logger.log_metric(f"{prefix}Score: {score}, Global: {g_score} (Resumed)")
             continue
@@ -149,15 +140,7 @@ def run_evaluation_phase(
 
         logger.log_metric(f"{prefix}Score: {score}, Global: {g_score}")
 
-        cand_perf.scores.append(score)
-        cand_perf.global_scores.append(g_score)
-
-        score_key = (cand_id, test_result.test_id)
-        if score > best_scores.get(score_key, -1):
-            best_scores[score_key] = score
-            cand_perf.best_output = output
-            cand_perf.best_reason = reason
-            cand_perf.best_global_reason = g_reason
+        apply_eval_event(cand_perf, eval_result)
 
         append_event(project_dir, {
             "type": "eval",

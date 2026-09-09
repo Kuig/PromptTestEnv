@@ -4,14 +4,14 @@ import os
 import datetime
 
 import prompttestenv.logger as logger
-from prompttestenv.analysis import attach_reasoning, keys_to_analyze, run_analysis_phase
+from prompttestenv.analysis import attach_best, attach_reasoning, keys_to_analyze, run_analysis_phase
 from prompttestenv.api import teardown
 from prompttestenv.evaluator import run_evaluation_phase
 from prompttestenv.verdict import generate_verdict, evaluate_best_candidate_fast, parse_grouped_verdict
 from prompttestenv.generation import run_generation_phase
 from prompttestenv.reporting import generate_html_report
 from prompttestenv.json_report import generate_json_report
-from prompttestenv.models import TestCaseResult, CandidatePerformance, Candidate, TestCase, JudgeConfig, GlobalCriteria, ProgressState, OUTPUT_MODES
+from prompttestenv.models import TestCaseResult, CandidatePerformance, Candidate, TestCase, JudgeConfig, GlobalCriteria, ProgressState, OUTPUT_MODES, apply_eval_event, apply_gen_event
 from prompttestenv.progress import append_event, failed_eval_keys, failed_gen_keys
 import prompttestenv.projectio as pio
 
@@ -363,6 +363,7 @@ def run_project(
                 results, judge_config, project_dir, progress_state,
                 force_keys=progress_state.stale_reasoning_keys | redo_gen,
             )
+        attach_best(results, progress_state.eval_events, progress_state.gen_events)
         attach_reasoning(
             results, reasoning_events, progress_state.eval_events, progress_state.gen_events
         )
@@ -484,7 +485,6 @@ def render_from_progress(project_dir: str, output_mode: str = "html") -> str:
     results = _initialize_test_results(test_cases, project_dir)
 
     results_by_id = {r.test_id: r for r in results}
-    best_scores: dict = {}
 
     # Read the deduplicated dicts, never progress_state.events: --retry-errors
     # appends a corrected event rather than rewriting the log, so the same key
@@ -495,31 +495,23 @@ def render_from_progress(project_dir: str, output_mode: str = "html") -> str:
         test_result = results_by_id.get(test_id)
         if test_result:
             cand_perf = test_result.candidates_perf.setdefault(cand_id, CandidatePerformance())
-            # .get with defaults, matching generation.py's resume branch: a log
-            # written before a field existed must still render.
-            cand_perf.tokens.append(event.get("tokens", 0))
-            cand_perf.reasoning_tokens.append(event.get("reasoning_tokens", 0))
-            cand_perf.times.append(event.get("elapsed", -1.0))
+            # Matches generation.py's resume branch exactly, defaults included:
+            # a log written before a field existed must still render.
+            apply_gen_event(cand_perf, event)
 
-    for (cand_id, test_id, rep), event in progress_state.eval_events.items():
+    for (cand_id, test_id, _rep), event in progress_state.eval_events.items():
         test_result = results_by_id.get(test_id)
         if test_result:
             # setdefault here too: an eval whose gen event is missing for this
             # test would otherwise raise KeyError on a lookup that has no
             # reason to assume the two logs cover the same keys.
             cand_perf = test_result.candidates_perf.setdefault(cand_id, CandidatePerformance())
-            score = event.get("score", -1)
-            cand_perf.scores.append(score)
-            cand_perf.global_scores.append(event.get("global_score", -1))
-            score_key = (cand_id, test_id)
-            if score > best_scores.get(score_key, -1):
-                best_scores[score_key] = score
-                gen_event = progress_state.gen_events.get((cand_id, test_id, rep))
-                if gen_event:
-                    cand_perf.best_output = gen_event.get("output", "")
-                cand_perf.best_reason = event.get("reason", "")
-                cand_perf.best_global_reason = event.get("g_reason", "")
+            apply_eval_event(cand_perf, event)
 
+    # One final pass over the whole log, rather than tracked incrementally
+    # while the two loops above run: attach_best is the single place "best"
+    # is decided, shared with run_project's own call site.
+    attach_best(results, progress_state.eval_events, progress_state.gen_events)
     attach_reasoning(
         results,
         progress_state.reasoning_events,

@@ -12,7 +12,8 @@ from prompttestenv.api import (
 from prompttestenv.config import get_app_config
 from prompttestenv.progress import GEN_ERROR_TEXT, GEN_TIMEOUT_TEXT, append_event
 from prompttestenv.models import (
-    Candidate, TestCaseResult, CandidatePerformance, JudgeConfig, LlmResult, ProgressState, RunKey,
+    Candidate, TestCaseResult, CandidatePerformance, GenerationOutcome, JudgeConfig, LlmResult,
+    ProgressState, RunKey, apply_gen_event,
 )
 
 # Candidate generation does not retry: a retry lands on the measured elapsed
@@ -123,7 +124,7 @@ def run_generation_phase(
     project_dir: str,
     progress_state: ProgressState,
     redo_keys: frozenset[RunKey] = frozenset(),
-) -> list[dict]:
+) -> list[GenerationOutcome]:
     """Execute Phase 1: generate LLM responses for all candidates x test cases.
 
     Args:
@@ -137,7 +138,7 @@ def run_generation_phase(
             real answer. The new event is appended and supersedes the old one.
 
     Returns:
-        List of pending evaluation task dicts.
+        List of pending evaluation outcomes.
     """
     logger.log_separator()
     logger.log_info("PHASE 1: Response Generation")
@@ -185,21 +186,16 @@ def run_generation_phase(
                     # reads already tolerated that while the other half raised
                     # KeyError two lines away.
                     event = progress_state.gen_events[key]
-                    cand_perf.tokens.append(event.get("tokens", 0))
-                    cand_perf.reasoning_tokens.append(event.get("reasoning_tokens", 0))
-                    cand_perf.times.append(event.get("elapsed", -1.0))
-                    pending_evals.append({
-                        "cand_id": cand_id,
-                        "cand_model": cand.model,
-                        "test_result": test_result,
-                        "cand_perf": cand_perf,
-                        "output": event.get("output", ""),
-                        "reasoning_text": event.get("reasoning_text", ""),
-                        "reasoning_is_summary": event.get("reasoning_is_summary"),
-                        "rep": rep,
-                        "repetitions": repetitions,
-                        "elapsed": event.get("elapsed", -1.0),
-                    })
+                    apply_gen_event(cand_perf, event)
+                    pending_evals.append(GenerationOutcome(
+                        cand_id=cand_id,
+                        cand_model=cand.model,
+                        test_result=test_result,
+                        cand_perf=cand_perf,
+                        output=event.get("output", ""),
+                        rep=rep,
+                        repetitions=repetitions,
+                    ))
                     logger.log_info(f"{prefix}Resumed from log.")
                     continue
 
@@ -253,22 +249,6 @@ def run_generation_phase(
 
                 if failure is None:
                     logger.log_metric(f"{prefix}Generated ({elapsed:.2f}s) — tokens: {tokens}")
-                cand_perf.tokens.append(tokens)
-                cand_perf.reasoning_tokens.append(reasoning_tokens)
-                cand_perf.times.append(elapsed)
-
-                pending_evals.append({
-                    "cand_id": cand_id,
-                    "cand_model": cand.model,
-                    "test_result": test_result,
-                    "cand_perf": cand_perf,
-                    "output": output,
-                    "reasoning_text": result.reasoning_text,
-                    "reasoning_is_summary": result.reasoning_is_summary,
-                    "rep": rep,
-                    "repetitions": repetitions,
-                    "elapsed": elapsed,
-                })
 
                 event = {
                     "type": "gen",
@@ -282,6 +262,18 @@ def run_generation_phase(
                     "reasoning_is_summary": result.reasoning_is_summary,
                     "elapsed": elapsed,
                 }
+                apply_gen_event(cand_perf, event)
+
+                pending_evals.append(GenerationOutcome(
+                    cand_id=cand_id,
+                    cand_model=cand.model,
+                    test_result=test_result,
+                    cand_perf=cand_perf,
+                    output=output,
+                    rep=rep,
+                    repetitions=repetitions,
+                ))
+
                 if failure is not None:
                     # Diagnostic only, and kept out of "output" on purpose:
                     # is_failed_gen compares the payload by equality, and the

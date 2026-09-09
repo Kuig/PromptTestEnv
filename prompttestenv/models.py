@@ -179,6 +179,28 @@ class LlmResult:
 
 
 @dataclass
+class GenerationOutcome:
+    """One repetition's generation result, handed from phase 1 to phase 2.
+
+    Replaces the ad hoc dict ``pending_evals`` used to carry, same precedent as
+    LlmResult above. Carries only the fields evaluator.py actually reads:
+    reasoning_text, reasoning_is_summary and elapsed used to ride along too
+    (built into every dict, in both the resume and the live branch of
+    generation.py) but nothing ever read them back off it — the "gen" event
+    already written to progress.jsonl carries them for whatever does need
+    them (analysis.py, reporting).
+    """
+
+    cand_id: str
+    cand_model: str
+    test_result: TestCaseResult
+    cand_perf: CandidatePerformance
+    output: str
+    rep: int
+    repetitions: int
+
+
+@dataclass
 class CandidatePerformance:
     scores: list[float] = field(default_factory=list)
     global_scores: list[float] = field(default_factory=list)
@@ -309,6 +331,44 @@ class CandidatePerformance:
         if not parts:
             return -1.0
         return sum(parts) / len(parts)
+
+
+def apply_gen_event(cand_perf: CandidatePerformance, event: dict) -> None:
+    """Append one repetition's generation measurements from a gen-event-shaped dict.
+
+    ``event`` is anything shaped like a "gen" progress.jsonl line (tokens,
+    reasoning_tokens, elapsed): works identically whether it was just read back
+    off disk (resume, or render_from_progress) or built moments ago from a
+    live LlmResult (see generation.py), since both are dicts with the same
+    keys. The one function every rehydration site should call instead of
+    repeating these three appends by hand.
+
+    Args:
+        cand_perf: The record to append this repetition's measurements to.
+        event: A gen-event-shaped dict.
+    """
+    cand_perf.tokens.append(event.get("tokens", 0))
+    cand_perf.reasoning_tokens.append(event.get("reasoning_tokens", 0))
+    cand_perf.times.append(event.get("elapsed", -1.0))
+
+
+def apply_eval_event(cand_perf: CandidatePerformance, event: dict) -> None:
+    """Append one repetition's scores from an eval-shaped dict.
+
+    ``event`` is anything shaped like an "eval" progress.jsonl line (score,
+    global_score): works for a stored eval event and for
+    evaluate_with_judge()'s raw return dict alike, both of which carry these
+    two keys. Deliberately does not touch best_output/best_reason/
+    best_global_reason: which repetition is "best" is analysis.attach_best's
+    job alone, applied once over the whole log rather than chased
+    incrementally here.
+
+    Args:
+        cand_perf: The record to append this repetition's scores to.
+        event: An eval-shaped dict.
+    """
+    cand_perf.scores.append(event.get("score", -1))
+    cand_perf.global_scores.append(event.get("global_score", -1))
 
 
 def pool_by_candidate(

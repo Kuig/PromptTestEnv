@@ -33,9 +33,16 @@ def _best_key(
 ) -> RunKey:
     """Pick the highest-scoring repetition out of one candidate x test group.
 
-    Sole definition of "best" in the codebase: the analysis phase uses it to
-    decide what to spend calls on, and the report uses it to decide which trace
-    to draw, so the two must not be able to disagree.
+    Sole definition of "best" in the codebase. Three different questions get
+    asked of it, each over its own key set: keys_to_analyze asks it over
+    traced keys only, to decide what is worth spending a judge call on;
+    attach_best asks it over every repetition, to decide which response the
+    report shows; attach_reasoning asks it twice, once unrestricted to find
+    the same winner attach_best found and once over traced keys, so it can
+    tell whether the winner it needs to show a trace for actually has one.
+    The function itself never changes: only the key set each caller narrows
+    it to differs, and that is where the three used to disagree before they
+    all routed through here.
 
     A repetition whose evaluation is missing or failed scores -1 and therefore
     loses to any evaluated one; ties go to the earliest repetition, so the
@@ -49,6 +56,51 @@ def _best_key(
         The winning key.
     """
     return max(keys, key=lambda k: (eval_events.get(k, {}).get("score", -1), -k[2]))
+
+
+def attach_best(
+    results: list[TestCaseResult],
+    eval_events: dict[RunKey, dict],
+    gen_events: dict[RunKey, dict],
+) -> None:
+    """Populate best_output/best_reason/best_global_reason in place.
+
+    The single computation of "which repetition wins" that touches the
+    response: generation.py and evaluator.py used to each track it
+    incrementally, with their own strict `>` comparison, and runner.py's
+    render_from_progress carried a third, textually duplicated copy. All
+    three are gone; this is the only one left, applied in one pass after
+    every event for the run is loaded rather than chased one event at a time.
+
+    Runs over every repetition gen_events holds for a (candidate, test) pair,
+    never a subset: restricting the candidate set is exactly the bug this
+    replaces (see attach_reasoning, which restricts on purpose for a
+    different reason and has to cross-check its own pick against this one).
+
+    A repetition whose evaluation failed scores -1 like any other missing
+    score, so when every repetition in a group failed, best_output still
+    becomes that group's actual (deterministically earliest-rep) response
+    text rather than staying blank: the -1/"not measured" score already
+    rendered beside it says the evaluation failed, so the text is never
+    mistaken for a real result, and there is no second, silent way for a
+    failure to go undisplayed.
+
+    Args:
+        results: Test case results to populate.
+        eval_events: Eval events keyed by (candidate, test_id, repetition).
+        gen_events: Generation events keyed the same way.
+    """
+    for row in results:
+        for cand_id, perf in row.candidates_perf.items():
+            keys = [k for k in gen_events if k[0] == cand_id and k[1] == row.test_id]
+            if not keys:
+                continue
+            best_key = _best_key(keys, eval_events)
+            gen_event = gen_events[best_key]
+            eval_event = eval_events.get(best_key, {})
+            perf.best_output = gen_event.get("output", "")
+            perf.best_reason = eval_event.get("reason", "")
+            perf.best_global_reason = eval_event.get("g_reason", "")
 
 
 def keys_to_analyze(
@@ -210,7 +262,14 @@ def attach_reasoning(
 
     The per-repetition analyses feed the aggregates, while ``best_reasoning_*``
     captures the repetition the report already shows the response for, so the
-    trace on screen belongs to the response next to it.
+    trace on screen belongs to the response next to it — never a different,
+    lower-scoring repetition's trace borrowed because it happened to have one.
+
+    Call attach_best first: it decides which repetition wins over the full,
+    unrestricted set of what was generated, and this function must agree with
+    that same winner rather than re-deriving its own answer over a narrower
+    set. The two used to disagree, silently, whenever the true winner had no
+    trace at all.
 
     Args:
         results: Test case results to populate.
@@ -224,14 +283,26 @@ def attach_reasoning(
             perf.best_reasoning_text = ""
             perf.best_reasoning_analysis = None
 
-            keys = sorted(
+            traced_keys = sorted(
                 (k for k in reasoning_events if k[0] == cand_id and k[1] == row.test_id),
                 key=lambda k: k[2],
             )
-            if not keys:
+            if not traced_keys:
                 continue
-            perf.reasoning_analyses = [reasoning_events[k] for k in keys]
+            perf.reasoning_analyses = [reasoning_events[k] for k in traced_keys]
 
-            best_key = _best_key(keys, eval_events)
-            perf.best_reasoning_analysis = ReasoningStats.from_dict(reasoning_events[best_key])
-            perf.best_reasoning_text = gen_events.get(best_key, {}).get("reasoning_text", "")
+            # The winner over EVERY repetition, traced or not — the same set
+            # attach_best resolves its own pick from. Restricting to
+            # traced_keys here (as this used to do) picks a different,
+            # lower-scoring repetition whenever the actual winner has no
+            # trace, and shows its analysis next to a response it does not
+            # belong to.
+            all_keys = [k for k in gen_events if k[0] == cand_id and k[1] == row.test_id]
+            overall_best_key = _best_key(all_keys, eval_events) if all_keys else None
+            if overall_best_key not in reasoning_events:
+                # The winning repetition has no trace. No trace shown beats a
+                # trace shown for the wrong repetition.
+                continue
+
+            perf.best_reasoning_analysis = ReasoningStats.from_dict(reasoning_events[overall_best_key])
+            perf.best_reasoning_text = gen_events.get(overall_best_key, {}).get("reasoning_text", "")

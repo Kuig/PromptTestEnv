@@ -5,7 +5,9 @@ import unittest
 from unittest.mock import patch
 
 from prompttestenv.evaluator import run_evaluation_phase
-from prompttestenv.models import CandidatePerformance, GlobalCriteria, JudgeConfig, ProgressState, TestCaseResult
+from prompttestenv.models import (
+    CandidatePerformance, GenerationOutcome, GlobalCriteria, JudgeConfig, ProgressState, TestCaseResult,
+)
 
 
 def _judge_config(timeout=5.0, eval_delay=0.0, reasoning_analysis="none"):
@@ -19,21 +21,15 @@ def _judge_config(timeout=5.0, eval_delay=0.0, reasoning_analysis="none"):
     return jc
 
 
-def _pending_eval(cand_id="A", test_id="t1", rep=0, repetitions=1, output="response", reasoning_text=""):
+def _pending_eval(cand_id="A", test_id="t1", rep=0, repetitions=1, output="response"):
     test_result = TestCaseResult(test_id=test_id, prompt="p", criteria="c")
     cand_perf = CandidatePerformance()
     test_result.candidates_perf[cand_id] = cand_perf
-    return {
-        "cand_id": cand_id,
-        "cand_model": "m",
-        "test_result": test_result,
-        "cand_perf": cand_perf,
-        "output": output,
-        "reasoning_text": reasoning_text,
-        "rep": rep,
-        "repetitions": repetitions,
-        "elapsed": 1.0,
-    }, cand_perf
+    outcome = GenerationOutcome(
+        cand_id=cand_id, cand_model="m", test_result=test_result, cand_perf=cand_perf,
+        output=output, rep=rep, repetitions=repetitions,
+    )
+    return outcome, cand_perf
 
 
 class TestRunEvaluationPhaseNormal(unittest.TestCase):
@@ -46,8 +42,9 @@ class TestRunEvaluationPhaseNormal(unittest.TestCase):
             mock_eval.return_value = {"score": 8, "reasoning": "good", "global_score": -1, "global_reasoning": "N/A"}
             run_evaluation_phase([task], jc, "/fake/project", ProgressState())
 
+        # best_output is analysis.attach_best's job now, not this phase's: see
+        # TestAttachBest in test_analysis.py.
         self.assertEqual(cand_perf.scores, [8])
-        self.assertEqual(cand_perf.best_output, "response")
         mock_append.assert_called_once()
         self.assertEqual(mock_append.call_args.args[1]["type"], "eval")
 
@@ -72,8 +69,8 @@ class TestRunEvaluationPhaseResume(unittest.TestCase):
 
         mock_eval.assert_not_called()
         mock_append.assert_not_called()
+        # best_reason is analysis.attach_best's job now, not this phase's.
         self.assertEqual(cand_perf.scores, [6])
-        self.assertEqual(cand_perf.best_reason, "resumed reason")
 
 
 class TestRunEvaluationPhaseRedoKeys(unittest.TestCase):
@@ -163,7 +160,7 @@ class TestRunEvaluationPhaseReasoning(unittest.TestCase):
 
     def test_evaluation_phase_does_not_analyze_reasoning(self):
         jc = _judge_config(reasoning_analysis="all")
-        task, cand_perf = _pending_eval(reasoning_text="the model thought a lot")
+        task, cand_perf = _pending_eval()
 
         with patch("prompttestenv.evaluator.evaluate_with_judge") as mock_eval, \
              patch("prompttestenv.evaluator.preload_model_for_run"), \
@@ -177,7 +174,7 @@ class TestRunEvaluationPhaseReasoning(unittest.TestCase):
 
     def test_eval_event_carries_no_reasoning_payload(self):
         jc = _judge_config(reasoning_analysis="all")
-        task, _ = _pending_eval(reasoning_text="the model thought a lot")
+        task, _ = _pending_eval()
 
         with patch("prompttestenv.evaluator.evaluate_with_judge") as mock_eval, \
              patch("prompttestenv.evaluator.preload_model_for_run"), \
@@ -190,21 +187,29 @@ class TestRunEvaluationPhaseReasoning(unittest.TestCase):
         self.assertNotIn("reasoning_analysis", event)
 
 
-class TestRunEvaluationPhaseBestScoreTracking(unittest.TestCase):
-    def test_only_updates_best_output_when_score_improves(self):
+class TestRunEvaluationPhaseScoreOrdering(unittest.TestCase):
+    """Scores append in call order; "best" is analysis.attach_best's job.
+
+    This phase used to also track the best-scoring repetition's output/reason
+    incrementally here, with its own strict `>` comparison duplicating
+    analysis._best_key. That is gone: see TestAttachBest in test_analysis.py
+    for the single place "best" is decided now, over the whole log at once.
+    """
+
+    def test_scores_append_in_the_order_tasks_are_evaluated(self):
         jc = _judge_config()
         test_result = TestCaseResult(test_id="t1", prompt="p", criteria="c")
         cand_perf = CandidatePerformance()
         test_result.candidates_perf["A"] = cand_perf
 
-        task_low = {
-            "cand_id": "A", "cand_model": "m", "test_result": test_result, "cand_perf": cand_perf,
-            "output": "mediocre answer", "reasoning_text": "", "rep": 0, "repetitions": 2, "elapsed": 1.0,
-        }
-        task_high = {
-            "cand_id": "A", "cand_model": "m", "test_result": test_result, "cand_perf": cand_perf,
-            "output": "great answer", "reasoning_text": "", "rep": 1, "repetitions": 2, "elapsed": 1.0,
-        }
+        task_low = GenerationOutcome(
+            cand_id="A", cand_model="m", test_result=test_result, cand_perf=cand_perf,
+            output="mediocre answer", rep=0, repetitions=2,
+        )
+        task_high = GenerationOutcome(
+            cand_id="A", cand_model="m", test_result=test_result, cand_perf=cand_perf,
+            output="great answer", rep=1, repetitions=2,
+        )
 
         with patch("prompttestenv.evaluator.evaluate_with_judge") as mock_eval, \
              patch("prompttestenv.evaluator.preload_model_for_run"), \
@@ -215,8 +220,8 @@ class TestRunEvaluationPhaseBestScoreTracking(unittest.TestCase):
             ]
             run_evaluation_phase([task_low, task_high], jc, "/fake/project", ProgressState())
 
-        self.assertEqual(cand_perf.best_output, "great answer")
         self.assertEqual(cand_perf.scores, [4, 9])
+        self.assertEqual(cand_perf.best_output, "")
 
 
 if __name__ == "__main__":
@@ -232,7 +237,7 @@ class TestJudgePreloadIsConditional(unittest.TestCase):
 
     def _pending(self, judge_type):
         task, _perf = _pending_eval()
-        task["test_result"].judge_type = judge_type
+        task.test_result.judge_type = judge_type
         return [task]
 
     def _run(self, pending, jc, progress=None, redo=frozenset()):

@@ -83,8 +83,12 @@ Then `verdict.py` has a judge LLM write the report body, and `reporting.py` or
   three public entry points, and the only place phases are sequenced.
 - `generation.py`: phase 1, including the per-candidate warm-up.
 - `evaluator.py`: phase 2, judge orchestration and its concurrency policy.
-- `analysis.py`: phase 3, plus `keys_to_analyze` and `_best_key`, the single
-  definition of which repetition counts as "best".
+- `analysis.py`: phase 3, plus `keys_to_analyze`, `attach_best` and
+  `attach_reasoning`. `_best_key` is the single definition of which repetition
+  counts as "best"; `attach_best` is the one place that answer is written onto
+  a `CandidatePerformance`'s response fields, called by both `run_project` and
+  `render_from_progress` right before `attach_reasoning`, which reuses the same
+  pick rather than searching a narrower key set of its own.
 - `test_judge.py`: judge dispatch for one response. Three evaluators, one score.
   The `assert` evaluator's lambda runs against an explicit namespace (its
   argument, the full builtins, `re`, `math`, `json`, `statistics`, `datetime`,
