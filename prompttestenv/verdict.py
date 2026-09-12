@@ -3,20 +3,16 @@ from __future__ import annotations
 import json
 import os
 import re
+import traceback
 
 import prompttestenv.logger as logger
 from prompttestenv.api import _strip_code_fence, get_llm_response
-from prompttestenv.config import get_app_config
 from prompttestenv.models import (
     TestCaseResult,
     Candidate,
     CandidatePerformance,
-    GlobalCriteria,
     JudgeConfig,
     DEFAULT_GROUP,
-    JUDGE_TYPE_ASSERT,
-    JUDGE_TYPE_LLM,
-    JUDGE_TYPE_SIMILARITY,
     REASONING_DIMENSIONS,
     REASONING_SCOPE_ALL,
     REASONING_SCOPE_BEST,
@@ -24,6 +20,7 @@ from prompttestenv.models import (
     render_measured,
 )
 from prompttestenv.reasoning import aggregate_reasoning_stats
+from prompttestenv.verdict_payload import _build_metadata
 
 # Set to False to skip writing verdict_prompt_debug*.txt entirely — e.g. on a
 # shared machine, or once payload inspection is no longer needed. A plain module
@@ -86,27 +83,6 @@ def save_verdict_debug_file(
             f.write(debug_content)
     except Exception as exc:
         logger.log_warning(f"Failed to write verdict debug file: {exc}")
-
-
-def parse_grouped_verdict(verdict_text: str) -> dict | None:
-    """Parse verdict_text as grouped-verdict JSON, if it is one.
-
-    Args:
-        verdict_text: Raw verdict text — either the JSON object produced by
-            generate_verdict()'s grouped-verdict path, or plain/Markdown text.
-
-    Returns:
-        The parsed dict when verdict_text is valid JSON with "is_grouped": true,
-        otherwise None.
-    """
-    stripped = verdict_text.strip()
-    if not stripped.startswith("{"):
-        return None
-    try:
-        data = json.loads(stripped)
-    except Exception:
-        return None
-    return data if data.get("is_grouped") else None
 
 
 def _format_score(mean: float, std: float, with_std: bool) -> str:
@@ -208,140 +184,6 @@ def _format_reasoning_profile(analyses: list[dict], scope: str = REASONING_SCOPE
         f"      Repeated-trigram share of the trace: {_format_metric(agg, 'repetition_rate', '%', 100)}.",
     ]
     return "\n".join(lines) + "\n"
-
-
-class MetadataError(Exception):
-    """A metadata section the payload needs is missing or will not format.
-
-    Raised rather than degraded: an absent section does not remove a figure from
-    the payload, only the caveat that stops the judge over-claiming about it.
-    """
-
-
-def _section(metadata, name: str, **values) -> str:
-    """Return one metadata section, formatted.
-
-    Args:
-        metadata: The VerdictMetadata carrying the section texts.
-        name: Field name on metadata.
-        **values: Placeholder values for str.format.
-
-    Returns:
-        The formatted section text.
-
-    Raises:
-        MetadataError: If the section is empty or its placeholders do not resolve.
-    """
-    template = getattr(metadata, name, "")
-    if not template.strip():
-        raise MetadataError(
-            f"verdict_metadata.{name} is empty in config.json, but this payload needs it."
-        )
-    try:
-        return template.format(**values)
-    except (KeyError, IndexError, ValueError) as exc:
-        raise MetadataError(
-            f"verdict_metadata.{name} in config.json could not be formatted ({exc})."
-        ) from exc
-
-
-def _build_metadata(
-    rows: list[TestCaseResult],
-    pooled: dict[str, CandidatePerformance],
-    judge_config: JudgeConfig,
-    profile_shown: bool,
-) -> str:
-    """Assemble the payload header from the sections this payload actually needs.
-
-    Emitting the whole thing unconditionally meant a project with no reasoning
-    analysis read several paragraphs on how to interpret a reasoning profile it
-    would never see, and a project using a single judge type was told its scores
-    came from different judges.
-
-    Args:
-        rows: Test case results, read for the judge types in use.
-        pooled: Per-candidate pooled records, read for whether any cost exists.
-        judge_config: JudgeConfig, for the repetition count.
-        profile_shown: Whether the reasoning profile table is being emitted.
-
-    Returns:
-        The metadata block, sections separated by blank lines.
-
-    Raises:
-        MetadataError: If a needed section is missing or malformed.
-    """
-    metadata = get_app_config().verdict_metadata
-    parts = [
-        _section(metadata, "header"),
-        _section(metadata, "figures", repetitions=judge_config.repetitions),
-        _section(metadata, "score_scales"),
-    ]
-
-    if any(perf.reasoning_cost_per_point >= 0 for perf in pooled.values()):
-        parts.append(_section(metadata, "cost_per_point"))
-
-    if profile_shown:
-        parts.append(_section(metadata, "reasoning_profile"))
-
-    judge_types = {row.judge_type for row in rows}
-    legend = [_section(metadata, "judge_types_intro")]
-    for judge_type, field_name in (
-        (JUDGE_TYPE_LLM, "judge_llm"),
-        (JUDGE_TYPE_SIMILARITY, "judge_similarity"),
-        (JUDGE_TYPE_ASSERT, "judge_assert"),
-    ):
-        if judge_type in judge_types:
-            legend.append(_section(metadata, field_name))
-    if len(judge_types) > 1:
-        legend.append(_section(metadata, "judge_types_mixed"))
-    parts.append("\n".join(legend))
-
-    parts.append(_build_global_criteria_legend(metadata, judge_config.global_criteria))
-
-    return "\n\n".join(parts) + "\n"
-
-
-_GLOBAL_CRITERIA_FIELDS = {
-    JUDGE_TYPE_LLM: ("global_criteria_llm", "llm_judge_criteria"),
-    JUDGE_TYPE_SIMILARITY: ("global_criteria_similarity", "similarity_criteria"),
-    JUDGE_TYPE_ASSERT: ("global_criteria_assert", "assert_criteria"),
-}
-
-
-def _build_global_criteria_legend(metadata, gc: GlobalCriteria) -> str:
-    """Render how the global score was produced, plus the criteria text itself.
-
-    Styled after the per-test judge_type legend just above it (judge_types_intro
-    / judge_llm / ...): a code-owned "how this figure is produced" line from
-    config.json, immediately followed by the project's own rubric text via
-    {criteria_text}. It is the last thing _build_metadata emits, and the whole
-    metadata block it belongs to is appended to the verdict judge's SYSTEM
-    prompt (see _run_verdict_call), not placed ahead of the data in the user
-    payload — which is what let it read as an instruction that outranks the
-    data, when it is exactly as much "the rubric" as the per-test-case
-    EVALUATION CRITERIA already is.
-
-    Args:
-        metadata: VerdictMetadata carrying the section texts.
-        gc: The project's resolved GlobalCriteria.
-
-    Returns:
-        The intro line plus the mode-specific body.
-
-    Raises:
-        MetadataError: If the needed section is missing or malformed.
-    """
-    if gc.mode not in _GLOBAL_CRITERIA_FIELDS:
-        body = _section(metadata, "global_criteria_none")
-    else:
-        field_name, criteria_attr = _GLOBAL_CRITERIA_FIELDS[gc.mode]
-        criteria_text = getattr(gc, criteria_attr).strip() or "(none set)"
-        # Every global_criteria_* section puts "  " ahead of {criteria_text}, so a
-        # multi-line criteria (e.g. a numbered list) needs its own continuation
-        # lines re-indented to match — otherwise only the first line lines up.
-        criteria_text = criteria_text.replace("\n", "\n  ")
-        body = _section(metadata, field_name, criteria_text=criteria_text)
-    return _section(metadata, "global_criteria_intro") + "\n" + body
 
 
 def _render_table(headers: list[str], rows: list[list[str]]) -> str:
@@ -812,7 +654,7 @@ def generate_verdict(
             )
             return response_text
     except Exception as exc:
-        logger.log_error(f"Verdict generation failed: {exc}")
+        logger.log_error(f"Verdict generation failed: {exc}\n{traceback.format_exc()}")
         return None
 
 

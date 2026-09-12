@@ -26,7 +26,6 @@ from prompttestenv.runner import _generate_output
 from prompttestenv.verdict import (
     _source_cell,
     DEFAULT_DEBUG_FILENAME,
-    MetadataError,
     _build_summary_data,
     _format_reasoning_profile,
     _sanitize_filename_part,
@@ -34,6 +33,7 @@ from prompttestenv.verdict import (
     generate_verdict,
     save_verdict_debug_file,
 )
+from prompttestenv.verdict_payload import MetadataError
 from testutils import LoggerResetTestCase, make_temp_project
 
 
@@ -730,10 +730,18 @@ class TestGenerateVerdict(unittest.TestCase):
 
     def test_llm_exception_is_caught_and_returned_as_error_string(self):
         jc = self._judge_config()
-        with patch("prompttestenv.verdict.get_llm_response") as mock_llm:
+        with patch("prompttestenv.verdict.get_llm_response") as mock_llm, \
+                patch("prompttestenv.logger.log_error") as mock_log_error:
             mock_llm.side_effect = RuntimeError("provider down")
             result = generate_verdict(self.candidates, self.results, self.project_dir, jc)
         self.assertIsNone(result, "a failed verdict must be None, never text")
+        mock_log_error.assert_called_once()
+        logged_message = mock_log_error.call_args[0][0]
+        self.assertIn("provider down", logged_message)
+        self.assertIn(
+            "Traceback (most recent call last)", logged_message,
+            "the exception's traceback must be logged, not just str(exc)",
+        )
 
 
 

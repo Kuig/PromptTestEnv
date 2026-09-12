@@ -12,6 +12,7 @@ from prompttestenv.models import (
     REASONING_DIMENSIONS,
     Candidate,
     CandidatePerformance,
+    parse_grouped_verdict,
     pool_by_candidate,
     project_name,
     render_measured,
@@ -20,7 +21,6 @@ from prompttestenv.models import (
     GlobalCriteria,
 )
 from prompttestenv.reasoning import aggregate_reasoning_stats
-from prompttestenv.verdict import parse_grouped_verdict
 
 
 def get_badge_class(score):

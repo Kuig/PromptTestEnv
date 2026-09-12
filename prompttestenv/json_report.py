@@ -34,6 +34,7 @@ from prompttestenv.models import (
     Candidate,
     CandidatePerformance,
     calculate_stats,
+    parse_grouped_verdict,
     pool_by_candidate,
     project_name,
     JudgeConfig,
@@ -41,7 +42,6 @@ from prompttestenv.models import (
     GlobalCriteria,
 )
 from prompttestenv.reasoning import aggregate_reasoning_stats
-from prompttestenv.verdict import parse_grouped_verdict
 
 
 JSON_SCHEMA_VERSION = "1.0"

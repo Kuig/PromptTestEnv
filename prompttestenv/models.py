@@ -419,6 +419,31 @@ def pool_by_candidate(
     return pooled
 
 
+def parse_grouped_verdict(verdict_text: str) -> dict | None:
+    """Parse verdict_text as grouped-verdict JSON, if it is one.
+
+    Pure deserialization, no LLM call: lives here rather than in verdict.py
+    so the two renderers (reporting.py, json_report.py) that only need this
+    envelope check do not import a 700+-line LLM-orchestration module for it.
+
+    Args:
+        verdict_text: Raw verdict text — either the JSON object produced by
+            generate_verdict()'s grouped-verdict path, or plain/Markdown text.
+
+    Returns:
+        The parsed dict when verdict_text is valid JSON with "is_grouped": true,
+        otherwise None.
+    """
+    stripped = verdict_text.strip()
+    if not stripped.startswith("{"):
+        return None
+    try:
+        data = json.loads(stripped)
+    except Exception:
+        return None
+    return data if data.get("is_grouped") else None
+
+
 def attachment_paths(value: str | list[str] | None) -> list[str]:
     """Normalise a test case's ``file`` value into an ordered list of paths.
 

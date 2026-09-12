@@ -7,11 +7,11 @@ import prompttestenv.logger as logger
 from prompttestenv.analysis import attach_best, attach_reasoning, keys_to_analyze, run_analysis_phase
 from prompttestenv.api import teardown
 from prompttestenv.evaluator import run_evaluation_phase
-from prompttestenv.verdict import generate_verdict, evaluate_best_candidate_fast, parse_grouped_verdict
+from prompttestenv.verdict import generate_verdict, evaluate_best_candidate_fast
 from prompttestenv.generation import run_generation_phase
 from prompttestenv.reporting import generate_html_report
 from prompttestenv.json_report import generate_json_report
-from prompttestenv.models import TestCaseResult, CandidatePerformance, Candidate, TestCase, JudgeConfig, GlobalCriteria, OUTPUT_MODES, apply_eval_event, apply_gen_event
+from prompttestenv.models import TestCaseResult, CandidatePerformance, Candidate, TestCase, JudgeConfig, GlobalCriteria, OUTPUT_MODES, apply_eval_event, apply_gen_event, parse_grouped_verdict
 from prompttestenv.progress import ProgressState, append_event, failed_eval_keys, failed_gen_keys
 import prompttestenv.projectio as pio
 
