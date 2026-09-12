@@ -499,15 +499,15 @@
               },
               "framing": {
                 "type": "number",
-                "description": "This unit's framing intensity, 0..configuration.reasoning.intensity_scale."
+                "description": "This unit's framing intensity, 0..configuration.reasoning.intensity_scale, or -1 if the judge call for this dimension failed for the whole trace (not measured)."
               },
               "solving": {
                 "type": "number",
-                "description": "This unit's solving intensity, on the same scale."
+                "description": "This unit's solving intensity, on the same scale, or -1 if not measured (see framing)."
               },
               "presentation": {
                 "type": "number",
-                "description": "This unit's presentation intensity, on the same scale."
+                "description": "This unit's presentation intensity, on the same scale, or -1 if not measured (see framing)."
               }
             }
           }

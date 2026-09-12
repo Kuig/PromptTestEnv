@@ -92,6 +92,15 @@ def build_trace_segments(perf: CandidatePerformance) -> list[dict]:
     Returns:
         Ordered list of span dicts. Gap spans (whitespace between units) carry
         ``unit_id`` 0 and no colour.
+
+    A unit's per-dimension intensity is -1.0 ("not measured") on any dimension
+    whose judge call failed for the whole trace (analyze_reasoning), never the
+    dataclass default 0.0 a real zero would use. ``top``/``peak`` never pick a
+    -1.0 dimension as dominant while another one is actually measured (a real
+    measurement is always >= 0 > -1), and when every dimension of a unit is
+    -1.0, ``peak`` is negative and ``_tint`` already renders that as
+    transparent (its ``ratio <= 0`` branch) rather than as a coloured "scored
+    zero" — only the tooltip needs render_measured to say so explicitly.
     """
     analysis = perf.best_reasoning_analysis
     text = perf.best_reasoning_text
@@ -119,7 +128,10 @@ def build_trace_segments(perf: CandidatePerformance) -> list[dict]:
             "text": text[unit.start:unit.end],
             "unit_id": index,
             "background": _tint(colors.get(top, NEUTRAL_UNIT_COLOR), peak / scale),
-            "title": " | ".join(f"{d}: {intensities[d]:.1f}/{scale}" for d in REASONING_DIMENSIONS),
+            "title": " | ".join(
+                f"{d}: {render_measured(intensities[d], f'{intensities[d]:.1f}/{scale}')}"
+                for d in REASONING_DIMENSIONS
+            ),
             "markers": markers,
         })
         cursor = unit.end

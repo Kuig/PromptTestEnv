@@ -181,7 +181,21 @@ class TestComputeCoverages(unittest.TestCase):
         stats.set_coverage("presentation", 0.0)
         compute_coverages(stats, schema)
         self.assertEqual(stats.coverage("framing"), -1.0)
-        self.assertAlmostEqual(stats.density, 1.0, places=3)
+
+    def test_density_is_not_measured_when_any_dimension_is_partial(self):
+        """A partial density (2 of 3 dimensions) is not the same measurement as a
+        complete one, so it must degrade to -1.0 rather than sum the two that
+        succeeded — even though that sum would itself be a real, positive number.
+        """
+        schema = make_app_config().reasoning_schema
+        stats = ReasoningStats(units=[
+            ReasoningUnit(start=0, end=10, solving=3.0, presentation=3.0)
+        ])
+        stats.set_coverage("framing", -1.0)
+        stats.set_coverage("solving", 0.0)
+        stats.set_coverage("presentation", 0.0)
+        compute_coverages(stats, schema)
+        self.assertEqual(stats.density, -1.0)
 
 
 class TestComputeRepetitionRate(unittest.TestCase):
@@ -405,6 +419,11 @@ class TestAnalyzeReasoning(unittest.TestCase):
             stats = analyze_reasoning(self.TRACE, self.judge_config)
         self.assertEqual(stats.coverage("framing"), -1.0, "a failed call is not a measured 0")
         self.assertAlmostEqual(stats.coverage("solving"), 1.0, places=3)
+        self.assertTrue(
+            all(u.intensity("framing") == -1.0 for u in stats.units),
+            "a failed dimension must not leave units at the 0.0 dataclass default",
+        )
+        self.assertEqual(stats.density, -1.0, "framing failed, so density cannot be a real sum")
 
     def test_failed_metrics_call_keeps_the_segmentation(self):
         units = len(split_into_units(self.TRACE, SPLITTING))

@@ -130,7 +130,7 @@ Analysis is silently skipped for candidates that produce no reasoning output.
 
 These are **not** a partition, and this is the whole point. A sentence such as *"So it is: Paris, Berlin, Rome, though I should say it in character"* genuinely does two things at once, and forcing a single label made the old four-category scheme assign it almost arbitrarily. Each dimension therefore gets its own independent coverage in the 0 to 100% range, and the three do not add up to 100%.
 
-Their sum is reported separately as **density**: how many concerns the trace carries per unit of text. A density near 1.0 means the model does one thing at a time; well above 1.0 means it interleaves them.
+Their sum is reported separately as **density**: how many concerns the trace carries per unit of text. A density near 1.0 means the model does one thing at a time; well above 1.0 means it interleaves them. Density is `-1` ("not measured") whenever even one of the three dimensions could not be measured for that repetition, rather than the sum of whichever two succeeded: a partial sum is not the same measurement as a complete one and would not be comparable across repetitions.
 
 The dimensions, their definitions, their colours and the prompts that apply them live in the **root `config.json`**, not in `judge_config.json`. They are the measurement instrument: if each benchmark could redefine them, no two reports would be comparable. Change them there and every project changes together, and re-run `analyze` to recompute.
 

@@ -6,7 +6,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from unittest.mock import patch
+
+from prompttestenv.config import AppConfig, ReasoningDimension, ReasoningSchema
 from prompttestenv.models import (
+    NOT_MEASURED,
     REASONING_SCOPE_ALL,
     REASONING_SCOPE_NONE,
     Candidate,
@@ -14,15 +18,31 @@ from prompttestenv.models import (
     GlobalCriteria,
     JudgeConfig,
     ReasoningStats,
+    ReasoningUnit,
     TestCaseResult,
 )
 from prompttestenv.reporting import (
+    build_trace_segments,
     format_cost_per_point,
     format_thinking_value,
     generate_html_report,
     get_badge_class,
     md_to_html,
 )
+
+
+def _reasoning_app_config() -> AppConfig:
+    """Minimal AppConfig carrying just what build_trace_segments reads."""
+    return AppConfig(
+        reasoning_schema=ReasoningSchema(
+            intensity_scale=3,
+            dimensions=[
+                ReasoningDimension(name="framing", color="#111111", definition="frame"),
+                ReasoningDimension(name="solving", color="#222222", definition="solve"),
+                ReasoningDimension(name="presentation", color="#333333", definition="present"),
+            ],
+        ),
+    )
 
 
 class TestGetBadgeClass(unittest.TestCase):
@@ -171,6 +191,54 @@ class TestGenerateHtmlReport(unittest.TestCase):
         self.assertIn("Global Verdict", content)
         self.assertIn("Overall verdict text", content)
 
+
+
+class TestBuildTraceSegments(unittest.TestCase):
+    """A unit's -1.0 ('not measured') intensity must never render as a scored 0.
+
+    See reasoning.analyze_reasoning: a dimension whose judge call failed for
+    the whole trace propagates -1.0 to every unit's intensity on it (§1.14),
+    not the ReasoningUnit dataclass default of 0.0. These tests are the render
+    side of that fix, and the first direct test of this function at all.
+    """
+
+    def setUp(self):
+        patcher = patch("prompttestenv.reporting.get_app_config", return_value=_reasoning_app_config())
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _perf(self, unit: ReasoningUnit) -> CandidatePerformance:
+        perf = CandidatePerformance()
+        perf.best_reasoning_text = "0123456789"
+        perf.best_reasoning_analysis = ReasoningStats(units=[unit])
+        return perf
+
+    def test_measured_dimension_is_tinted(self):
+        unit = ReasoningUnit(start=0, end=10, framing=3.0, solving=0.0, presentation=0.0)
+        segments = build_trace_segments(self._perf(unit))
+        self.assertEqual(len(segments), 1)
+        self.assertNotEqual(segments[0]["background"], "transparent")
+
+    def test_unmeasured_dimension_never_wins_as_the_dominant_one(self):
+        """framing is -1.0 (not measured), solving/presentation are a real 0.0.
+
+        Naively picking max() by raw intensity would pick framing (-1.0 sorts
+        above nothing else here only if the others were also negative; the
+        real risk this guards is a future regression where the -1 sentinel is
+        summed or compared without the sentinel check). The tooltip is where
+        the sentinel must show up explicitly instead of a misleading -1.0/3.
+        """
+        unit = ReasoningUnit(start=0, end=10, framing=-1.0, solving=0.0, presentation=0.0)
+        segments = build_trace_segments(self._perf(unit))
+        title = segments[0]["title"]
+        self.assertIn(f"framing: {NOT_MEASURED}", title)
+        self.assertIn("solving: 0.0/3", title)
+
+    def test_fully_unmeasured_unit_renders_with_no_colour(self):
+        unit = ReasoningUnit(start=0, end=10, framing=-1.0, solving=-1.0, presentation=-1.0)
+        segments = build_trace_segments(self._perf(unit))
+        self.assertEqual(segments[0]["background"], "transparent")
+        self.assertIn(f"framing: {NOT_MEASURED}", segments[0]["title"])
 
 
 class TestFormatCostPerPoint(unittest.TestCase):

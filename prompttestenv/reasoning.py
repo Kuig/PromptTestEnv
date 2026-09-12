@@ -628,6 +628,12 @@ def compute_coverages(stats: ReasoningStats, schema: ReasoningSchema) -> None:
     says how many concerns the trace carries at once, and normalising would
     throw exactly that away.
 
+    ``density`` is only ever the sum of a *complete* set of coverages: if any
+    dimension came in already at the -1 "not measured" sentinel (a failed
+    judge call, see analyze_reasoning), density degrades to -1.0 too rather
+    than summing the coverages that did succeed. A partial density is not the
+    same measurement as a complete one and must not be averaged in beside it.
+
     Args:
         stats: Stats whose ``units`` are already scored.
         schema: The reasoning schema, for the intensity scale.
@@ -643,7 +649,9 @@ def compute_coverages(stats: ReasoningStats, schema: ReasoningSchema) -> None:
         coverage = weighted / (total_weight * schema.intensity_scale)
         stats.set_coverage(dimension, round(coverage, 4))
         measured.append(coverage)
-    stats.density = round(sum(measured), 4) if measured else -1.0
+    stats.density = (
+        round(sum(measured), 4) if len(measured) == len(REASONING_DIMENSIONS) else -1.0
+    )
 
 
 def analyze_reasoning(
@@ -730,6 +738,8 @@ def analyze_reasoning(
     for dimension in REASONING_DIMENSIONS:
         if dimension in failed:
             stats.set_coverage(dimension, -1.0)
+            for unit in stats.units:
+                unit.set_intensity(dimension, -1.0)
             continue
         stats.set_coverage(dimension, 0.0)
         for idx, total in totals[dimension].items():
