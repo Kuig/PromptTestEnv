@@ -5,6 +5,69 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.8] - 2026-09-12
+
+### Changed
+
+- `RunKey` and `ProgressState` moved out of `models.py` into `progress.py`, which
+  has zero dependency on the rest of the package; every other module now imports
+  both from there instead of from `models.py`.
+- `run_project`, `analyze_project`, and `render_from_progress` now share one
+  `_load_project_config` helper for the project-directory-exists and
+  config-file-loading checks, instead of three independently drifting copies
+  (one of which caught a narrower set of exceptions than the others). As a side
+  effect, `render_from_progress`'s configuration check now runs before its log
+  check, so a project with both a missing `progress.jsonl` and a malformed
+  `judge_config.json` reports the more specific error.
+- Every "not measured" figure in the report and the verdict payload (cost per
+  point, score cells, the OVERALL AGGREGATE table) is now spelled the same way,
+  decided in one place (`models.render_measured`) instead of by each formatter
+  independently, which previously produced a mix of `"N/A"`, `"n/a"`, and
+  `"not measured"` across different parts of the same report.
+- The verdict payload's metadata assembly (repetition count, metric semantics,
+  the judge-type legend) moved out of `verdict.py` into a new, deliberately
+  lightweight `verdict_payload.py` module that imports neither `api` nor
+  `reasoning`, leaving `verdict.py` with rendering, the payload/rendering glue,
+  and LLM-call orchestration. `parse_grouped_verdict` moved further, into
+  `models.py`, since it is pure JSON parsing with no LLM call; `reporting.py`
+  and `json_report.py` no longer import anything from `verdict.py` at all.
+- `models.GenerationOutcome` replaces an ad hoc dict passed from the generation
+  phase to the evaluation phase; `models.apply_gen_event`/`apply_eval_event`
+  centralize the per-repetition bookkeeping (tokens, times, scores) that
+  `generation.py`, `evaluator.py`, and `render_from_progress` used to each
+  duplicate by hand.
+
+### Fixed
+
+- The report could show a reasoning trace from a different, lower-scoring
+  repetition than the response displayed beside it, whenever the actual winning
+  repetition had no trace of its own. `analysis.attach_best` is now the single
+  computation of which repetition wins (previously tracked incrementally and
+  independently in `generation.py`, `evaluator.py`, and
+  `render_from_progress`, sometimes disagreeing), and `attach_reasoning` now
+  checks whether that same winner has a trace instead of picking its own,
+  possibly different, winner over a narrower key set.
+- A reasoning dimension whose judge call failed across every scoring window of
+  a trace no longer leaves that dimension's per-unit intensities at their
+  dataclass default of `0.0`, indistinguishable from a real "scored zero":
+  every affected unit is now marked with the `-1.0` "not measured" sentinel,
+  and the trace view renders it uncoloured instead of tinting it as a genuine
+  zero. `density` (the sum of the three reasoning coverages) is now `-1.0`
+  whenever any one of the three could not be measured for a repetition,
+  instead of silently summing whichever coverages did succeed into a partial,
+  non-comparable figure.
+- `generate_verdict`'s failure log now includes the full traceback alongside
+  the exception message, so a recurrence of the exact bug class that once let
+  a stale test mock's `TypeError` go unnoticed for a full development cycle
+  (a swallowed `except Exception` around an LLM-call type mismatch) surfaces
+  immediately in the logs instead of only through a failing regression test.
+
+### Added
+
+- Windows convenience launchers (`Windows Integration/launch_gui.bat`,
+  `launch_editor.bat`) that activate the virtual environment and start the two
+  Streamlit GUIs from a repo checkout.
+
 ## [0.2.7] - 2026-09-09
 
 ### Changed
@@ -157,6 +220,7 @@ Initial tagged release.
 
 - Fixed assorted GUI issues in the benchmark runner.
 
+[0.2.8]: https://github.com/Kuig/PromptTestEnv/compare/v0.2.7...v0.2.8
 [0.2.7]: https://github.com/Kuig/PromptTestEnv/compare/v0.2.6...v0.2.7
 [0.2.6]: https://github.com/Kuig/PromptTestEnv/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/Kuig/PromptTestEnv/compare/v0.2.4...v0.2.5
