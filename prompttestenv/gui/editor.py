@@ -90,8 +90,18 @@ def _ed() -> dict | None:
     return st.session_state.get("ed")
 
 
+def _skey(name: str) -> str:
+    """Scope a widget key to the current load, so Load and Discard reseed it.
+
+    Every widget holding project state goes through here. A fixed key survives
+    a Load: Streamlit keeps its state across the rerun, the harvest reads it
+    back, and the previous project's value lands in the new draft.
+    """
+    return f"ed{st.session_state.ed['gen']}:{name}"
+
+
 def _wkey(kind: str, uid: str, field: str) -> str:
-    return f"ed{st.session_state.ed['gen']}:{kind}:{uid}:{field}"
+    return _skey(f"{kind}:{uid}:{field}")
 
 
 def _sync_draft() -> None:
@@ -164,7 +174,7 @@ _CANDIDATE_FIELDS = ("name", "provider", "model", "temperature",
                      "disable_safety", "thinking", "system_prompt_file")
 _TEST_FIELDS = ("id", "group", "judge_type", "prompt", "criteria", "file")
 
-# judge_config.json widgets: stable widget key -> field name. Top-level scalars
+# judge_config.json widgets: widget key (before _skey) -> field name. Top-level scalars
 # first, then one map per nested block. Harvesting from a table rather than
 # assigning during render is what lets validation see an edit on the SAME run
 # the user made it, instead of one run later.
@@ -230,9 +240,9 @@ def _harvest_row(kind: str, row: dict, names: tuple[str, ...], cls: type) -> Non
 
 def _harvest_mapping(target: dict, key_map: dict[str, str], cls: type) -> dict:
     values = {
-        field: st.session_state[key]
+        field: st.session_state[_skey(key)]
         for key, field in key_map.items()
-        if key in st.session_state
+        if _skey(key) in st.session_state
     }
     return pio.merge_preserving_shape(target, values, cls) if values else target
 
@@ -245,7 +255,8 @@ def _harvest_nullables(block: dict) -> dict:
     author simply omitted the key would be a change they did not make.
     """
     out = dict(block)
-    for key, field_name in _JUDGE_NULLABLES:
+    for name, field_name in _JUDGE_NULLABLES:
+        key = _skey(name)
         if f"{key}:on" not in st.session_state:
             continue
         if not st.session_state[f"{key}:on"]:
@@ -630,8 +641,8 @@ with tab_tests:
 
     all_groups = sorted({str(t["data"].get("group", "Default group")) for t in ed["tests"]})
     filter_col, group_col = st.columns([1, 2])
-    needle = filter_col.text_input("Filter by id or prompt", key="test_filter")
-    chosen_groups = group_col.multiselect("Groups", all_groups, key="test_groups")
+    needle = filter_col.text_input("Filter by id or prompt", key=_skey("test_filter"))
+    chosen_groups = group_col.multiselect("Groups", all_groups, key=_skey("test_groups"))
 
     if ed["tests"]:
         st.dataframe(
@@ -736,21 +747,21 @@ def _judge_common(block: dict, prefix: str, cls: type, *, safety: bool) -> None:
     left, right = st.columns(2)
     with left:
         _open_choice("Provider", pio.PROVIDERS, _field(block, "provider", cls),
-                     f"{prefix}:provider")
+                     _skey(f"{prefix}:provider"))
     with right:
-        st.text_input("Model", value=_field(block, "model", cls), key=f"{prefix}:model")
+        st.text_input("Model", value=_field(block, "model", cls), key=_skey(f"{prefix}:model"))
     left, mid, right = st.columns(3)
     with left:
         st.number_input("Temperature", min_value=0.0, max_value=2.0, step=0.05,
                         value=float(_field(block, "temperature", cls)),
-                        key=f"{prefix}:temperature")
+                        key=_skey(f"{prefix}:temperature"))
     with mid:
-        _thinking_widget("", _field(block, "thinking", cls), f"{prefix}:thinking")
+        _thinking_widget("", _field(block, "thinking", cls), _skey(f"{prefix}:thinking"))
     if safety:
         with right:
             st.checkbox("Disable safety filters",
                         value=bool(_field(block, "disable_safety", cls)),
-                        key=f"{prefix}:safety")
+                        key=_skey(f"{prefix}:safety"))
 
 
 with tab_judge:
@@ -759,28 +770,28 @@ with tab_judge:
         with left:
             st.number_input("Repetitions", min_value=1, step=1,
                             value=int(draft.judge.get("repetitions", 5)),
-                            key="jc:repetitions")
+                            key=_skey("jc:repetitions"))
             st.number_input("Delay between repetitions (s)", min_value=0.0, step=0.5,
                             value=float(draft.judge.get("repetition_delay_seconds", 2)),
-                            key="jc:rep_delay")
+                            key=_skey("jc:rep_delay"))
         with right:
             st.number_input("Response timeout (s)", min_value=1.0, step=10.0,
                             value=float(draft.judge.get("max_response_timeout_seconds", 300)),
-                            key="jc:timeout")
+                            key=_skey("jc:timeout"))
             st.number_input("Delay between evaluations (s)", min_value=0.0, step=0.5,
                             value=float(draft.judge.get("evaluation_delay_seconds", 2)),
-                            key="jc:eval_delay")
+                            key=_skey("jc:eval_delay"))
 
         st.checkbox("Pass attachments to the judge too",
-                    value=bool(draft.judge.get("pass_media_to_judge", False)), key="jc:media")
+                    value=bool(draft.judge.get("pass_media_to_judge", False)), key=_skey("jc:media"))
         st.checkbox("One verdict per group (plus a global one)",
-                    value=bool(draft.judge.get("group_verdicts", False)), key="jc:groups")
+                    value=bool(draft.judge.get("group_verdicts", False)), key=_skey("jc:groups"))
 
         scope = draft.judge.get("reasoning_analysis", "none")
         scope = scope if scope in REASONING_SCOPES else "none"
         st.radio(
             "Reasoning analysis scope", REASONING_SCOPES,
-            index=REASONING_SCOPES.index(scope), horizontal=True, key="jc:scope",
+            index=REASONING_SCOPES.index(scope), horizontal=True, key=_skey("jc:scope"),
             help="'best' analyses only the highest-scoring repetition of each "
                  "candidate x test, costing `repetitions` times less than 'all'.",
         )
@@ -792,9 +803,9 @@ with tab_judge:
         block = _block("test_judge")
         _judge_common(block, "tj", TestJudgeSettings, safety=True)
         st.text_area("System prompt", value=_field(block, "evaluation_system_prompt", TestJudgeSettings),
-                     height=200, key="tj:sys")
+                     height=200, key=_skey("tj:sys"))
         template = _field(block, "evaluation_template", TestJudgeSettings)
-        st.text_area("Evaluation template", value=template, height=280, key="tj:template")
+        st.text_area("Evaluation template", value=template, height=280, key=_skey("tj:template"))
 
         st.caption("This is the only template still passed through `str.format()`:")
         for placeholder in pio.EVALUATION_PLACEHOLDERS:
@@ -813,10 +824,10 @@ with tab_judge:
         left, right = st.columns(2)
         with left:
             _open_choice("Provider", pio.PROVIDERS, _field(block, "provider", SimilarityJudgeSettings),
-                         "sj:provider")
+                         _skey("sj:provider"))
         with right:
             st.text_input("Embedding model", value=_field(block, "model", SimilarityJudgeSettings),
-                          key="sj:model", help="An embedding model, not a chat model.")
+                          key=_skey("sj:model"), help="An embedding model, not a chat model.")
         st.caption(
             "This block has exactly two keys. Anything else is dropped at load "
             "(`models._settings_from_dict`), though the editor still preserves it on disk."
@@ -826,14 +837,14 @@ with tab_judge:
         block = _block("verdict_judge")
         _judge_common(block, "vj", VerdictJudgeSettings, safety=True)
         st.text_area("System prompt", value=_field(block, "verdict_system_prompt", VerdictJudgeSettings),
-                     height=200, key="vj:sys")
+                     height=200, key=_skey("vj:sys"))
         st.text_area("Verdict template", value=_field(block, "verdict_template", VerdictJudgeSettings),
-                     height=300, key="vj:template")
+                     height=300, key=_skey("vj:template"))
         if not draft.judge.get("group_verdicts"):
             st.info("Group verdicts are off, so the template below is unused.")
         st.text_area("Global verdict template",
                      value=_field(block, "global_verdict_template", VerdictJudgeSettings),
-                     height=300, key="vj:global")
+                     height=300, key=_skey("vj:global"))
         st.caption(
             "Both templates are appended verbatim after the data — braces are "
             "literal and there are no `{placeholders}` to fill in."
@@ -855,7 +866,7 @@ with tab_judge:
             picked = st.selectbox(
                 "Dimension mode", options,
                 index=options.index(current_mode) if current_mode in options else 0,
-                key="rj:dimmode",
+                key=_skey("rj:dimmode"),
                 help="'split' asks one single-concept question per dimension, "
                      "which a small local judge can actually answer.",
             )
@@ -863,18 +874,18 @@ with tab_judge:
                 block["dimension_mode"] = None if picked == _NULLABLE_SENTINEL else picked
 
             _nullable_number(
-                "context size", block.get("context_size"), "rj:ctx",
+                "context size", block.get("context_size"), _skey("rj:ctx"),
                 minimum=256, step=1024, fallback="the server's own",
                 help_text="Ollama only. Unset (or 0) means the server default.",
             )
         with right:
             _nullable_number(
-                "reliability k", block.get("reliability_k"), "rj:k",
+                "reliability k", block.get("reliability_k"), _skey("rj:k"),
                 minimum=1, step=1, fallback=defaults.reliability_k,
                 help_text="How many times each scoring call is repeated.",
             )
             _nullable_number(
-                "max units per call", block.get("max_units_per_call"), "rj:units",
+                "max units per call", block.get("max_units_per_call"), _skey("rj:units"),
                 minimum=1, step=10, fallback=defaults.max_units_per_call,
                 help_text="Trace units sent to the judge in one request.",
             )
@@ -892,7 +903,7 @@ with tab_global:
     mode = draft.criteria.get("mode", "llm-judge")
     active = mode if mode in GLOBAL_MODES else "llm-judge"
     st.radio(
-        "Mode", GLOBAL_MODES, index=GLOBAL_MODES.index(active), horizontal=True, key="gc:mode",
+        "Mode", GLOBAL_MODES, index=GLOBAL_MODES.index(active), horizontal=True, key=_skey("gc:mode"),
         help="Scored on every response, independently of the per-test criteria.",
     )
 
@@ -901,7 +912,7 @@ with tab_global:
     else:
         field_name, label = _CRITERIA_FIELDS[active]
         criteria_text = draft.criteria.get(field_name, "")
-        st.text_area(label, value=criteria_text, height=200, key=f"gc:{field_name}")
+        st.text_area(label, value=criteria_text, height=200, key=_skey(f"gc:{field_name}"))
         if active == "assert":
             _assert_panel(criteria_text)
 
@@ -913,7 +924,7 @@ with tab_global:
             if other == active:
                 continue
             st.text_area(f"{label} — {other}", value=draft.criteria.get(field_name, ""),
-                         height=140, key=f"gc:other:{field_name}")
+                         height=140, key=_skey(f"gc:other:{field_name}"))
 
 
 # ── System prompts and test files ─────────────────────────────────────────────
@@ -933,12 +944,12 @@ def _asset_users(kind: str, name: str) -> list[str]:
 with tab_prompts:
     st.warning(_NOT_HASHED_WARNING)
     names = draft.system_prompt_names()
-    choice = st.selectbox("File", ["➕ New file…", *names], key="sp:pick")
+    choice = st.selectbox("File", ["➕ New file…", *names], key=_skey("sp:pick"))
 
     if choice == "➕ New file…":
         new_name = st.text_input("Filename", value="", placeholder="my_prompt.txt",
-                                 key="sp:newname")
-        content = st.text_area("Content", value="", height=400, key="sp:newbody")
+                                 key=_skey("sp:newname"))
+        content = st.text_area("Content", value="", height=400, key=_skey("sp:newbody"))
         if st.button("Create", key="sp:create"):
             try:
                 pio.write_asset(draft, pio.SYSTEM_PROMPTS_DIR, new_name, content)
@@ -948,7 +959,7 @@ with tab_prompts:
     else:
         path = draft.system_prompts_dir / choice
         body = st.text_area("Content", value=path.read_text(encoding="utf-8"),
-                            height=400, key=f"sp:body:{choice}")
+                            height=400, key=_skey(f"sp:body:{choice}"))
         users = _asset_users(pio.SYSTEM_PROMPTS_DIR, choice)
         st.caption("Used by: " + (", ".join(users) if users else "nothing"))
 
@@ -968,7 +979,7 @@ with tab_prompts:
 
 with tab_files:
     st.warning(_NOT_HASHED_WARNING)
-    uploaded = st.file_uploader("Add attachments", accept_multiple_files=True, key="tf:upload")
+    uploaded = st.file_uploader("Add attachments", accept_multiple_files=True, key=_skey("tf:upload"))
     if uploaded:
         for item in uploaded:
             safe = Path(item.name).name

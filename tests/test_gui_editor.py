@@ -54,6 +54,18 @@ class EditorTestCase(LoggerResetTestCase):
                              f"{[b.label for b in at.button]}")
 
     @staticmethod
+    def _key(at: AppTest, name: str) -> str:
+        """A project-state widget key as the editor scopes it (see editor._skey)."""
+        return f"ed{at.session_state['ed']['gen']}:{name}"
+
+    def _open(self, at: AppTest, project_dir: str) -> None:
+        """Load another project into an already running editor."""
+        at.sidebar.text_input[0].set_value(project_dir)
+        at.run()
+        self._click(at, "📂 Open")
+        at.run()
+
+    @staticmethod
     def _has_button(at: AppTest, label: str) -> bool:
         return any(b.label == label for b in at.button)
 
@@ -133,12 +145,12 @@ class TestTabsStayPut(EditorTestCase):
         self.assertIn("tab_container", clean)
 
         # Formats fine, but omits a placeholder -> a warning is added.
-        at.text_area(key="tj:template").set_value("{criteria} {user_prompt}")
+        at.text_area(key=self._key(at, "tj:template")).set_value("{criteria} {user_prompt}")
         at.run()
         warned = self._shape(at)
 
         # A stray brace -> an error instead.
-        at.text_area(key="tj:template").set_value("literal { brace")
+        at.text_area(key=self._key(at, "tj:template")).set_value("literal { brace")
         at.run()
         errored = self._shape(at)
 
@@ -371,7 +383,7 @@ class TestSaveConfirmation(EditorTestCase):
         hash_before = calculate_config_hash(self.project_dir)
         at = self._app()
 
-        at.radio(key="jc:scope").set_value("all")
+        at.radio(key=self._key(at, "jc:scope")).set_value("all")
         at.run()
         self._click(at, "💾 Save")
         at.run()
@@ -391,7 +403,7 @@ class TestSaveConfirmation(EditorTestCase):
         before = self._disk()
         at = self._app()
 
-        at.number_input(key="jc:repetitions").set_value(42)
+        at.number_input(key=self._key(at, "jc:repetitions")).set_value(42)
         at.run()
         self._click(at, "💾 Save")
         at.run()
@@ -403,7 +415,7 @@ class TestSaveConfirmation(EditorTestCase):
     def test_confirming_writes(self):
         self._add_progress_log()
         at = self._app()
-        at.number_input(key="jc:repetitions").set_value(42)
+        at.number_input(key=self._key(at, "jc:repetitions")).set_value(42)
         at.run()
         self._click(at, "💾 Save")
         at.run()
@@ -417,7 +429,7 @@ class TestSaveConfirmation(EditorTestCase):
         self._add_progress_log()
         before = self._disk()
         at = self._app()
-        at.number_input(key="jc:repetitions").set_value(42)
+        at.number_input(key=self._key(at, "jc:repetitions")).set_value(42)
         at.run()
         self._click(at, "💾 Save")
         at.run()
@@ -430,7 +442,7 @@ class TestSaveConfirmation(EditorTestCase):
 
     def test_no_progress_log_means_no_confirmation(self):
         at = self._app()
-        at.number_input(key="jc:repetitions").set_value(7)
+        at.number_input(key=self._key(at, "jc:repetitions")).set_value(7)
         at.run()
         self._click(at, "💾 Save")
         at.run()
@@ -459,7 +471,7 @@ class TestValidationGate(EditorTestCase):
 
     def test_broken_evaluation_template_blocks_saving(self):
         at = self._app()
-        at.text_area(key="tj:template").set_value("literal { brace")
+        at.text_area(key=self._key(at, "tj:template")).set_value("literal { brace")
         at.run()
         self.assertTrue(any("evaluation_template" in e.value for e in at.error))
         save = next(b for b in at.button if b.label == "💾 Save")
@@ -467,7 +479,7 @@ class TestValidationGate(EditorTestCase):
 
     def test_missing_placeholder_warns_but_still_allows_saving(self):
         at = self._app()
-        at.text_area(key="tj:template").set_value("{criteria} {user_prompt}")
+        at.text_area(key=self._key(at, "tj:template")).set_value("{criteria} {user_prompt}")
         at.run()
         self.assertTrue(any("candidate_response" in w.value for w in at.warning))
         save = next(b for b in at.button if b.label == "💾 Save")
@@ -475,7 +487,7 @@ class TestValidationGate(EditorTestCase):
 
     def test_literal_braces_in_verdict_template_are_fine(self):
         at = self._app()
-        at.text_area(key="vj:template").set_value('Answer with {"verdict": "..."}')
+        at.text_area(key=self._key(at, "vj:template")).set_value('Answer with {"verdict": "..."}')
         at.run()
         self.assertEqual([e.value for e in at.error if "verdict_template" in e.value], [])
 
@@ -483,9 +495,9 @@ class TestValidationGate(EditorTestCase):
 class TestDiscard(EditorTestCase):
     def test_discard_restores_the_widgets_from_disk(self):
         at = self._app()
-        original = at.number_input(key="jc:repetitions").value
+        original = at.number_input(key=self._key(at, "jc:repetitions")).value
 
-        at.number_input(key="jc:repetitions").set_value(99)
+        at.number_input(key=self._key(at, "jc:repetitions")).set_value(99)
         at.run()
         self.assertTrue(any("Unsaved changes" in w.value for w in at.warning))
 
@@ -494,8 +506,54 @@ class TestDiscard(EditorTestCase):
 
         # Reads from `value=` only because the generation counter changed the
         # widget key; a stale key would still show 99.
-        self.assertEqual(at.number_input(key="jc:repetitions").value, original)
+        self.assertEqual(at.number_input(key=self._key(at, "jc:repetitions")).value, original)
         self.assertTrue(any("No unsaved changes" in s.value for s in at.success))
+
+
+class TestLoadAnotherProject(EditorTestCase):
+    """Loading a project must not carry the previous one's widget state into it."""
+
+    def setUp(self):
+        super().setUp()
+        self.other_dir = make_temp_project()
+        self.addCleanup(shutil.rmtree, self.other_dir, ignore_errors=True)
+
+    def test_judge_values_come_from_the_new_project(self):
+        judge_path = Path(self.other_dir) / "judge_config.json"
+        judge = json.loads(judge_path.read_text(encoding="utf-8"))
+        judge["repetitions"] = 7
+        judge_path.write_text(json.dumps(judge, indent=4), encoding="utf-8")
+        at = self._app()
+        at.number_input(key=self._key(at, "jc:repetitions")).set_value(99)
+        at.run()
+
+        self._open(at, self.other_dir)
+
+        on_disk = json.loads(
+            (Path(self.other_dir) / "judge_config.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(at.number_input(key=self._key(at, "jc:repetitions")).value,
+                         on_disk["repetitions"])
+        self.assertEqual(at.session_state["ed"]["draft"].judge["repetitions"],
+                         on_disk["repetitions"])
+
+    def test_system_prompt_body_comes_from_the_new_project(self):
+        name = "pirate_prompt.txt"
+        (Path(self.other_dir) / "system_prompts" / name).write_text(
+            "the other project's prompt", encoding="utf-8",
+        )
+        at = self._app()
+        at.selectbox(key=self._key(at, "sp:pick")).set_value(name)
+        at.run()
+        at.text_area(key=self._key(at, f"sp:body:{name}")).set_value("edited, unsaved")
+        at.run()
+
+        self._open(at, self.other_dir)
+        at.selectbox(key=self._key(at, "sp:pick")).set_value(name)
+        at.run()
+
+        self.assertEqual(at.text_area(key=self._key(at, f"sp:body:{name}")).value,
+                         "the other project's prompt")
 
 
 class TestFiltering(EditorTestCase):
@@ -509,14 +567,14 @@ class TestFiltering(EditorTestCase):
         )
         at = self._app()
 
-        at.text_input(key="test_filter").set_value("editme")
+        at.text_input(key=self._key(at, "test_filter")).set_value("editme")
         at.run()
         visible = [w for w in at.text_input if w.label == "ID"]
         self.assertEqual([w.value for w in visible], ["editme"])
 
         visible[0].set_value("edited")
         at.run()
-        at.text_input(key="test_filter").set_value("")
+        at.text_input(key=self._key(at, "test_filter")).set_value("")
         at.run()
 
         ids = [w.value for w in at.text_input if w.label == "ID"]
@@ -577,7 +635,7 @@ class TestUntouchedArtifacts(EditorTestCase):
         log_before = (Path(self.project_dir) / "progress.jsonl").read_bytes()
 
         at = self._app()
-        at.number_input(key="jc:repetitions").set_value(3)
+        at.number_input(key=self._key(at, "jc:repetitions")).set_value(3)
         at.run()
         self._click(at, "💾 Save")
         at.run()
@@ -590,7 +648,7 @@ class TestUntouchedArtifacts(EditorTestCase):
     def test_only_the_changed_config_file_is_rewritten(self):
         before = self._disk()
         at = self._app()
-        at.number_input(key="jc:repetitions").set_value(4)
+        at.number_input(key=self._key(at, "jc:repetitions")).set_value(4)
         at.run()
         self._click(at, "💾 Save")
         at.run()
