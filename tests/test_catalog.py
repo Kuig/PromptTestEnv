@@ -17,7 +17,7 @@ from unittest.mock import patch
 
 from unified_ai_client import ModelInfo, ProviderInfo
 
-from prompttestenv.catalog import list_catalog, offline_findings
+from prompttestenv.catalog import list_catalog, offline_findings, online_findings
 from prompttestenv.models import Candidate, GlobalCriteria, JudgeConfig, TestCase
 
 
@@ -190,6 +190,77 @@ class TestCandidateWarnings(OfflineFindingsTestCase):
         errors, warnings = self._run([Candidate("X", "nosuchprovider", "m")], [self._test()])
         self.assertEqual(errors, [])
         self.assertTrue(any("unknown provider" in w for w in warnings))
+
+
+def _info(model_id, **capabilities):
+    return {"id": model_id, "display_name": None, "reasoning": None, "tool_use": None,
+            "file_types": None, "embeddings": None, "context_length": None, **capabilities}
+
+
+def _listing(provider, *models, error=None):
+    return {"provider": provider, "models": list(models), "error": error}
+
+
+class TestOnlineFindings(unittest.TestCase):
+    def setUp(self):
+        self.jc = JudgeConfig()
+        self.jc.global_criteria = GlobalCriteria(mode="none")
+        self.tests = [TestCase(id="t1", prompt="p", criteria="c")]
+
+    def _run(self, candidates=(), listings=None, verdict=False):
+        return online_findings(list(candidates), self.jc, self.tests, listings or {},
+                               verdict=verdict)
+
+    def test_a_listed_model_with_unknown_capabilities_is_fine(self):
+        self.jc.test_judge.provider, self.jc.test_judge.model = "ollama", "qwen3:8b"
+        self.assertEqual(self._run(listings={"ollama": _listing("ollama", _info("qwen3:8b"))}), [])
+
+    def test_a_model_the_provider_does_not_list_is_named(self):
+        findings = self._run([Candidate("A", "ollama", "llama9")],
+                             {"ollama": _listing("ollama", _info("qwen3:8b"))})
+        self.assertEqual(findings, ["Candidate 'A': 'ollama' lists no model 'llama9'."])
+
+    def test_an_untagged_ollama_name_means_latest(self):
+        self.assertEqual(self._run([Candidate("A", "ollama", "qwen3")],
+                                   {"ollama": _listing("ollama", _info("qwen3:latest"))}), [])
+
+    def test_no_listing_or_a_failed_one_checks_nothing(self):
+        cand = [Candidate("A", "ollama", "llama9")]
+        self.assertEqual(self._run(cand, {}), [])
+        self.assertEqual(self._run(cand, {"ollama": _listing("ollama", error="down")}), [])
+        self.assertEqual(self._run(cand, {"ollama": _listing("ollama")}), [])
+
+    def test_embedding_and_chat_models_in_the_wrong_seat(self):
+        self.tests = [TestCase(id="t1", prompt="p", criteria="c", judge_type="similarity")]
+        self.jc.similarity_judge.provider, self.jc.similarity_judge.model = "ollama", "qwen3:8b"
+        listings = {"ollama": _listing("ollama", _info("qwen3:8b", embeddings=False),
+                                       _info("bge-m3", embeddings=True))}
+        findings = self._run([Candidate("A", "ollama", "bge-m3")], listings)
+        self.assertIn("Candidate 'A': 'bge-m3' is an embedding model, not a chat model.", findings)
+        self.assertIn("similarity_judge: 'qwen3:8b' is not an embedding model.", findings)
+
+    def test_thinking_on_a_model_that_does_not_reason(self):
+        listings = {"ollama": _listing("ollama", _info("gemma3", reasoning=False))}
+        thinking = Candidate("A", "ollama", "gemma3", thinking=True)
+        default = Candidate("B", "ollama", "gemma3")
+        self.assertEqual(self._run([thinking, default], listings),
+                         ["Candidate 'A': thinking is on, but 'gemma3' does not reason."])
+
+    def test_a_context_size_beyond_the_model(self):
+        self.jc.reasoning_analysis = "best"
+        rj = self.jc.reasoning_judge
+        rj.provider, rj.model, rj.context_size = "ollama", "small", 65536
+        self.jc.similarity_judge.provider = "google"  # the analysis embeds too
+        findings = self._run(listings={"ollama": _listing("ollama", _info("small",
+                                                                         context_length=8192))})
+        self.assertEqual(findings,
+                         ["reasoning_judge: context_size 65536 exceeds the 8192 'small' supports."])
+
+    def test_only_judges_in_use_are_checked(self):
+        self.jc.verdict_judge.provider, self.jc.verdict_judge.model = "ollama", "absent"
+        listings = {"ollama": _listing("ollama", _info("qwen3:8b"))}
+        self.assertEqual(self._run(listings=listings, verdict=False), [])
+        self.assertTrue(self._run(listings=listings, verdict=True))
 
 
 if __name__ == "__main__":

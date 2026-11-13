@@ -11,6 +11,8 @@ Two halves, both answered by UnifiedAiClient rather than by tables kept here:
   ``run`` can afford it before the first call. Errors are about the judges,
   whose failure would degrade every score; warnings are about candidates,
   whose unsupported tests are skipped and reported rather than blocking.
+  ``online_findings`` is its counterpart against live listings the caller
+  already holds (the editor's), and only ever warns.
 
 No Streamlit import, so the editor can call this and the suite can test it alone.
 """
@@ -158,34 +160,14 @@ def _uses_similarity(expression: str) -> bool:
     return "similarity(" in (expression or "")
 
 
-def offline_findings(
-    candidates: list[Candidate],
-    judge_config: JudgeConfig,
-    test_cases: list[TestCase],
-    project_dir: str,
-    *,
-    verdict: bool = True,
-) -> tuple[list[str], list[str]]:
-    """Check a project against what each provider declares, without the network.
+def _judges_in_use(judge_config: JudgeConfig, test_cases: list[TestCase],
+                   verdict: bool) -> list[tuple[str, object]]:
+    """``(role, settings)`` for each judge this project will actually call.
 
-    Only judges that this project will actually call are checked: the test
-    judge when some score is an llm-judge one, the similarity judge when
-    something embeds, the reasoning judge when the analysis is enabled.
-
-    Args:
-        candidates: The loaded candidates.
-        judge_config: The loaded JudgeConfig, with ``global_criteria`` set.
-        test_cases: The loaded test cases.
-        project_dir: The project directory attachment paths are relative to.
-        verdict: Whether this run will call the verdict judge.
-
-    Returns:
-        ``(errors, warnings)``. An error means a judge would fail on every call
-        it makes, so the run should not start. A warning names a candidate x
-        test pair that will be skipped, or a candidate provider nobody knows.
+    The test judge when some score is an llm-judge one, the similarity judge
+    when something embeds, the reasoning judge when the analysis is enabled,
+    the verdict judge when `verdict` says a verdict will be written.
     """
-    errors: list[str] = []
-    warnings: list[str] = []
     gc = judge_config.global_criteria
     global_mode = getattr(gc, "mode", None)
     judge_types = {t.judge_type for t in test_cases}
@@ -201,18 +183,50 @@ def offline_findings(
             and _uses_similarity(getattr(gc, "assert_criteria", "")))
     )
 
-    judges = []
+    judges: list[tuple[str, object]] = []
     if uses_test_judge:
-        judges.append(("test_judge", judge_config.test_judge.provider))
+        judges.append(("test_judge", judge_config.test_judge))
     if uses_embeddings:
-        judges.append(("similarity_judge", judge_config.similarity_judge.provider))
+        judges.append(("similarity_judge", judge_config.similarity_judge))
     if judge_config.reasoning_enabled:
-        judges.append(("reasoning_judge", judge_config.reasoning_judge.provider))
+        judges.append(("reasoning_judge", judge_config.reasoning_judge))
     if verdict:
-        judges.append(("verdict_judge", judge_config.verdict_judge.provider))
+        judges.append(("verdict_judge", judge_config.verdict_judge))
+    return judges
+
+
+def offline_findings(
+    candidates: list[Candidate],
+    judge_config: JudgeConfig,
+    test_cases: list[TestCase],
+    project_dir: str,
+    *,
+    verdict: bool = True,
+) -> tuple[list[str], list[str]]:
+    """Check a project against what each provider declares, without the network.
+
+    Only judges that this project will actually call are checked (see
+    ``_judges_in_use``).
+
+    Args:
+        candidates: The loaded candidates.
+        judge_config: The loaded JudgeConfig, with ``global_criteria`` set.
+        test_cases: The loaded test cases.
+        project_dir: The project directory attachment paths are relative to.
+        verdict: Whether this run will call the verdict judge.
+
+    Returns:
+        ``(errors, warnings)``. An error means a judge would fail on every call
+        it makes, so the run should not start. A warning names a candidate x
+        test pair that will be skipped, or a candidate provider nobody knows.
+    """
+    errors: list[str] = []
+    warnings: list[str] = []
+    global_mode = getattr(judge_config.global_criteria, "mode", None)
 
     instances = {}
-    for role, provider in judges:
+    for role, settings in _judges_in_use(judge_config, test_cases, verdict):
+        provider = settings.provider
         instance = _registered(provider)
         if instance is None:
             errors.append(f"{role}: unknown provider '{provider}'.")
@@ -262,3 +276,78 @@ def offline_findings(
                     )
                     break
     return errors, warnings
+
+
+def _listed(models: list[dict], model_id: str | None) -> dict | None:
+    """The listing's entry for `model_id`. An untagged Ollama name means ':latest'."""
+    wanted = (model_id or "").strip()
+    for info in models:
+        if info["id"] in (wanted, f"{wanted}:latest"):
+            return info
+    return None
+
+
+def _wants_thinking(value) -> bool:
+    """Whether a `thinking` setting asks for reasoning (api.py's reading of it)."""
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() not in ("", "false", "default")
+
+
+def online_findings(
+    candidates: list[Candidate],
+    judge_config: JudgeConfig,
+    test_cases: list[TestCase],
+    listings: dict[str, dict],
+    *,
+    verdict: bool = True,
+) -> list[str]:
+    """Check a project against live model listings. Warnings only, never errors.
+
+    Pure: the listings are fetched by the caller (the editor caches them), so
+    this makes no request. Unknown stays unknown: a capability the listing
+    reports as None is never treated as missing.
+
+    Args:
+        candidates: The candidates, as Candidate.from_dict builds them.
+        judge_config: The JudgeConfig, with ``global_criteria`` set.
+        test_cases: The test cases, used to decide which judges are called.
+        listings: Provider name (lower case) -> a ``list_catalog(provider)``
+            result. A provider that is absent, failed, or listed no models is
+            not checked, since there is nothing to compare against.
+        verdict: Whether the verdict judge will be called.
+
+    Returns:
+        One message per finding: a model the provider does not list, a chat
+        model used for embeddings or the reverse, thinking asked of a model
+        that does not reason, a context size beyond the model's.
+    """
+    uses = [(f"Candidate '{c.name}'", c.provider, c.model, False, c.thinking, None)
+            for c in candidates]
+    for role, settings in _judges_in_use(judge_config, test_cases, verdict):
+        uses.append((role, settings.provider, settings.model, role == "similarity_judge",
+                     getattr(settings, "thinking", False),
+                     getattr(settings, "context_size", None)))
+
+    findings: list[str] = []
+    for who, provider, model, embeds, thinking, context_size in uses:
+        name = (provider or "").strip().lower()
+        listing = listings.get(name) or {}
+        if listing.get("error") or not listing.get("models"):
+            continue
+        info = _listed(listing["models"], model)
+        if info is None:
+            findings.append(f"{who}: '{name}' lists no model '{model}'.")
+            continue
+        if embeds and info["embeddings"] is False:
+            findings.append(f"{who}: '{model}' is not an embedding model.")
+        if not embeds and info["embeddings"] is True:
+            findings.append(f"{who}: '{model}' is an embedding model, not a chat model.")
+        if not embeds and _wants_thinking(thinking) and info["reasoning"] is False:
+            findings.append(f"{who}: thinking is on, but '{model}' does not reason.")
+        limit = info["context_length"]
+        if context_size and limit and context_size > limit:
+            findings.append(
+                f"{who}: context_size {context_size} exceeds the {limit} '{model}' supports."
+            )
+    return findings

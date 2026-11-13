@@ -558,17 +558,33 @@ class Candidate:
                     logger.log_warning(
                         f"System prompt file '{file_path}' not found for candidate '{cand['name']}'."
                     )
-            candidates.append(cls(
-                name=cand.get("name"),
-                provider=cand.get("provider", "google"),
-                model=cand.get("model"),
-                temperature=cand.get("temperature"),
-                disable_safety=cand.get("disable_safety", False),
-                thinking=cand.get("thinking", "default"),
-                system_prompt_file=cand.get("system_prompt_file"),
-                resolved_system_instruction=system_instruction,
-            ))
+            candidates.append(cls.from_dict(cand, system_instruction))
         return candidates
+
+    @classmethod
+    def from_dict(cls, data: dict, resolved_system_instruction: str | None = None) -> Candidate:
+        """Build one candidate from its candidates.json entry.
+
+        The loader's fallbacks live here and nowhere else, so a caller holding
+        raw dicts (the editor) gets exactly the candidate a run would load.
+
+        Args:
+            data: One entry of candidates.json.
+            resolved_system_instruction: The system prompt's text, when resolved.
+
+        Returns:
+            The Candidate.
+        """
+        return cls(
+            name=data.get("name"),
+            provider=data.get("provider", "google"),
+            model=data.get("model"),
+            temperature=data.get("temperature"),
+            disable_safety=data.get("disable_safety", False),
+            thinking=data.get("thinking", "default"),
+            system_prompt_file=data.get("system_prompt_file"),
+            resolved_system_instruction=resolved_system_instruction,
+        )
 
     @staticmethod
     def save_all(
@@ -635,23 +651,35 @@ class TestCase:
 
         with open(test_file, "r", encoding="utf-8") as f:
             raw_cases = json.load(f)
-        cases = [
-            cls(
-                id=tc.get("id", "N/A"),
-                prompt=tc.get("prompt", ""),
-                criteria=tc.get("criteria", ""),
-                file=tc.get("file"),
-                group=tc.get("group", DEFAULT_GROUP),
-                judge_type=tc.get("judge_type", JUDGE_TYPE_LLM),
-            )
-            for tc in raw_cases
-        ]
+        cases = [cls.from_dict(tc) for tc in raw_cases]
         for case in cases:
             try:
                 case.attachments()
             except ValueError as exc:
                 raise ValueError(f"Test case '{case.id}': {exc}") from exc
         return cases
+
+    @classmethod
+    def from_dict(cls, data: dict) -> TestCase:
+        """Build one test case from its test_cases.json entry, with the loader's fallbacks.
+
+        Does not check `file`: load_all() does, so that a malformed value
+        stops a run before it starts.
+
+        Args:
+            data: One entry of test_cases.json.
+
+        Returns:
+            The TestCase.
+        """
+        return cls(
+            id=data.get("id", "N/A"),
+            prompt=data.get("prompt", ""),
+            criteria=data.get("criteria", ""),
+            file=data.get("file"),
+            group=data.get("group", DEFAULT_GROUP),
+            judge_type=data.get("judge_type", JUDGE_TYPE_LLM),
+        )
 
     @staticmethod
     def save_all(
@@ -894,10 +922,15 @@ class GlobalCriteria:
             # second time. A key missing from data falls back to the dataclass
             # field's own default, which is JUDGE_TYPE_LLM for `mode` — the
             # same value this used to pass explicitly.
-            return _settings_from_dict(cls, data)
+            return cls.from_dict(data)
         except Exception as exc:
             logger.log_error(f"Error reading {path}: {exc}")
             return cls(mode=GLOBAL_MODE_NONE)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> GlobalCriteria:
+        """Build the criteria from global_criteria.json's raw dict; unknown keys are dropped."""
+        return _settings_from_dict(cls, data)
 
     @staticmethod
     def save(

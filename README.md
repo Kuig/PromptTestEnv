@@ -235,10 +235,10 @@ prompttestenv editor
 ```
 
 A second Streamlit app for **creating and modifying** projects: typed forms over
-`candidates.json`, `test_cases.json`, `judge_config.json` and
-`global_criteria.json`, plus editing the `system_prompts/*.txt` files and
-uploading attachments into `test_files/`. **New** scaffolds a project from the
-packaged templates. It never runs a benchmark, which is what `gui` is for.
+the four config files, with provider and model menus filled from what each
+provider reports, plus editing `system_prompts/*.txt` and uploading attachments
+into `test_files/`. **New** scaffolds a project from the packaged templates. It
+never runs a benchmark, which is what `gui` is for.
 
 Running a benchmark and authoring one are disjoint jobs, hence two apps: folding the
 editor's six tabs into the run GUI would make the common case markedly heavier.

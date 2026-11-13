@@ -423,6 +423,25 @@ class ProjectDraft:
         )
         return self._names(TEST_FILES_DIR, on_disk)
 
+    def as_loaded(self) -> tuple[list[Candidate], JudgeConfig, list[TestCase]]:
+        """The draft as a run would load it, for checks written against those classes.
+
+        Goes through the same from_dict constructors the loaders use, so a
+        fallback cannot differ between the two. System prompts are not resolved.
+
+        Raises:
+            Exception: Whatever the constructors raise on a malformed entry (a
+                non-dict row, say). validate() reports those; a caller after
+                anything else should catch and skip.
+        """
+        judge = JudgeConfig.from_dict(self.judge)
+        judge.global_criteria = GlobalCriteria.from_dict(self.criteria)
+        return (
+            [Candidate.from_dict(c) for c in self.candidates],
+            judge,
+            [TestCase.from_dict(t) for t in self.tests],
+        )
+
 
 def _read_raw(path: Path) -> bytes | None:
     return path.read_bytes() if path.exists() else None

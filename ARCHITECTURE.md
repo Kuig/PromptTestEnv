@@ -111,7 +111,9 @@ Then `verdict.py` has a judge LLM write the report body, and `reporting.py` or
 - `catalog.py`: what the client can reach (`list_catalog`, the live provider and
   model listing behind `models`) and what a project asks of it
   (`offline_findings`, the capability check `run_project` makes before the
-  first call, from the client's registry and with no network).
+  first call, from the client's registry and with no network). Its counterpart
+  `online_findings` checks against live listings the editor already holds, and
+  only warns.
 - `progress.py`: the low-level `progress.jsonl` primitives, config hashing and
   event appending, plus the failure placeholders a run stores in place of a
   model answer and the predicates that recognise them again.

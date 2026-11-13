@@ -459,6 +459,16 @@ cannot. `--no-probe` skips asking the local servers, and leaves them out. The MC
 tool `prompttest_list_models` and the library's `list_catalog` return the same
 thing as JSON.
 
+The project editor fills its provider and model menus from the same listings,
+fetched once per session (**Refresh model lists** asks again). A model's label
+shows what it can do, the similarity judge's menu offers only embedding models,
+and any name the list lacks can still be typed in. A provider with no key or no
+running server is marked as not available. Against those listings the editor
+also warns, without ever blocking a save, about a model its provider does not
+list, an embedding model used for chat or the other way round, thinking asked of
+a model that does not reason, and a reasoning judge `context_size` larger than
+the model's. None of this happens in `run`, whose checks are all offline.
+
 ### Which attachments each provider takes
 
 As declared by UnifiedAiClient 0.8.1. Text files are accepted by all of them and

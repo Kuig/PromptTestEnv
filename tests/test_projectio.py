@@ -698,5 +698,34 @@ class TestAssets(SharedLayerTestCase):
             pio.delete_asset(self.draft, "system_prompts", "never_existed.txt")
 
 
+class TestAsLoaded(unittest.TestCase):
+    """A draft read back as objects must be exactly what the run's loaders build."""
+
+    def setUp(self):
+        self.project_dir = make_temp_project()
+        self.addCleanup(shutil.rmtree, self.project_dir, ignore_errors=True)
+
+    def test_matches_the_loaders(self):
+        candidates, judge, tests = pio.load_project(self.project_dir).as_loaded()
+
+        expected_judge = JudgeConfig.load(self.project_dir)
+        expected_judge.global_criteria = GlobalCriteria.load(self.project_dir)
+        self.assertEqual(judge, expected_judge)
+        self.assertEqual(tests, TestCase.load_all(self.project_dir))
+        # The one difference by design: system prompts are not resolved.
+        self.assertEqual(
+            candidates,
+            [dataclasses.replace(c, resolved_system_instruction=None)
+             for c in Candidate.load_all(self.project_dir)],
+        )
+
+    def test_omitted_keys_take_the_loader_fallbacks(self):
+        draft = pio.ProjectDraft(project_dir=self.project_dir, candidates=[{}], tests=[{}])
+        (candidate,), _, (test,) = draft.as_loaded()
+        self.assertEqual((candidate.provider, candidate.model, candidate.thinking),
+                         ("google", None, "default"))
+        self.assertEqual((test.id, test.judge_type), ("N/A", "llm-judge"))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -17,6 +17,7 @@ any widget is created, and every widget then renders from the model.
 """
 from __future__ import annotations
 
+import time
 from copy import deepcopy
 from pathlib import Path
 from uuid import uuid4
@@ -29,6 +30,9 @@ from uuid import uuid4
 import streamlit as st
 
 import prompttestenv.logger as logger
+# The module, not its functions: the suite patches catalog.list_catalog, and
+# this script re-reads the attribute on every run.
+from prompttestenv import catalog
 from prompttestenv import projectio as pio
 from prompttestenv.api import configure_ai_logging
 from prompttestenv.config import get_app_config
@@ -54,6 +58,15 @@ GLOBAL_MODES = ("llm-judge", "similarity", "assert", "none")
 DIMENSION_MODES = ("split", "joint")
 
 _NULLABLE_SENTINEL = "(config.json default)"
+
+# Provider and model listings are live requests (an Ollama listing is one
+# request per installed model), so they are fetched once per session and kept
+# this long, or until the sidebar's Refresh. Session state rather than
+# st.cache_data: a listing is not project state, so Load and Discard keep it,
+# and nothing leaks from one session (or one test) into the next.
+_CATALOG_TTL_SECONDS = 600
+_CATALOG_KEY = "catalog"
+_NO_MODEL_LABEL = "(none)"
 
 
 # ── Model ─────────────────────────────────────────────────────────────────────
@@ -317,12 +330,128 @@ def _harvest() -> None:
 
 # ── Widget helpers ────────────────────────────────────────────────────────────
 
-def _open_choice(label: str, options, current, key: str, help_text: str | None = None):
-    """A selectbox that offers `options` but keeps an out-of-vocabulary value."""
+def _open_choice(label: str, options, current, key: str, help_text: str | None = None,
+                 format_func=str):
+    """A selectbox that offers `options` but keeps an out-of-vocabulary value.
+
+    `format_func` only changes what is displayed: the value stays the raw
+    option. It must return an unlisted value unchanged, since Streamlit sends a
+    typed-in value back as its formatted string.
+    """
     choices = list(dict.fromkeys([*options, current] if current else list(options)))
     index = choices.index(current) if current in choices else 0
     return st.selectbox(label, choices, index=index, key=key, help=help_text,
-                        accept_new_options=True)
+                        accept_new_options=True, format_func=format_func)
+
+
+def _catalog_cache() -> dict:
+    """This session's listings, emptied once they are older than the TTL."""
+    cache = st.session_state.get(_CATALOG_KEY)
+    if cache is None or time.monotonic() - cache["at"] > _CATALOG_TTL_SECONDS:
+        cache = {"at": time.monotonic(), "providers": None, "models": {}}
+        st.session_state[_CATALOG_KEY] = cache
+    return cache
+
+
+def _usable_providers() -> dict[str, dict] | None:
+    """Provider name -> its listing entry, or None when the listing failed."""
+    cache = _catalog_cache()
+    if cache["providers"] is None:
+        cache["providers"] = catalog.list_catalog()
+    listing = cache["providers"]
+    return None if listing["error"] else {p["name"]: p for p in listing["providers"]}
+
+
+def _models_of(provider) -> dict:
+    """One provider's model listing (a list_catalog result), fetched at most once.
+
+    A provider the provider listing left out is not asked at all: it has no
+    key or its server is down, so the request could only fail, slowly.
+    """
+    name = str(provider or "").strip().lower()
+    cache = _catalog_cache()
+    if name not in cache["models"]:
+        usable = _usable_providers()
+        if usable is not None and name not in usable:
+            cache["models"][name] = {
+                "provider": name, "models": [],
+                "error": f"'{name}' is not available right now "
+                         f"(no API key, or its server is not running).",
+            }
+        else:
+            cache["models"][name] = catalog.list_catalog(name)
+    return cache["models"][name]
+
+
+def _provider_choice(current, key: str) -> None:
+    """Provider menu: the known names plus any live one, unavailable ones marked."""
+    usable = _usable_providers()
+    options = [*pio.PROVIDERS, *(usable or {})]
+
+    def label(name):
+        return f"{name} (not available)" if usable is not None and name not in usable else name
+
+    _open_choice("Provider", options, current, key, format_func=label)
+
+
+def _model_label(info: dict | None, model_id: str) -> str:
+    """A model's menu label: its id plus what the listing says it can do."""
+    if not model_id:
+        return _NO_MODEL_LABEL
+    if info is None:
+        return model_id
+    tags = [tag for tag, on in (("reasoning", info["reasoning"]),
+                                ("embeddings", info["embeddings"])) if on]
+    tags += info["file_types"] or []
+    if info["context_length"]:
+        tags.append(f"{info['context_length'] // 1000}k ctx")
+    return f"{model_id} · {', '.join(tags)}" if tags else model_id
+
+
+def _model_choice(label: str, provider, current, key: str, *, embeddings: bool,
+                  help_text: str | None = None) -> None:
+    """Model menu from the provider's live listing, still accepting any typed id.
+
+    The value is the raw id whatever the label says, an unlisted value is kept
+    as it is, and an empty one stays empty. The listing is filtered by purpose:
+    embedding models for the similarity judge, every other model elsewhere. A
+    capability the listing does not know never filters a model out.
+    """
+    listing = _models_of(provider)
+    infos = {m["id"]: m for m in listing["models"]}
+    ids = [model_id for model_id, info in infos.items()
+           if (info["embeddings"] is not False if embeddings
+               else info["embeddings"] is not True)]
+    _open_choice(label, ["", *ids], current or "", key, help_text=help_text,
+                 format_func=lambda value: _model_label(infos.get(value), value))
+    if listing["error"]:
+        st.caption(f"No model list: {listing['error']}")
+
+
+def _prefetch_catalog() -> None:
+    """Fetch every listing this draft's menus will need, under one spinner."""
+    names = {str(c.get("provider", "google")).strip().lower() for c in draft.candidates
+             if isinstance(c, dict)}
+    for block_name, cls in pio.JUDGE_BLOCKS.items():
+        block = draft.judge.get(block_name)
+        block = block if isinstance(block, dict) else {}
+        names.add(str(block.get("provider", pio.effective_default(cls, "provider"))).strip().lower())
+    cache = _catalog_cache()
+    missing = sorted(n for n in names if n not in cache["models"])
+    if cache["providers"] is None or missing:
+        with st.spinner("Asking the providers what they offer…"):
+            for name in missing:
+                _models_of(name)
+
+
+def _online_warnings() -> list[str]:
+    """catalog.online_findings over this draft, or nothing if it cannot be read."""
+    try:
+        candidates, judge_config, tests = draft.as_loaded()
+    except Exception:
+        return []  # validate() reports what is malformed
+    return catalog.online_findings(candidates, judge_config, tests,
+                                   _catalog_cache()["models"])
 
 
 def _thinking_widget(label_prefix: str, current, key: str) -> None:
@@ -471,6 +600,14 @@ def _do_save() -> None:
 
 
 with st.sidebar:
+    # In the sidebar on purpose: the spinner, and any warning the logger's
+    # streamlit backend emits while the draft is read back, would otherwise add
+    # elements above st.tabs and reset the selected tab (see the fixed slots).
+    _prefetch_catalog()
+    # Live-listing findings never block a save: a model missing today can be
+    # pulled tomorrow, and the file is still right.
+    warnings = [*warnings, *_online_warnings()]
+
     st.divider()
     st.caption(f"📁 `{draft.project_dir}`")
 
@@ -508,6 +645,12 @@ with st.sidebar:
 
     if discard_col.button("↩️ Discard", width="stretch", disabled=not changed):
         _load(draft.project_dir)
+        st.rerun()
+
+    if st.button("🔄 Refresh model lists", width="stretch",
+                 help="Ask the providers again which models they offer. The lists "
+                      f"are otherwise kept for {_CATALOG_TTL_SECONDS // 60} minutes."):
+        st.session_state.pop(_CATALOG_KEY, None)
         st.rerun()
 
     st.caption("This editor never runs a benchmark — use `prompttestenv gui` for that.")
@@ -608,11 +751,11 @@ with tab_cand:
                           key=_wkey("cand", row["uid"], "name"))
             left, right = st.columns(2)
             with left:
-                _open_choice("Provider", pio.PROVIDERS, data.get("provider", "google"),
-                             _wkey("cand", row["uid"], "provider"))
+                _provider_choice(data.get("provider", "google"),
+                                 _wkey("cand", row["uid"], "provider"))
             with right:
-                st.text_input("Model", value=data.get("model") or "",
-                              key=_wkey("cand", row["uid"], "model"))
+                _model_choice("Model", data.get("provider", "google"), data.get("model"),
+                              _wkey("cand", row["uid"], "model"), embeddings=False)
 
             left, mid, right = st.columns(3)
             with left:
@@ -777,10 +920,10 @@ def _judge_common(block: dict, prefix: str, cls: type, *, safety: bool) -> None:
     """Render one judge block's shared fields. Renders only — see _harvest."""
     left, right = st.columns(2)
     with left:
-        _open_choice("Provider", pio.PROVIDERS, _field(block, "provider", cls),
-                     _skey(f"{prefix}:provider"))
+        _provider_choice(_field(block, "provider", cls), _skey(f"{prefix}:provider"))
     with right:
-        st.text_input("Model", value=_field(block, "model", cls), key=_skey(f"{prefix}:model"))
+        _model_choice("Model", _field(block, "provider", cls), _field(block, "model", cls),
+                      _skey(f"{prefix}:model"), embeddings=False)
     left, mid, right = st.columns(3)
     with left:
         _temperature_widget(_field(block, "temperature", cls), _skey(f"{prefix}:temperature"))
@@ -852,11 +995,12 @@ with tab_judge:
         block = _block("similarity_judge")
         left, right = st.columns(2)
         with left:
-            _open_choice("Provider", pio.PROVIDERS, _field(block, "provider", SimilarityJudgeSettings),
-                         _skey("sj:provider"))
+            _provider_choice(_field(block, "provider", SimilarityJudgeSettings),
+                             _skey("sj:provider"))
         with right:
-            st.text_input("Embedding model", value=_field(block, "model", SimilarityJudgeSettings),
-                          key=_skey("sj:model"), help="An embedding model, not a chat model.")
+            _model_choice("Embedding model", _field(block, "provider", SimilarityJudgeSettings),
+                          _field(block, "model", SimilarityJudgeSettings), _skey("sj:model"),
+                          embeddings=True, help_text="An embedding model, not a chat model.")
         st.caption(
             "This block has exactly two keys. Anything else is dropped at load "
             "(`models._settings_from_dict`), though the editor still preserves it on disk."

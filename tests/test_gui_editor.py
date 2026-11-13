@@ -12,6 +12,7 @@ import re
 import shutil
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from streamlit.testing.v1 import AppTest
 
@@ -28,12 +29,50 @@ TAB_LABELS = ["Candidates", "Test cases", "Judge config", "Global criteria",
 
 
 class EditorTestCase(LoggerResetTestCase):
-    """Opens a throwaway copy of the smoke fixture in a fresh editor app."""
+    """Opens a throwaway copy of the smoke fixture in a fresh editor app.
+
+    Every catalog listing the editor asks for is stubbed: AppTest runs the
+    script in this process, so the patch reaches it and no test probes a local
+    server or calls a provider. By default the provider listing fails, which
+    leaves the menus exactly as they are without a catalog.
+    """
+
+    providers: dict = {"providers": [], "error": "no catalog in tests"}
+    models: dict = {}
 
     def setUp(self):
         super().setUp()
         self.project_dir = make_temp_project()
         self.addCleanup(shutil.rmtree, self.project_dir, ignore_errors=True)
+        self.catalog_calls: list = []
+        patcher = patch("prompttestenv.catalog.list_catalog", side_effect=self._fake_catalog)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    @staticmethod
+    def _model(model_id, **capabilities) -> dict:
+        """A model entry shaped like catalog.list_catalog's, unknown by default."""
+        return {"id": model_id, "display_name": None, "reasoning": None, "tool_use": None,
+                "file_types": None, "embeddings": None, "context_length": None,
+                **capabilities}
+
+    def _list(self, provider: str, *models) -> None:
+        """Make `provider` usable and list `models` (ids or _model dicts) for it."""
+        usable = [p for p in self.providers.get("providers", []) if p["name"] != provider]
+        usable.append({"name": provider, "local": False, "requires_api_key": True,
+                       "file_types": [], "supports_unload": False,
+                       "supports_embeddings": True})
+        self.providers = {"providers": usable, "error": None}
+        self.models = {**self.models, provider: {
+            "provider": provider, "error": None,
+            "models": [m if isinstance(m, dict) else self._model(m) for m in models],
+        }}
+
+    def _fake_catalog(self, provider=None, **_kwargs):
+        self.catalog_calls.append(provider)
+        if provider is None:
+            return self.providers
+        return self.models.get(provider, {"provider": provider, "models": [], "error": None})
 
     def _app(self, *, open_project=True) -> AppTest:
         at = AppTest.from_file(APP_PATH, default_timeout=60)
@@ -84,12 +123,12 @@ class EditorTestCase(LoggerResetTestCase):
 
     @staticmethod
     def _row_inputs(at: AppTest, kind: str, field: str) -> list:
-        """Row widgets by key suffix.
+        """Row widgets by key suffix, text inputs and menus alike.
 
         Not by label: the judge blocks also have a "Model" input, and st.tabs
         renders every tab body on every run, so a label match would collide.
         """
-        return [w for w in at.text_input if w.proto.id and
+        return [w for w in [*at.text_input, *at.selectbox] if w.proto.id and
                 f":{kind}:" in w.proto.id and w.proto.id.endswith(f":{field}")]
 
     def _candidate_names(self, at: AppTest) -> list[str]:
@@ -283,12 +322,15 @@ class TestRowIdentity(EditorTestCase):
         self.assertEqual(self._candidate_names(at), ["Beta", "Alpha", "Gamma"])
 
     def test_added_candidate_writes_its_required_keys_even_at_defaults(self):
+        self._list("google", "gemini-2.5-flash", "gemini-3-flash-preview", "brand-new")
         at = self._app()
         self._click(at, "➕ Add candidate")
         at.run()
 
         self._row_inputs(at, "cand", "name")[-1].set_value("Newcomer")
         at.run()
+        # Picked from the listing stubbed in setUp: AppTest can only select a
+        # listed option, never type a new one in.
         self._row_inputs(at, "cand", "model")[-1].set_value("brand-new")
         at.run()
 
@@ -438,6 +480,65 @@ class TestOptionalTemperature(EditorTestCase):
 
         judge = json.loads((Path(self.project_dir) / "judge_config.json").read_text("utf-8"))
         self.assertIsNone(judge["test_judge"]["temperature"])
+
+
+class TestModelMenus(EditorTestCase):
+    """Provider and model menus come from the live catalog, cached per session."""
+
+    def test_listed_models_are_offered_with_what_they_can_do(self):
+        self._list("google",
+                   self._model("gemini-2.5-flash", reasoning=True, file_types=["image"],
+                               context_length=1_048_576),
+                   self._model("text-embedding-004", embeddings=True))
+        at = self._app()
+        menu = self._row_inputs(at, "cand", "model")[0]
+
+        self.assertEqual(menu.value, "gemini-2.5-flash")  # the raw id, not the label
+        self.assertIn("gemini-2.5-flash · reasoning, image, 1048k ctx", menu.options)
+        # An embedding model is no candidate.
+        self.assertFalse(any(o.startswith("text-embedding-004") for o in menu.options))
+
+    def test_the_similarity_judge_is_offered_embedding_models_only(self):
+        self._list("ollama",
+                   self._model("bge-m3", embeddings=True),
+                   self._model("qwen3:8b", embeddings=False),
+                   self._model("mystery"))  # unknown: never filtered out
+        at = self._app()
+        options = at.selectbox(key=self._key(at, "sj:model")).options
+        self.assertEqual(options, ["(none)", "bge-m3 · embeddings", "mystery"])
+
+    def test_an_unlisted_model_is_kept_warned_about_and_never_rewritten(self):
+        self._list("google", "some-other-model")
+        before = self._disk()
+        at = self._app()
+
+        self.assertEqual(self._row_inputs(at, "cand", "model")[0].value, "gemini-2.5-flash")
+        self.assertTrue(any("lists no model 'gemini-2.5-flash'" in w.value for w in at.warning))
+        self.assertTrue(any("No unsaved changes" in s.value for s in at.success))
+        self.assertEqual(list(at.error), [])
+        self.assertEqual(self._disk(), before)
+
+    def test_an_unavailable_provider_is_marked_and_not_asked_for_models(self):
+        self._list("ollama", "bge-m3")
+        at = self._app()
+
+        options = self._row_inputs(at, "cand", "provider")[0].options
+        self.assertIn("google (not available)", options)
+        self.assertIn("ollama", options)
+        self.assertNotIn("google", self.catalog_calls)
+        self.assertTrue(any("not available right now" in c.value for c in at.caption))
+
+    def test_listings_are_fetched_once_until_refreshed(self):
+        self._list("google", "gemini-2.5-flash")
+        at = self._app()
+        fetched = len(self.catalog_calls)
+        at.run()
+        self.assertEqual(len(self.catalog_calls), fetched)
+
+        self._click(at, "🔄 Refresh model lists")
+        at.run()
+        self.assertGreater(len(self.catalog_calls), fetched)
+        self.assertEqual(list(at.exception), [])
 
 
 class TestSaveConfirmation(EditorTestCase):
