@@ -42,7 +42,7 @@ This file contains the actual prompts (the tasks) that the candidates will execu
   - `"llm-judge"` *(default)*: Sends the response and criteria to the judge LLM.
   - `"similarity"`: Calculates the embedding cosine similarity between the response and the target criteria, scaled 1 to 10.
   - `"assert"`: Evaluates the criteria expression directly in Python.
-- `file` *(string or array of strings, optional)*: A relative path to a file inside the `test_files/` folder (e.g., `"test_files/report.pdf"`), or an array of them (e.g., `["test_files/report.pdf", "test_files/data.csv"]`) to attach several files to the same prompt, in the order written. Images, audio, PDFs and text files are all supported; the encoding each provider needs (upload, base64, or inlining the text ahead of the prompt) is handled for you. Write the path with `/` or `\` as you prefer: separators are normalised, so a project authored on Windows runs on Linux too. **A path that does not exist aborts the run before any LLM call is made**, listing every missing attachment.
+- `file` *(string or array of strings, optional)*: A relative path to a file inside the `test_files/` folder (e.g., `"test_files/report.pdf"`), or an array of them (e.g., `["test_files/report.pdf", "test_files/data.csv"]`) to attach several files to the same prompt, in the order written. Text files work everywhere (their content is inlined ahead of the prompt); images, audio, video and PDFs only where the provider takes that kind natively, see [section 7](#7-providers-models-and-the-pre-run-checks). The encoding each provider needs (upload, base64, or inlining) is handled for you. Write the path with `/` or `\` as you prefer: separators are normalised, so a project authored on Windows runs on Linux too. **A path that does not exist aborts the run before any LLM call is made**, listing every missing attachment.
 
 Every evaluator normally returns a score of 1-10, or the shared `-1` "not measured" sentinel when it failed to produce one at all (excluded from every average, never counted as a zero): a judge LLM call that errored, or a `similarity`/`assert` evaluation that raised an exception. `assert` is the one place the framework does **not** clamp the score for you: your lambda is your own arbitrary Python, so keeping its return value in the range you intend is your job, and you may return `-1` yourself to mark a specific response "not applicable/not measured". `similarity`'s score, by contrast, is computed by the framework, so it is always clamped to 1-10 on your behalf.
 - `group` *(string, optional)*: Assigns the test case to a specific category (e.g., `"Coding"`, `"Creative Writing"`). Used in combination with `group_verdicts` (default: `"Default group"`).
@@ -445,3 +445,57 @@ what it has, since it never spends an LLM call.
 Repairing is idempotent. Once a rerun completes, running it again does nothing:
 the placeholder stays in the log's history, but only the most recent line for
 each step counts, and that one is now a real result.
+
+## 7. Providers, Models and the Pre-run Checks
+
+### Finding valid values
+
+`prompttestenv models` lists the providers you can use right now: a cloud one
+once its API key is in `secrets.json` (or the environment), a local one while its
+server is running. `prompttestenv models <provider>` lists that provider's models
+with what it reports about each: reasoning, tool use, embeddings, context length,
+attachment kinds. A `?` means the provider does not say, never that the model
+cannot. `--no-probe` skips asking the local servers, and leaves them out. The MCP
+tool `prompttest_list_models` and the library's `list_catalog` return the same
+thing as JSON.
+
+### Which attachments each provider takes
+
+As declared by UnifiedAiClient 0.8.1. Text files are accepted by all of them and
+are not listed. `script` declares nothing and is never checked: the script alone
+knows what it can open.
+
+| Provider | Native attachments | Embeddings |
+|---|---|---|
+| `google` | image, audio, video, PDF | yes |
+| `openai` | image, audio, PDF | yes |
+| `anthropic` | image, PDF | no |
+| `ollama` | image, audio (`.flac`, `.mp3`, `.wav` only) | yes |
+| `llamacpp` | image, audio, video | yes |
+| `lmstudio`, `mistral`, `cohere` | image | yes |
+| `groq`, `xai`, `meta` | image | no |
+
+A provider's own model may take less than this, which only the live listing of
+`prompttestenv models <provider>` can tell.
+
+### What `run` checks before the first call
+
+Using only the table above, with no network, and only for what the project will
+actually call:
+
+- **Blocking, for the judges.** A judge that cannot do its job would turn every
+  score into `-1` after the candidates have been paid for, so the run refuses to
+  start when: a judge names an unknown provider; the similarity judge has no
+  embeddings while something embeds (a `similarity` score, an `assert` lambda
+  calling `similarity()`, or the reasoning analysis); `pass_media_to_judge` is on
+  and the test judge cannot take an attachment it would be sent; or `anthropic`
+  is the test judge or the reasoning judge (see the known limit in section 2C).
+  The verdict judge is not checked under `winner_only`, which never calls it.
+- **Warnings, for the candidates.** A candidate whose provider cannot take a
+  test's attachment will skip that test (see
+  [section 6](#two-outcomes-that-are-not-failures)), and an unknown candidate
+  provider will fail every generation. Both are announced and the run proceeds.
+
+A model missing from its provider is not checked here, since only a live listing
+knows: a missing local judge model is fixed with `ollama pull` and then
+`--retry-errors`, without touching the config.

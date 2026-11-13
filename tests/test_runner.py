@@ -112,6 +112,47 @@ class TestMissingAttachmentsAbortTheRun(LoggerResetTestCase):
         self.assertIn("No progress found", result)
 
 
+class TestCapabilityChecksGateTheRun(LoggerResetTestCase):
+    """offline_findings runs beside _missing_attachments: errors block, warnings do not."""
+
+    def setUp(self):
+        self.project_dir = make_temp_project()
+        self.addCleanup(shutil.rmtree, self.project_dir, ignore_errors=True)
+
+    def _set_test_judge_provider(self, provider):
+        path = Path(self.project_dir) / "judge_config.json"
+        config = json.loads(path.read_text(encoding="utf-8"))
+        config["test_judge"]["provider"] = provider
+        path.write_text(json.dumps(config, indent=4), encoding="utf-8")
+
+    def test_a_judge_error_refuses_before_any_log_or_call(self):
+        self._set_test_judge_provider("anthropic")
+        with patch("prompttestenv.runner.run_generation_phase") as mock_gen:
+            result = run_project(self.project_dir, output_mode="winner_only")
+
+        self.assertTrue(result.startswith("Error: a judge cannot run"), result)
+        self.assertIn("anthropic", result)
+        mock_gen.assert_not_called()
+        self.assertFalse((Path(self.project_dir) / "progress.jsonl").exists())
+
+    def test_a_candidate_warning_does_not_block(self):
+        warning = "Candidate 'A' will skip test 't1': nope"
+        with patch("prompttestenv.runner.offline_findings", return_value=([], [warning])), \
+             patch("prompttestenv.runner.run_generation_phase", return_value=[]) as mock_gen, \
+             patch("prompttestenv.runner.run_evaluation_phase"), \
+             patch("prompttestenv.runner.logger.log_warning") as mock_warn:
+            run_project(self.project_dir, output_mode="winner_only")
+
+        mock_gen.assert_called_once()
+        self.assertTrue(any(warning in str(c.args[0]) for c in mock_warn.call_args_list))
+
+    def test_winner_only_does_not_check_the_verdict_judge(self):
+        with patch("prompttestenv.runner.offline_findings",
+                   return_value=(["x"], [])) as mock_check:
+            run_project(self.project_dir, output_mode="winner_only")
+        self.assertIs(mock_check.call_args.kwargs["verdict"], False)
+
+
 class TestGenerateOutput(LoggerResetTestCase):
     def setUp(self):
         self.project_dir = make_temp_project()

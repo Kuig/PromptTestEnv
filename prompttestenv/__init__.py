@@ -22,9 +22,11 @@ _CONFIG_EXPORTS = ("init_project",)
 _RUNNER_EXPORTS = ("run_project", "render_from_progress", "analyze_project")
 _MODELS_EXPORTS = ("Candidate", "TestCase", "JudgeConfig", "GlobalCriteria")
 _PROJECTEDIT_EXPORTS = ("read_project", "edit_project")
+_CATALOG_EXPORTS = ("list_catalog",)
 
 __all__ = [
     *_CONFIG_EXPORTS, *_RUNNER_EXPORTS, *_MODELS_EXPORTS, *_PROJECTEDIT_EXPORTS,
+    *_CATALOG_EXPORTS,
 ]
 
 
@@ -52,6 +54,9 @@ def __getattr__(name: str):
     if name in _PROJECTEDIT_EXPORTS:
         from prompttestenv import projectedit
         return getattr(projectedit, name)
+    if name in _CATALOG_EXPORTS:
+        from prompttestenv import catalog
+        return getattr(catalog, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 

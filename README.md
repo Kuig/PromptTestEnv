@@ -136,6 +136,7 @@ prompttestenv analyze Projects/MyBenchmark --force-reanalyze   # redo existing a
 prompttestenv render Projects/MyBenchmark --output-mode json   # re-render, no LLM call
 prompttestenv show Projects/MyBenchmark                        # print the project as JSON
 prompttestenv edit Projects/MyBenchmark --patch patch.json     # apply a config patch
+prompttestenv models [ollama] [--no-probe]                     # usable providers, or one's models
 prompttestenv mcp                                              # MCP server on stdio
 prompttestenv gui                                              # Streamlit GUI (runs benchmarks)
 prompttestenv editor                                           # Streamlit project editor
@@ -155,11 +156,10 @@ a single LLM call**.
 | `json` | `Report/<timestamp>_<N>C_<M>T.json` | The same content the HTML carries, structured for a program instead of a page, **plus** the per-repetition raw values the page reduces to mean and sd. Described field by field in [`report.schema.json`](report.schema.json). |
 | `winner_only` | nothing | One line naming the highest average task score. The cheapest mode: it skips the verdict judge entirely, so it is the one to use for a smoke run. |
 
-One exception to "render rebuilds anything": `winner_only` never calls the
-verdict judge, so it writes no verdict to the log and `render` has nothing to
-render, reporting the progress it found instead. To get a report out of such a
-run, call `run` again with another mode: generation and evaluation are restored
-from the log, so you pay only the verdict call.
+One exception to "render rebuilds anything": `winner_only` never calls the verdict
+judge, so it writes no verdict to the log and `render` has nothing to render,
+reporting the progress it found instead. To get a report out of such a run, call
+`run` again with another mode: you pay only the verdict call.
 
 Before reading a JSON export, know that **`-1` means "not measured"** and never a
 low score, while `0.0` in a coverage or a rate is a real measurement. See
@@ -173,6 +173,7 @@ Tools exposed:
 | Tool | Description |
 |---|---|
 | `prompttest_init_project` | Initialize a new benchmark project directory |
+| `prompttest_list_models` | List the usable providers, or the models one of them offers |
 | `prompttest_read_project` | Read a project's whole configuration, plus its validation findings |
 | `prompttest_edit_project` | Apply a JSON patch to a project's configuration |
 | `prompttest_run_project` | Run a benchmark project |
@@ -202,6 +203,7 @@ Public surface exposed by `from prompttestenv import ...`:
 | `render_from_progress` | function | `render_from_progress(project_dir: str, output_mode: str = "html") -> str` | Regenerate the report from an existing `progress.jsonl`, in any output mode, with no LLM calls. Returns a progress summary instead when the log holds no verdict. |
 | `read_project` | function | `read_project(project_dir: str) -> dict` | The project's whole configuration as plain data, plus its validation findings and whether an existing `progress.jsonl` still matches it. |
 | `edit_project` | function | `edit_project(project_dir: str, patch: dict, *, dry_run: bool = False, force: bool = False) -> EditResult` | Apply a partial patch to the config files. Never raises. See [Editing a project](HOWTO.md#5-editing-a-project-without-a-file-editor). |
+| `list_catalog` | function | `list_catalog(provider: str \| None = None, *, probe_local: bool = True, timeout: float = 15.0) -> dict` | The usable providers, or one provider's models with the capabilities it reports (`null` means unknown). Never raises: a failure is in `error`. |
 | `Candidate` | dataclass | `Candidate.load_all(project_dir) -> list[Candidate]` | Loads and resolves `candidates.json` (including `system_prompt_file` content). Raises `FileNotFoundError` if the file is missing. |
 | `TestCase` | dataclass | `TestCase.load_all(project_dir) -> list[TestCase]` | Loads `test_cases.json`. Raises `FileNotFoundError` if the file is missing. |
 | `JudgeConfig` | dataclass | `JudgeConfig.load(project_dir) -> JudgeConfig` | Loads `judge_config.json`. Raises `FileNotFoundError` if the file is missing. |
@@ -214,8 +216,7 @@ and let a caller reproduce the file's existing formatting exactly through
 `trailing_newline=` and `newline=`. [ARCHITECTURE.md](ARCHITECTURE.md) explains
 why byte fidelity is not optional here.
 
-All names are re-exported lazily (imported on first access), so
-`import prompttestenv` alone stays lightweight.
+All names are re-exported lazily, so `import prompttestenv` alone stays lightweight.
 
 ### Streamlit GUI
 
@@ -239,9 +240,8 @@ A second Streamlit app for **creating and modifying** projects: typed forms over
 uploading attachments into `test_files/`. **New** scaffolds a project from the
 packaged templates. It never runs a benchmark, which is what `gui` is for.
 
-Running a benchmark and authoring one are disjoint jobs, which is why they are
-two apps: folding the editor's six tabs of forms into the run GUI would make the
-common case, press Run and watch the log, markedly heavier for no benefit.
+Running a benchmark and authoring one are disjoint jobs, hence two apps: folding the
+editor's six tabs into the run GUI would make the common case markedly heavier.
 
 Saving is byte-faithful, and a save that would invalidate an existing
 `progress.jsonl` is announced and confirmed rather than done silently. The same

@@ -108,6 +108,10 @@ Then `verdict.py` has a judge LLM write the report body, and `reporting.py` or
   by every interface that edits a project.
 - `projectedit.py`: `read_project` and `edit_project`, the interface-agnostic
   editing API. Applies a partial patch on top of `projectio`.
+- `catalog.py`: what the client can reach (`list_catalog`, the live provider and
+  model listing behind `models`) and what a project asks of it
+  (`offline_findings`, the capability check `run_project` makes before the
+  first call, from the client's registry and with no network).
 - `progress.py`: the low-level `progress.jsonl` primitives, config hashing and
   event appending, plus the failure placeholders a run stores in place of a
   model answer and the predicates that recognise them again.
@@ -209,7 +213,10 @@ and the refusal to invalidate a finished run without being told to.
 `projectio.validate` is the pre-flight all three share, editing and running
 alike, so a project cannot be accepted by one surface and silently mishandled by
 the other. The asymmetry is deliberate: the editors block on errors and show
-warnings, while `run_project` blocks on errors and only logs the warnings. Being
+warnings, while `run_project` blocks on errors and only logs the warnings.
+`catalog.offline_findings` follows the same split one step later, once the
+project has loaded: a judge that could not work blocks, a candidate that will
+skip a test is only announced. Being
 total is therefore part of its contract, since `load_project` is total too and a
 check that crashes on a malformed file is useless on exactly the file it exists
 to describe.

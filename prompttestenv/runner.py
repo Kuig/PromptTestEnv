@@ -6,6 +6,7 @@ import datetime
 import prompttestenv.logger as logger
 from prompttestenv.analysis import attach_best, attach_reasoning, keys_to_analyze, run_analysis_phase
 from prompttestenv.api import teardown
+from prompttestenv.catalog import offline_findings
 from prompttestenv.evaluator import run_evaluation_phase
 from prompttestenv.verdict import generate_verdict, evaluate_best_candidate_fast
 from prompttestenv.generation import run_generation_phase
@@ -317,6 +318,19 @@ def run_project(
 
     global_criteria = GlobalCriteria.load(project_dir)
     judge_config.global_criteria = global_criteria
+
+    # Capabilities, from the client's own registry and with no network: a judge
+    # that cannot do its job would turn every score into -1 after the
+    # candidates have been paid for, so that blocks; a candidate that cannot
+    # take an attachment only skips that test, so that is announced.
+    capability_errors, capability_warnings = offline_findings(
+        candidates, judge_config, test_cases, project_dir,
+        verdict=output_mode != "winner_only",
+    )
+    for warning in capability_warnings:
+        logger.log_warning(f"Capability check: {warning}")
+    if capability_errors:
+        return "Error: a judge cannot run as configured: " + "; ".join(capability_errors)
 
     logger.log_separator()
     logger.log_info(

@@ -31,6 +31,32 @@ def register_tools(mcp: "FastMCP") -> None:
             return f"Error: {exc}"
 
     @mcp.tool()
+    def prompttest_list_models(provider: str = "", probe_local: bool = True) -> str:
+        """List the AI providers usable right now, or the models one offers.
+
+        Use it to pick valid `provider` and `model` values before writing them
+        into a project with prompttest_edit_project. Providers are listed only
+        when usable: a cloud one needs its API key, a local one its server.
+
+        Args:
+            provider: Provider to list the models of (e.g. "ollama"). Empty
+                lists the providers instead.
+            probe_local: Whether to ask the local servers if they are running.
+                False skips the network and leaves them out.
+
+        Returns:
+            A JSON object. Model capabilities are null where the provider does
+            not report them, which means unknown, never unsupported. A failure
+            is in its "error" field.
+        """
+        import json
+        from prompttestenv.catalog import list_catalog
+        return json.dumps(
+            list_catalog(provider or None, probe_local=probe_local),
+            indent=2, ensure_ascii=False,
+        )
+
+    @mcp.tool()
     def prompttest_read_project(project_dir: str) -> str:
         """Read a benchmark project's whole configuration, as JSON.
 

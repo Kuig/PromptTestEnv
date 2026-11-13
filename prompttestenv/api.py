@@ -5,11 +5,18 @@ import math
 import threading
 from typing import Any, Callable
 
-# The two exceptions generation.py turns into outcomes rather than failures
-# are re-exported from here, so no other module imports unified_ai_client.
-from unified_ai_client import (  # noqa: F401  (ModelRefusalError, UnsupportedFileError)
+# Re-exported, unused here: the two exceptions generation.py turns into
+# outcomes, and the registry introspection catalog.py reads. This module stays
+# the single door to unified_ai_client.
+from unified_ai_client import (  # noqa: F401
+    ModelInfo,
     ModelRefusalError,
+    ProviderInfo,
     UnsupportedFileError,
+    get_provider,
+    list_models,
+    list_providers,
+    validate_files,
     call_ai,
     configure_provider,
     preload_model,

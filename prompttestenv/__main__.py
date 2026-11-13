@@ -9,6 +9,8 @@ Usage examples:
     prompttestenv render Projects/MyBenchmark --output-mode json
     prompttestenv show Projects/MyBenchmark
     prompttestenv edit Projects/MyBenchmark --patch patch.json
+    prompttestenv models
+    prompttestenv models ollama
     prompttestenv mcp
     prompttestenv gui
     prompttestenv editor
@@ -108,6 +110,38 @@ def cmd_edit(args: argparse.Namespace) -> None:
         for message in result.errors:
             logger.log_error(message)
         sys.exit(1)
+
+
+def _flag(value) -> str:
+    """A capability as shown by ``models``: None is unknown, not no."""
+    return "?" if value is None else ("yes" if value else "no")
+
+
+def cmd_models(args: argparse.Namespace) -> None:
+    """Handle the ``models`` subcommand: list providers, or one provider's models."""
+    import prompttestenv.logger as logger
+    from prompttestenv.catalog import list_catalog
+
+    catalog = list_catalog(args.provider, probe_local=not args.no_probe)
+    if catalog["error"]:
+        logger.log_error(f"Error: {catalog['error']}")
+        return
+    if args.provider is None:
+        for p in catalog["providers"]:
+            extras = [label for label, on in (("embeddings", p["supports_embeddings"]),
+                                              ("unload", p["supports_unload"])) if on]
+            print(f"{p['name']:<10} {'local' if p['local'] else 'cloud':<6} "
+                  f"files: {', '.join(p['file_types']) or '-':<30} {', '.join(extras)}")
+        if args.no_probe:
+            logger.log_info("Local servers were not probed, so they are not listed.")
+        return
+    if not catalog["models"]:
+        logger.log_info(f"'{catalog['provider']}' lists no models.")
+    for m in catalog["models"]:
+        files = "?" if m["file_types"] is None else (", ".join(m["file_types"]) or "-")
+        ctx = "?" if m["context_length"] is None else m["context_length"]
+        print(f"{m['id']}  reasoning={_flag(m['reasoning'])} tools={_flag(m['tool_use'])} "
+              f"embeddings={_flag(m['embeddings'])} context={ctx} files={files}")
 
 
 def cmd_mcp(args: argparse.Namespace) -> None:
@@ -228,6 +262,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="Write even when the edit invalidates an existing progress.jsonl.",
     )
     p_edit.set_defaults(func=cmd_edit)
+
+    p_models = subparsers.add_parser(
+        "models",
+        help="List the usable providers, or the models one of them offers.",
+    )
+    p_models.add_argument(
+        "provider", nargs="?", default=None,
+        help="Provider to list the models of. Omit to list the providers.",
+    )
+    p_models.add_argument(
+        "--no-probe",
+        action="store_true",
+        help="Do not ask the local servers whether they are running (they are then left out).",
+    )
+    p_models.set_defaults(func=cmd_models)
 
     p_mcp = subparsers.add_parser("mcp", help="Start the MCP server on stdio.")
     p_mcp.set_defaults(func=cmd_mcp)

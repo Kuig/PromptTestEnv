@@ -12,7 +12,8 @@ from pathlib import Path
 from prompttestenv.projectedit import EditResult
 
 from prompttestenv.__main__ import (
-    build_parser, cmd_edit, cmd_editor, cmd_init, cmd_render, cmd_run, cmd_show, main,
+    build_parser, cmd_edit, cmd_editor, cmd_init, cmd_models, cmd_render, cmd_run, cmd_show,
+    main,
 )
 from testutils import LoggerResetTestCase
 
@@ -108,6 +109,17 @@ class TestBuildParser(unittest.TestCase):
         self.assertIs(args.func, cmd_editor)
         self.assertFalse(hasattr(args, "project_dir"))
 
+    def test_models_subcommand_defaults(self):
+        args = self.parser.parse_args(["models"])
+        self.assertIs(args.func, cmd_models)
+        self.assertIsNone(args.provider)
+        self.assertFalse(args.no_probe)
+
+    def test_models_subcommand_takes_a_provider_and_no_probe(self):
+        args = self.parser.parse_args(["models", "ollama", "--no-probe"])
+        self.assertEqual(args.provider, "ollama")
+        self.assertTrue(args.no_probe)
+
     def test_no_subcommand_is_rejected(self):
         with self.assertRaises(SystemExit):
             self.parser.parse_args([])
@@ -171,6 +183,40 @@ class TestCmdHandlers(LoggerResetTestCase):
         args = build_parser().parse_args(["render", "Projects/Foo", "--output-mode", "json"])
         cmd_render(args)
         mock_render.assert_called_once_with("Projects/Foo", "json")
+
+
+class TestCmdModels(LoggerResetTestCase):
+    def _run(self, argv, catalog):
+        args = build_parser().parse_args(argv)
+        with patch("prompttestenv.catalog.list_catalog", return_value=catalog) as mock_list, \
+             patch("sys.stdout", new_callable=io.StringIO) as out:
+            cmd_models(args)
+        return mock_list, out.getvalue()
+
+    def test_lists_providers_without_probing_when_asked(self):
+        mock_list, out = self._run(["models", "--no-probe"], {"providers": [{
+            "name": "google", "local": False, "requires_api_key": True,
+            "file_types": ["image"], "supports_unload": False, "supports_embeddings": True,
+        }], "error": None})
+        mock_list.assert_called_once_with(None, probe_local=False)
+        self.assertIn("google", out)
+        self.assertIn("embeddings", out)
+
+    def test_lists_models_with_unknown_capabilities_as_question_marks(self):
+        _, out = self._run(["models", "ollama"], {"provider": "ollama", "models": [{
+            "id": "gemma", "display_name": None, "reasoning": None, "tool_use": True,
+            "file_types": None, "embeddings": False, "context_length": None,
+        }], "error": None})
+        self.assertIn("gemma", out)
+        self.assertIn("reasoning=?", out)
+        self.assertIn("tools=yes", out)
+        self.assertIn("embeddings=no", out)
+
+    def test_an_error_is_reported_instead_of_a_listing(self):
+        _, out = self._run(["models", "openai"],
+                           {"provider": "openai", "models": [], "error": "no key"})
+        self.assertIn("Error: no key", out)
+        self.assertNotIn("lists no models", out)
 
 
 class TestCmdEdit(LoggerResetTestCase):

@@ -26,11 +26,12 @@ class TestRegisterTools(unittest.TestCase):
         self.mcp = FakeMCP()
         register_tools(self.mcp)
 
-    def test_registers_the_six_expected_tools(self):
+    def test_registers_the_seven_expected_tools(self):
         self.assertEqual(
             set(self.mcp.tools.keys()),
             {
                 "prompttest_init_project",
+                "prompttest_list_models",
                 "prompttest_read_project",
                 "prompttest_edit_project",
                 "prompttest_run_project",
@@ -38,6 +39,19 @@ class TestRegisterTools(unittest.TestCase):
                 "prompttest_get_results",
             },
         )
+
+    @patch("prompttestenv.catalog.list_catalog")
+    def test_list_models_returns_the_catalog_as_json(self, mock_list):
+        mock_list.return_value = {"provider": "ollama", "models": [], "error": None}
+        result = json.loads(self.mcp.tools["prompttest_list_models"]("ollama", False))
+        mock_list.assert_called_once_with("ollama", probe_local=False)
+        self.assertEqual(result["provider"], "ollama")
+
+    @patch("prompttestenv.catalog.list_catalog")
+    def test_list_models_without_a_provider_lists_providers(self, mock_list):
+        mock_list.return_value = {"providers": [], "error": None}
+        self.mcp.tools["prompttest_list_models"]()
+        mock_list.assert_called_once_with(None, probe_local=True)
 
     @patch("prompttestenv.config.init_project")
     def test_init_project_delegates_and_returns_confirmation(self, mock_init):
