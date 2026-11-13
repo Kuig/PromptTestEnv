@@ -8,7 +8,9 @@ from prompttestenv.evaluator import run_evaluation_phase
 from prompttestenv.models import (
     CandidatePerformance, GenerationOutcome, GlobalCriteria, JudgeConfig, TestCaseResult,
 )
-from prompttestenv.progress import ProgressState
+from prompttestenv.progress import (
+    GEN_UNSUPPORTED_TEXT, UNSUPPORTED_EVAL_TEXT, ProgressState, is_failed_eval,
+)
 
 
 def _judge_config(timeout=5.0, eval_delay=0.0, reasoning_analysis="none"):
@@ -292,3 +294,32 @@ class TestJudgePreloadIsConditional(unittest.TestCase):
         )
         self._run(pending, jc, progress, frozenset({("A", "t1", 0)})).assert_called_once()
 
+
+class TestSkippedTestIsNotJudged(unittest.TestCase):
+    """A test whose attachment the candidate cannot take is never sent to a judge."""
+
+    def _run(self, jc=None):
+        jc = jc or _judge_config()
+        jc.global_criteria = GlobalCriteria(mode="llm-judge")
+        task, perf = _pending_eval(output=GEN_UNSUPPORTED_TEXT)
+        with patch("prompttestenv.evaluator.evaluate_with_judge") as mock_eval, \
+             patch("prompttestenv.evaluator.preload_model_for_run") as mock_preload, \
+             patch("prompttestenv.evaluator.append_event") as mock_append:
+            run_evaluation_phase([task], jc, "/fake/project", ProgressState())
+        return mock_eval, mock_preload, mock_append.call_args.args[1], perf
+
+    def test_no_judge_is_called_or_loaded(self):
+        mock_eval, mock_preload, _, _ = self._run()
+        mock_eval.assert_not_called()
+        mock_preload.assert_not_called()
+
+    def test_both_sides_are_stored_as_not_measured_with_the_reason(self):
+        _, _, event, perf = self._run()
+        self.assertEqual((event["score"], event["global_score"]), (-1, -1))
+        self.assertEqual((event["reason"], event["g_reason"]),
+                         (UNSUPPORTED_EVAL_TEXT, UNSUPPORTED_EVAL_TEXT))
+        self.assertEqual((perf.scores, perf.global_scores), ([-1], [-1]))
+
+    def test_the_stored_event_is_not_retryable(self):
+        _, _, event, _ = self._run()
+        self.assertFalse(is_failed_eval(event))

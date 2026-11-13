@@ -50,6 +50,14 @@ GEN_TIMEOUT_TEXT = "⛔ [TIMEOUT EXCEEDED]"
 GEN_ERROR_TEXT = "⛔ [GENERATION FAILED]"
 JUDGE_TIMEOUT_TEXT = "⛔ [JUDGE TIMEOUT EXCEEDED]"
 
+# The third placeholder is not a failure: the client refused, before sending
+# anything, to hand this candidate's provider an attachment it cannot take. The
+# same request would be refused the same way, so --retry-errors leaves it alone
+# (is_failed_gen does not match it), and evaluator.py stores "not measured" for
+# it without calling any judge, with a reason that matches no failure prefix.
+GEN_UNSUPPORTED_TEXT = "⛔ [ATTACHMENT NOT SUPPORTED]"
+UNSUPPORTED_EVAL_TEXT = "N/A: attachment not supported by this candidate's provider"
+
 # Every -1 reason the framework writes on its own initiative starts with one of
 # these. "Error" is deliberately not suffixed with a colon: it has to cover
 # "Error: ...", the dispatcher's bare "Error", and "Error in evaluation

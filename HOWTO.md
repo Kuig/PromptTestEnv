@@ -377,12 +377,33 @@ every response in the benchmark again.
 
 ### What counts as a failed step
 
-Exactly two things, both written by the framework itself rather than by a model:
+Exactly these, all written by the framework itself rather than by a model:
 
 - A response stored as `[TIMEOUT EXCEEDED]`, which is what a generation timeout
   records in place of an answer that never arrived.
+- A response stored as `[GENERATION FAILED]`, which is what a provider error
+  (a rate limit, a dropped connection) records instead. The error message is
+  kept in the log entry's `error` field.
 - A score of `-1` whose reasoning is a framework error message, which covers the
   judge timeout and every internal failure of the evaluators.
+
+### Two outcomes that are not failures
+
+Both are recorded on the first run and never retried, because asking again
+would get the same answer:
+
+- **A refusal.** The model declined to answer on policy grounds. Whatever it
+  wrote before declining (often nothing) is its response and is judged like any
+  other, its time is real, and its token counts are `-1`, since none come back.
+  The log entry carries `refused: true` and the provider's reason in `error`,
+  and the report shows a refusal count per candidate. The verdict does not
+  mention it.
+- **A skipped test.** The candidate's provider cannot take one of the test's
+  attachments (a video sent to a text-only local model, say), and the client
+  refuses before sending anything. The response is stored as
+  `[ATTACHMENT NOT SUPPORTED]`, no judge is called, and both scores are `-1`
+  with a reason saying why, so the test simply does not count for that
+  candidate.
 
 Everything else in the log is a real result and is never touched. Two cases are
 worth calling out because they also store `-1`:

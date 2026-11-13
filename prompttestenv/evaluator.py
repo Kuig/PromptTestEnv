@@ -4,7 +4,10 @@ import time
 
 import prompttestenv.logger as logger
 from prompttestenv.api import call_with_timeout, preload_model_for_run
-from prompttestenv.progress import JUDGE_TIMEOUT_TEXT, ProgressState, RunKey, append_event
+from prompttestenv.progress import (
+    GEN_UNSUPPORTED_TEXT, JUDGE_TIMEOUT_TEXT, UNSUPPORTED_EVAL_TEXT, ProgressState, RunKey,
+    append_event,
+)
 from prompttestenv.models import (
     JUDGE_TYPE_LLM, GenerationOutcome, JudgeConfig, apply_eval_event,
 )
@@ -14,6 +17,21 @@ from prompttestenv.test_judge import evaluate_with_judge
 def _eval_key(task: GenerationOutcome) -> RunKey:
     """The (candidate, test, repetition) key of one pending evaluation."""
     return RunKey(task.cand_id, task.test_result.test_id, task.rep)
+
+
+def _is_skipped(task: GenerationOutcome) -> bool:
+    """Whether this response is a skipped test, which no judge is asked about."""
+    return task.output == GEN_UNSUPPORTED_TEXT
+
+
+# What a skipped test stores on both sides. Not a failure (UNSUPPORTED_EVAL_TEXT
+# matches no is_failed_eval prefix), so --retry-errors leaves it alone.
+_SKIPPED_EVAL = {
+    "score": -1,
+    "reasoning": UNSUPPORTED_EVAL_TEXT,
+    "global_score": -1,
+    "global_reasoning": UNSUPPORTED_EVAL_TEXT,
+}
 
 
 def _test_judge_will_be_called(
@@ -42,6 +60,8 @@ def _test_judge_will_be_called(
     for task in pending_evals:
         key = _eval_key(task)
         if key in progress_state.completed_eval and key not in redo_keys:
+            continue
+        if _is_skipped(task):
             continue
         if global_is_llm or task.test_result.judge_type == JUDGE_TYPE_LLM:
             return True
@@ -116,14 +136,18 @@ def run_evaluation_phase(
             logger.log_metric(f"{prefix}Score: {score}, Global: {g_score} (Resumed)")
             continue
 
-        eval_result, timed_out = call_with_timeout(
-            evaluate_with_judge,
-            test_result,
-            output,
-            judge_config,
-            fn_kwargs={"local_media_paths": m_paths},
-            timeout=timeout_val,
-        )
+        skipped = _is_skipped(eval_task)
+        if skipped:
+            eval_result, timed_out = dict(_SKIPPED_EVAL), False
+        else:
+            eval_result, timed_out = call_with_timeout(
+                evaluate_with_judge,
+                test_result,
+                output,
+                judge_config,
+                fn_kwargs={"local_media_paths": m_paths},
+                timeout=timeout_val,
+            )
         if timed_out:
             logger.log_warning(f"{prefix}Judge timeout ({timeout_val}s).")
             eval_result = {
@@ -153,5 +177,5 @@ def run_evaluation_phase(
             "g_reason": g_reason,
         })
 
-        if eval_delay > 0 and eval_task is not pending_evals[-1]:
+        if eval_delay > 0 and not skipped and eval_task is not pending_evals[-1]:
             time.sleep(eval_delay)

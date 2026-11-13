@@ -5,8 +5,11 @@ import unittest
 from unittest.mock import patch
 from types import SimpleNamespace
 
+from prompttestenv.api import ModelRefusalError, UnsupportedFileError
 from prompttestenv.generation import run_generation_phase
-from prompttestenv.progress import GEN_ERROR_TEXT, GEN_TIMEOUT_TEXT, ProgressState, is_failed_gen
+from prompttestenv.progress import (
+    GEN_ERROR_TEXT, GEN_TIMEOUT_TEXT, GEN_UNSUPPORTED_TEXT, ProgressState, is_failed_gen,
+)
 from testutils import ResidencyResetTestCase
 from prompttestenv.models import (
     Candidate,
@@ -253,6 +256,86 @@ class TestRunGenerationPhaseProviderError(ResidencyResetTestCase):
     def test_the_stored_event_is_retryable(self):
         _, events = self._failed_run()
         self.assertTrue(is_failed_gen(events[0]))
+
+    def test_tokens_are_not_measured_rather_than_zero(self):
+        """No call completed, so a 0 would drag tokens_mean down as a real count."""
+        pending, events = self._failed_run()
+        self.assertEqual((events[0]["tokens"], events[0]["reasoning_tokens"]), (-1, -1))
+        perf = pending[0].cand_perf
+        self.assertEqual((perf.tokens_mean, perf.reasoning_tokens_mean), (0.0, 0.0))
+        self.assertEqual(len(perf.tokens), 1)  # kept, so the zip-by-index stays aligned
+
+
+def _raising_run(exc):
+    """Run one generation whose call raises `exc`; return (pending, events)."""
+    events = []
+
+    def raise_it(*args, **kwargs):
+        raise exc
+
+    with patch("prompttestenv.generation.get_llm_response", side_effect=raise_it), \
+         patch("prompttestenv.generation.warm_up_for_run"), \
+         patch("prompttestenv.generation.append_event",
+               side_effect=lambda _d, e: events.append(e)):
+        pending = run_generation_phase(
+            [_candidate()], [_result()], _judge_config(), "/fake/project", ProgressState()
+        )
+    return pending, events
+
+
+class TestRunGenerationPhaseRefusal(ResidencyResetTestCase):
+    """A refusal is a measured outcome, not a failure to obtain one."""
+
+    def _refused(self, partial=""):
+        return _raising_run(ModelRefusalError("anthropic", "cyber", "policy", partial))
+
+    def test_the_partial_text_is_the_response(self):
+        pending, events = self._refused("I can only say this much")
+        self.assertEqual(pending[0].output, "I can only say this much")
+        self.assertEqual(events[0]["output"], "I can only say this much")
+
+    def test_the_event_is_flagged_and_keeps_the_reason(self):
+        _, events = self._refused()
+        self.assertIs(events[0]["refused"], True)
+        self.assertIn("cyber", events[0]["error"])
+
+    def test_it_is_counted_on_the_live_record(self):
+        pending, _ = self._refused()
+        self.assertEqual(pending[0].cand_perf.refusals, 1)
+
+    def test_its_time_is_a_measurement(self):
+        _, events = self._refused()
+        self.assertGreaterEqual(events[0]["elapsed"], 0.0)
+
+    def test_it_is_not_retried(self):
+        _, events = self._refused()
+        self.assertFalse(is_failed_gen(events[0]))
+
+
+class TestRunGenerationPhaseUnsupportedAttachment(ResidencyResetTestCase):
+    """An attachment the provider cannot take skips that test for the candidate."""
+
+    def _skipped(self):
+        return _raising_run(UnsupportedFileError("ollama cannot take clip.mp4"))
+
+    def test_stores_its_own_placeholder(self):
+        pending, events = self._skipped()
+        self.assertEqual(pending[0].output, GEN_UNSUPPORTED_TEXT)
+        self.assertEqual(events[0]["output"], GEN_UNSUPPORTED_TEXT)
+        self.assertIn("clip.mp4", events[0]["error"])
+
+    def test_measures_nothing(self):
+        _, events = self._skipped()
+        self.assertEqual(
+            (events[0]["elapsed"], events[0]["tokens"], events[0]["reasoning_tokens"]),
+            (-1.0, -1, -1),
+        )
+
+    def test_is_not_retried(self):
+        """The same request would be refused the same way, before sending."""
+        _, events = self._skipped()
+        self.assertFalse(is_failed_gen(events[0]))
+        self.assertNotIn("refused", events[0])
 
 
 class TestRunGenerationPhaseWarmUp(unittest.TestCase):

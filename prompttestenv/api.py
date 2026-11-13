@@ -5,7 +5,11 @@ import math
 import threading
 from typing import Any, Callable
 
-from unified_ai_client import (
+# The two exceptions generation.py turns into outcomes rather than failures
+# are re-exported from here, so no other module imports unified_ai_client.
+from unified_ai_client import (  # noqa: F401  (ModelRefusalError, UnsupportedFileError)
+    ModelRefusalError,
+    UnsupportedFileError,
     call_ai,
     configure_provider,
     preload_model,

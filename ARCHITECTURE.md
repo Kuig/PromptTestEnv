@@ -226,11 +226,15 @@ file to `progress.jsonl.bak` and refuses to resume silently.
 `--retry-errors` narrows that skip: a key whose stored result is a placeholder
 the framework wrote, rather than a real model answer, is run again. There are
 three such placeholders and each says something different: a response timeout, a
-generation the provider refused, and a judge timeout. They are kept distinct
+generation that failed with a provider error, and a judge timeout. They are kept distinct
 rather than collapsed into one, because the log would otherwise report a timeout
 for a rate limit. The exception behind a refused generation is recorded in its
 own field, so the payload stays comparable by equality, and its elapsed time is
-the not-measured sentinel rather than the milliseconds it took to fail. It needs no
+the not-measured sentinel rather than the milliseconds it took to fail. Two other
+generation outcomes are deliberately not placeholders in this sense, since asking
+again gets the same answer: a refusal, which is a measured result judged on
+whatever text came before it, and an attachment the provider cannot take, stored
+as its own placeholder that no judge sees and no retry selects. It needs no
 rewriting of the log, because `ProgressState.load` builds its lookup dicts by
 overwriting as it reads, so the last line for a key is the one that counts and a
 corrected event simply supersedes the failed one. The corollary is a rule for

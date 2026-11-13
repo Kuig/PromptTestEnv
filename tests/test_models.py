@@ -535,6 +535,12 @@ class TestPoolByCandidate(unittest.TestCase):
         pool_by_candidate(self.candidates, rows)
         self.assertEqual(len(rows[0].candidates_perf["A"].scores), 1)
 
+    def test_sums_the_refusals(self):
+        rows = [self._row("t1", 6.0), self._row("t2", 8.0)]
+        rows[0].candidates_perf["A"].refusals = 2
+        rows[1].candidates_perf["A"].refusals = 1
+        self.assertEqual(pool_by_candidate(self.candidates, rows)["A"].refusals, 3)
+
 
 class TestApplyGenEvent(unittest.TestCase):
     """The one place a gen event's measurements become a CandidatePerformance."""
@@ -559,6 +565,13 @@ class TestApplyGenEvent(unittest.TestCase):
         apply_gen_event(perf, {"tokens": 2, "elapsed": 0.2})
         self.assertEqual(perf.tokens, [1, 2])
         self.assertEqual(perf.times, [0.1, 0.2])
+
+    def test_counts_only_refused_events(self):
+        perf = CandidatePerformance()
+        apply_gen_event(perf, {"tokens": 1, "elapsed": 0.1, "refused": True})
+        apply_gen_event(perf, {"tokens": 2, "elapsed": 0.2})
+        self.assertEqual(perf.refusals, 1)
+        self.assertEqual(len(perf.tokens), 2)
 
 
 class TestApplyEvalEvent(unittest.TestCase):

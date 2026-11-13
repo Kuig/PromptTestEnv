@@ -401,6 +401,7 @@
         "tokens",
         "reasoning_tokens",
         "time",
+        "refusals",
         "cost_per_point"
       ],
       "properties": {
@@ -414,15 +415,20 @@
         },
         "tokens": {
           "allOf": [{ "$ref": "#/$defs/statBlock" }],
-          "description": "Output tokens billed for the response."
+          "description": "Output tokens billed for the response. -1 for a repetition whose call never completed (a timeout, an error, a skipped test) or was refused, since nothing was counted."
         },
         "reasoning_tokens": {
           "allOf": [{ "$ref": "#/$defs/statBlock" }],
-          "description": "Thinking tokens billed. 0 for models that do not think, or that were run with thinking off."
+          "description": "Thinking tokens billed. 0 for models that do not think, or that were run with thinking off; -1 where `tokens` is -1."
         },
         "time": {
           "allOf": [{ "$ref": "#/$defs/statBlock" }],
           "description": "Wall-clock seconds for the generation call. Per-process one-off costs (SDK import, client construction, attachment upload) are warmed up before the clock starts, so these are comparable across candidates within one run — but not across runs on different hardware or networks."
+        },
+        "refusals": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Repetitions the model declined to answer on policy grounds. A measured outcome, not a failure: each is still scored on whatever text the model produced before declining (often none), its time is real, and its token counts are -1. The progress.jsonl gen event carries refused: true and the provider's reason in error."
         },
         "cost_per_point": {
           "type": "object",

@@ -73,7 +73,8 @@ def _perf_block(perf: CandidatePerformance) -> dict:
         perf: The record to describe, pooled or for a single test case.
 
     Returns:
-        Dict of stat blocks plus both cost-per-point statistics.
+        Dict of stat blocks, the refusal count, and both cost-per-point
+        statistics.
     """
     return {
         "score": _stat_block(perf.scores),
@@ -81,6 +82,7 @@ def _perf_block(perf: CandidatePerformance) -> dict:
         "tokens": _stat_block(perf.tokens),
         "reasoning_tokens": _stat_block(perf.reasoning_tokens),
         "time": _stat_block(perf.times),
+        "refusals": perf.refusals,
         # Two different statistics that need not agree: "pooled" is the ratio of
         # the means, "mean"/"std" the mean of each repetition's own ratio. The
         # HTML shows both, in two different places, so the JSON carries both.

@@ -225,6 +225,9 @@ class CandidatePerformance:
     reasoning_tokens: list[int] = field(default_factory=list)
     times: list[float] = field(default_factory=list)
     reasoning_analyses: list[dict] = field(default_factory=list)
+    # Repetitions the model declined to answer. A count rather than a list:
+    # nothing is averaged over it, and the report shows it as a plain number.
+    refusals: int = 0
 
     best_output: str = ""
     best_reason: str = ""
@@ -367,6 +370,8 @@ def apply_gen_event(cand_perf: CandidatePerformance, event: dict) -> None:
     cand_perf.tokens.append(event.get("tokens", 0))
     cand_perf.reasoning_tokens.append(event.get("reasoning_tokens", 0))
     cand_perf.times.append(event.get("elapsed", -1.0))
+    if event.get("refused"):
+        cand_perf.refusals += 1
 
 
 def apply_eval_event(cand_perf: CandidatePerformance, event: dict) -> None:
@@ -425,6 +430,7 @@ def pool_by_candidate(
             # Without this the reasoning profile cannot reach the pooled view
             # at all, which is why the verdict's OVERALL AGGREGATE had none.
             agg.reasoning_analyses.extend(perf.reasoning_analyses)
+            agg.refusals += perf.refusals
         pooled[cand.name] = agg
     return pooled
 

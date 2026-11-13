@@ -4,13 +4,17 @@ import time
 
 import prompttestenv.logger as logger
 from prompttestenv.api import (
+    ModelRefusalError,
+    UnsupportedFileError,
     call_with_timeout,
     get_llm_response,
     release_previous_candidate,
     warm_up_for_run,
 )
 from prompttestenv.config import get_app_config
-from prompttestenv.progress import GEN_ERROR_TEXT, GEN_TIMEOUT_TEXT, ProgressState, RunKey, append_event
+from prompttestenv.progress import (
+    GEN_ERROR_TEXT, GEN_TIMEOUT_TEXT, GEN_UNSUPPORTED_TEXT, ProgressState, RunKey, append_event,
+)
 from prompttestenv.models import (
     Candidate, TestCaseResult, CandidatePerformance, GenerationOutcome, JudgeConfig, LlmResult,
     apply_gen_event, format_temperature,
@@ -21,6 +25,18 @@ from prompttestenv.models import (
 # max_response_timeout_seconds. A failed generation is left for resume /
 # --retry-errors to redo instead.
 GENERATION_MAX_RETRIES = 0
+
+
+def _placeholder(text: str) -> LlmResult:
+    """A result standing in for an answer that was never obtained.
+
+    Its token counts are the -1 "not measured" sentinel rather than 0: no call
+    completed, so nothing was counted, and a 0 would drag tokens_mean down as if
+    the model had answered in no tokens at all. calculate_stats filters it out,
+    and the per-repetition lists keep their length, so the zip-by-index in
+    CandidatePerformance._cost_ratios stays aligned.
+    """
+    return LlmResult(text=text, output_tokens=-1, reasoning_tokens=-1)
 
 
 
@@ -201,6 +217,7 @@ def run_generation_phase(
 
                 t_start = time.time()
                 failure = None
+                refused = False
                 try:
                     result, timed_out = call_with_timeout(
                         get_llm_response,
@@ -218,6 +235,23 @@ def run_generation_phase(
                         ),
                         timeout=timeout_val,
                     )
+                except ModelRefusalError as exc:
+                    # A measured outcome, not a failure: the model was asked and
+                    # declined, and asking again gets the same answer. Whatever
+                    # it produced before the refusal is its response, judged as
+                    # any other, and the event says it was a refusal.
+                    # No usage comes back with a refusal, so tokens are -1.
+                    result = LlmResult(text=exc.partial_text or "", output_tokens=-1,
+                                       reasoning_tokens=-1)
+                    timed_out, refused = False, True
+                    failure = f"{type(exc).__name__}: {exc}"
+                    logger.log_warning(f"{prefix}Refused: {failure}")
+                except UnsupportedFileError as exc:
+                    # Raised before anything was sent: this candidate cannot be
+                    # given this test's attachment, so the test is skipped for it.
+                    result, timed_out = _placeholder(GEN_UNSUPPORTED_TEXT), False
+                    failure = f"{type(exc).__name__}: {exc}"
+                    logger.log_warning(f"{prefix}Skipped: {failure}")
                 except Exception as exc:
                     # call_ai raises once its retries are spent, and this phase
                     # passes GENERATION_MAX_RETRIES = 0, so a single 429 or a
@@ -225,14 +259,17 @@ def run_generation_phase(
                     # traceback. A placeholder instead makes the sentence above
                     # ("a failed generation is left for resume / --retry-errors
                     # to redo") true of every failure and not only of timeouts.
-                    result, timed_out = LlmResult(text=GEN_ERROR_TEXT), False
+                    result, timed_out = _placeholder(GEN_ERROR_TEXT), False
                     failure = f"{type(exc).__name__}: {exc}"
                     logger.log_error(f"{prefix}Generation failed: {failure}")
 
                 if timed_out:
-                    result = LlmResult(text=GEN_TIMEOUT_TEXT)
+                    result = _placeholder(GEN_TIMEOUT_TEXT)
                     elapsed = timeout_val
                     logger.log_warning(f"{prefix}Timeout hit ({timeout_val}s).")
+                elif refused:
+                    # The model did take this long to decline: a measurement.
+                    elapsed = time.time() - t_start
                 elif failure is not None:
                     # -1, not the real wall clock, and unlike the timeout above,
                     # which stores its deadline. A timeout is a measurement (the
@@ -262,6 +299,13 @@ def run_generation_phase(
                     "reasoning_is_summary": result.reasoning_is_summary,
                     "elapsed": elapsed,
                 }
+                if refused:
+                    event["refused"] = True
+                if failure is not None:
+                    # Diagnostic only, and kept out of "output" on purpose:
+                    # is_failed_gen compares the payload by equality, and the
+                    # judge would otherwise score the exception text.
+                    event["error"] = failure
                 apply_gen_event(cand_perf, event)
 
                 pending_evals.append(GenerationOutcome(
@@ -274,11 +318,6 @@ def run_generation_phase(
                     repetitions=repetitions,
                 ))
 
-                if failure is not None:
-                    # Diagnostic only, and kept out of "output" on purpose:
-                    # is_failed_gen compares the payload by equality, and the
-                    # judge would otherwise score the exception text.
-                    event["error"] = failure
                 append_event(project_dir, event)
 
                 if rep_delay > 0 and rep < repetitions - 1:
