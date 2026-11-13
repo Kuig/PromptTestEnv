@@ -169,8 +169,8 @@ ignore, and the report can colour the real trace in place.
 **A summarised trace is never silently treated as a raw one.** Some providers do
 not expose a model's raw chain of thought: Google returns a summary the model
 writes about its own reasoning, typically about half the length its billed
-thinking tokens imply, while Ollama, Anthropic and the OpenAI-compatible
-providers return the raw transcript. `AiResponse.reasoning_is_summary` carries
+thinking tokens imply, and so does Anthropic from Claude 4 on, while Ollama and
+the OpenAI-compatible providers return the raw transcript. `AiResponse.reasoning_is_summary` carries
 which one arrived, it is stored on every `gen` event, and it gates absolute token
 attribution and is flagged in the report. Trace length, composition and
 self-correction counts partly reflect the summariser, so those figures must never

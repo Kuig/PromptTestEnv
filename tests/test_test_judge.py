@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from prompttestenv.models import LlmResult, GlobalCriteria, JudgeConfig, TestCaseResult
 from prompttestenv.test_judge import (
+    JUDGE_MAX_RETRIES,
     JudgeScore,
     _any_side_is_local,
     _evaluate_assert,
@@ -401,6 +402,17 @@ class TestEvaluateSimilarity(unittest.TestCase):
             mock_embed.return_value = [1.0, 0.0]
             score, reasoning = _evaluate_similarity("target", "response", jc)
         self.assertEqual(score, 10)
+
+    def test_embeddings_carry_the_judge_retry_budget_and_deadline(self):
+        jc = JudgeConfig()
+        jc.max_response_timeout_seconds = 45
+        with patch("prompttestenv.test_judge.get_text_embedding") as mock_embed:
+            mock_embed.return_value = [1.0, 0.0]
+            _evaluate_similarity("target", "response", jc)
+        self.assertEqual(mock_embed.call_count, 2)
+        for call in mock_embed.call_args_list:
+            self.assertEqual(call.kwargs["max_retries"], JUDGE_MAX_RETRIES)
+            self.assertEqual(call.kwargs["max_response_timeout_seconds"], 45)
 
     def test_embedding_failure_returns_sentinel(self):
         jc = JudgeConfig()

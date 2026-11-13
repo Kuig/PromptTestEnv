@@ -136,9 +136,10 @@ _NEW_ROW: dict[type, dict] = {
 # value is shown and preserved rather than offered as a choice.
 THINKING_CHOICES = ("default", "true", "false")
 
-# Provider names UnifiedAiClient's dispatch accepts (unified_ai_client.client
-# resolves them in an if/elif chain and exports no registry to import). The
-# editor treats this as a suggestion list, not a validation rule.
+# Provider names UnifiedAiClient's registry accepts. The registry itself is
+# private and list_providers() reports only the providers usable right now, so
+# the full set is spelled out here. The editor treats this as a suggestion
+# list, not a validation rule.
 PROVIDERS = (
     "google", "anthropic", "openai", "mistral", "cohere", "meta", "groq", "xai",
     "ollama", "lmstudio", "llamacpp", "script",

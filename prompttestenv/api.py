@@ -7,6 +7,7 @@ from typing import Any, Callable
 
 from unified_ai_client import (
     call_ai,
+    configure_provider,
     preload_model,
     unload_model,
     warm_up,
@@ -61,6 +62,12 @@ DEFAULT_AI_LOG_LEVEL = "warning"
 # already in the log, or a run with warm-up disabled, must still leave the slot
 # telling the truth about what is actually resident.
 _resident_candidate: tuple[str, str] | None = None
+
+# Whether preload_model_for_run registered an Ollama context_size. UnifiedAiClient
+# persists it through configure_provider, so every later Ollama call in the
+# process carries that num_ctx: in the long-lived MCP server, the next run's
+# candidates included. teardown() takes it back.
+_context_size_registered = False
 
 
 def configure_ai_logging() -> None:
@@ -118,23 +125,38 @@ def get_text_embedding(
     provider: str,
     model_name: str,
     text: str,
+    *,
+    max_response_timeout_seconds: float | None = None,
+    max_retries: int = 5,
 ) -> list[float]:
     """Get high-dimensional embedding vector for text using UnifiedAiClient.
+
+    Bounded the same way as get_llm_response: get_embedding retries with
+    exponential backoff, so without an explicit budget an embedding against a
+    server that is down blocks for tens of seconds per call, outliving the
+    judge deadline it runs under.
 
     Args:
         provider: AI provider name (e.g. 'google', 'ollama').
         model_name: Embedding model identifier.
         text: The input text to embed.
+        max_response_timeout_seconds: The judge_config deadline. When given,
+            the network timeout of each attempt is derived from it exactly as
+            in get_llm_response; when None, the client's default applies.
+        max_retries: How many times a retryable failure is retried.
 
     Returns:
         A list of floats representing the embedding vector.
     """
-    normalized_provider = provider.lower()
-    return get_embedding(
-        provider=normalized_provider,
+    call_kwargs: dict[str, Any] = dict(
+        provider=provider.lower(),
         model=model_name,
         text=text,
+        max_retries=max_retries,
     )
+    if max_response_timeout_seconds is not None:
+        call_kwargs["timeout"] = _buffered_provider_timeout(max_response_timeout_seconds)
+    return get_embedding(**call_kwargs)
 
 
 def cosine_similarity(vec_a: list[float], vec_b: list[float]) -> float:
@@ -386,6 +408,8 @@ def preload_model_for_run(
         model_name: Model identifier to preload.
         context_size: Context window to allocate, in tokens. Ignored when None.
     """
+    global _context_size_registered
+
     if provider.lower() == "ollama":
         # A preload is a load, so it follows the same discipline as
         # get_llm_response and warm_up_for_run: release whatever this process
@@ -403,6 +427,7 @@ def preload_model_for_run(
         # still for. Another local backend does not come through here at all.
         release_previous_candidate(provider, model_name)
         extra = {"context_size": context_size} if context_size else {}
+        _context_size_registered = _context_size_registered or bool(extra)
         preload_model(
             provider=provider,
             model=model_name,
@@ -420,14 +445,19 @@ def teardown() -> None:
     tracked here. Resetting the candidate slot is the part that does belong
     here: without it a second run in the same process — which is exactly the
     MCP server's shape — would try to release a model cleanup() already let go.
+    So is taking back a context_size preload_model_for_run registered, which
+    would otherwise size every Ollama load of the next run.
 
     Should be called at the end of each run session or in a finally block.
     UnifiedAiClient also registers cleanup automatically via atexit.
     """
-    global _resident_candidate
+    global _resident_candidate, _context_size_registered
 
     _resident_candidate = None
     cleanup()
+    if _context_size_registered:
+        configure_provider("ollama", context_size=None)
+        _context_size_registered = False
 
 
 def _reset_residency_state() -> None:
@@ -436,9 +466,10 @@ def _reset_residency_state() -> None:
     For tests only: the slot is module state, so a key left behind by one test
     would make the next one attempt a real unload.
     """
-    global _resident_candidate
+    global _resident_candidate, _context_size_registered
 
     _resident_candidate = None
+    _context_size_registered = False
 
 
 def call_with_timeout(
@@ -560,7 +591,8 @@ def parse_json_object(text: str) -> dict | None:
     Every judge call asks for response_mime_type="application/json", which
     makes a wrapped or list-wrapped reply the rare case rather than the
     common one, but it is not guaranteed for every backend the way it is for
-    Google: Ollama and OpenAI-compatible providers do not enforce JSON mode.
+    Google: Ollama's `format: json` and the OpenAI-compatible `json_object`
+    constrain the syntax, and a model can still fence or wrap what it emits.
     Without this, a wrapped reply loses an already-paid-for call silently.
 
     Args:

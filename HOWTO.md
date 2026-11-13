@@ -61,7 +61,7 @@ This is the core engine configuration file. It dictates how the framework behave
 
 **`test_judge` Options:**
 *Configures the LLM that scores individual responses.*
-- `provider`, `model`, `temperature`, `disable_safety`, `thinking`: Standard LLM parameters (typically set to a smart model with low temperature, e.g., `0.2`).
+- `provider`, `model`, `temperature`, `disable_safety`, `thinking`: Standard LLM parameters (typically set to a smart model with low temperature, e.g., `0.2`). `anthropic` cannot serve as test judge or reasoning judge yet: both ask for JSON, and the Messages API has no JSON mode without a schema, so every call is refused and every score is -1.
 - `evaluation_system_prompt`: The system persona for the judge (e.g., "You are an impartial AI judge...").
 - `evaluation_template`: The template defining how the candidate's response, the original prompt, and the criteria are presented to the judge. **Must** expect a JSON output with `score` (1-10) and `reasoning`. **Must include the variables:** `{user_prompt}`, `{candidate_response}`, and `{criteria}`.
 
@@ -187,7 +187,7 @@ Retuning the schema costs only these calls, never a re-run of the candidates: th
 Each candidate gets one horizontal bar per dimension, plus the density figure, the cost in thinking tokens per point of score, and the scope the figures were measured under with the number of traces behind them. Under each test case, the **full trace is shown colour-coded in place**: every sentence is tinted by its dominant dimension, shaded by intensity, with all three scores on hover. Sentences cited as evidence carry a marker for an alternative, a self-correction, or a conclusion the response contradicted. Because the units are offsets, what you see is the trace itself, and you can check the analysis against the actual words.
 
 > [!WARNING]
-> **Some providers do not give you the raw chain of thought.** Google returns a *summary* the model writes about its own thinking, typically around half the length its billed thinking tokens imply, while Ollama, Anthropic and the OpenAI-compatible providers return the raw transcript. The report flags a summarised trace and withholds absolute token attribution for it. Trace length, composition and self-correction counts partly reflect the summariser, so do not rank a summarised trace against a raw one on those figures.
+> **Some providers do not give you the raw chain of thought.** Google returns a *summary* the model writes about its own thinking, typically around half the length its billed thinking tokens imply, and so does Anthropic from Claude 4 on, while Ollama and the OpenAI-compatible providers return the raw transcript. The report flags a summarised trace and withholds absolute token attribution for it. Trace length, composition and self-correction counts partly reflect the summariser, so do not rank a summarised trace against a raw one on those figures.
 
 ---
 

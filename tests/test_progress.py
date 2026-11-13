@@ -5,6 +5,7 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from prompttestenv.progress import (
     GEN_TIMEOUT_TEXT,
@@ -14,6 +15,7 @@ from prompttestenv.progress import (
     RunKey,
     append_event,
     calculate_config_hash,
+    client_version,
     config_hash_from_bytes,
     failed_eval_keys,
     failed_gen_keys,
@@ -332,6 +334,29 @@ class TestProgressStateLoad(LoggerResetTestCase):
         self.assertTrue(progress_file.exists())
         meta = json.loads(progress_file.read_text(encoding="utf-8").splitlines()[0])
         self.assertEqual(meta["type"], "meta")
+        self.assertEqual(meta["client_version"], client_version())
+
+    def _write_meta(self, **extra) -> None:
+        meta = {"type": "meta", "config_hash": calculate_config_hash(self.project_dir), **extra}
+        (Path(self.project_dir) / "progress.jsonl").write_text(
+            json.dumps(meta) + "\n", encoding="utf-8",
+        )
+
+    def test_resuming_under_another_client_version_warns_and_still_resumes(self):
+        self._write_meta(client_version="0.0.1")
+        with patch("prompttestenv.logger.log_warning") as mock_warn:
+            state = ProgressState.load(self.project_dir)
+        self.assertTrue(state.hash_match)
+        mock_warn.assert_called_once()
+        self.assertIn("0.0.1", mock_warn.call_args.args[0])
+
+    def test_same_or_unrecorded_client_version_is_silent(self):
+        for extra in ({"client_version": client_version()}, {}):
+            with self.subTest(extra=extra):
+                self._write_meta(**extra)
+                with patch("prompttestenv.logger.log_warning") as mock_warn:
+                    ProgressState.load(self.project_dir)
+                mock_warn.assert_not_called()
 
     def test_a_line_of_the_wrong_shape_is_skipped_not_fatal(self):
         """One odd line must not cost the whole log.

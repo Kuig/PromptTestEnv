@@ -133,7 +133,7 @@ class TestRunEvaluationPhaseTimeout(unittest.TestCase):
         with patch("prompttestenv.evaluator.evaluate_with_judge", side_effect=slow_eval), \
              patch("prompttestenv.evaluator.preload_model_for_run"), \
              patch("prompttestenv.evaluator.append_event"), \
-             patch("prompttestenv.api.unload_model") as mock_unload:
+             patch("prompttestenv.api.unload_model", autospec=True) as mock_unload:
             run_evaluation_phase([task], jc, "/fake/project", ProgressState())
         return cand_perf, mock_unload
 

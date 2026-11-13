@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 
 from prompttestenv.api import (
     LOCAL_KEEP_ALIVE,
+    PROVIDER_TIMEOUT_BUFFER_SECONDS,
     call_with_timeout,
     configure_ai_logging,
     cosine_similarity,
@@ -56,7 +57,7 @@ class TestGetLlmResponse(unittest.TestCase):
         resp.reasoning_is_summary = is_summary
         return resp
 
-    @patch("prompttestenv.api.call_ai")
+    @patch("prompttestenv.api.call_ai", autospec=True)
     def test_returns_populated_result_from_response(self, mock_call_ai):
         mock_call_ai.return_value = self._fake_response(
             text="hello", out_tok=5, r_tok=2, reasoning="thinking...", is_summary=True
@@ -68,7 +69,7 @@ class TestGetLlmResponse(unittest.TestCase):
         self.assertEqual(result.reasoning_text, "thinking...")
         self.assertTrue(result.reasoning_is_summary)
 
-    @patch("prompttestenv.api.call_ai")
+    @patch("prompttestenv.api.call_ai", autospec=True)
     def test_none_reasoning_text_becomes_empty_string(self, mock_call_ai):
         mock_call_ai.return_value = self._fake_response(reasoning=None)
         self.assertEqual(get_llm_response("google", "gemini", None, "prompt").reasoning_text, "")
@@ -81,7 +82,7 @@ class TestGetLlmResponse(unittest.TestCase):
             with self.subTest(name):
                 self.assertTrue(hasattr(AiResponse(text=""), name))
 
-    @patch("prompttestenv.api.call_ai")
+    @patch("prompttestenv.api.call_ai", autospec=True)
     def test_a_missing_attribute_is_not_papered_over(self, mock_call_ai):
         """reasoning_is_summary is read directly now. A defensive getattr would
         turn a rename into "raw" on every trace, which is the one reading the
@@ -92,55 +93,55 @@ class TestGetLlmResponse(unittest.TestCase):
         with self.assertRaises(AttributeError):
             get_llm_response("google", "gemini", None, "prompt")
 
-    @patch("prompttestenv.api.call_ai")
+    @patch("prompttestenv.api.call_ai", autospec=True)
     def test_thinking_string_true_normalized_to_bool(self, mock_call_ai):
         mock_call_ai.return_value = self._fake_response()
         get_llm_response("google", "gemini", None, "prompt", thinking="true")
         self.assertIs(mock_call_ai.call_args.kwargs["thinking"], True)
 
-    @patch("prompttestenv.api.call_ai")
+    @patch("prompttestenv.api.call_ai", autospec=True)
     def test_thinking_string_false_normalized_to_bool(self, mock_call_ai):
         mock_call_ai.return_value = self._fake_response()
         get_llm_response("google", "gemini", None, "prompt", thinking="false")
         self.assertIs(mock_call_ai.call_args.kwargs["thinking"], False)
 
-    @patch("prompttestenv.api.call_ai")
+    @patch("prompttestenv.api.call_ai", autospec=True)
     def test_thinking_default_string_stays_default(self, mock_call_ai):
         mock_call_ai.return_value = self._fake_response()
         get_llm_response("google", "gemini", None, "prompt", thinking="default")
         self.assertEqual(mock_call_ai.call_args.kwargs["thinking"], "default")
 
-    @patch("prompttestenv.api.call_ai")
+    @patch("prompttestenv.api.call_ai", autospec=True)
     def test_disable_safety_sets_extra_option(self, mock_call_ai):
         mock_call_ai.return_value = self._fake_response()
         get_llm_response("google", "gemini", None, "prompt", disable_safety=True)
         self.assertEqual(mock_call_ai.call_args.kwargs["extra_options"], {"disable_safety": True})
 
-    @patch("prompttestenv.api.call_ai")
+    @patch("prompttestenv.api.call_ai", autospec=True)
     def test_disable_safety_false_leaves_extra_options_empty(self, mock_call_ai):
         mock_call_ai.return_value = self._fake_response()
         get_llm_response("google", "gemini", None, "prompt", disable_safety=False)
         self.assertEqual(mock_call_ai.call_args.kwargs["extra_options"], {})
 
-    @patch("prompttestenv.api.call_ai")
+    @patch("prompttestenv.api.call_ai", autospec=True)
     def test_provider_is_lowercased(self, mock_call_ai):
         mock_call_ai.return_value = self._fake_response()
         get_llm_response("GOOGLE", "gemini", None, "prompt")
         self.assertEqual(mock_call_ai.call_args.kwargs["provider"], "google")
 
-    @patch("prompttestenv.api.call_ai")
+    @patch("prompttestenv.api.call_ai", autospec=True)
     def test_json_mime_type_enables_format_json(self, mock_call_ai):
         mock_call_ai.return_value = self._fake_response()
         get_llm_response("google", "gemini", None, "prompt", response_mime_type="application/json")
         self.assertTrue(mock_call_ai.call_args.kwargs["format_json"])
 
-    @patch("prompttestenv.api.call_ai")
+    @patch("prompttestenv.api.call_ai", autospec=True)
     def test_no_timeout_kwarg_when_max_response_timeout_seconds_omitted(self, mock_call_ai):
         mock_call_ai.return_value = self._fake_response()
         get_llm_response("google", "gemini", None, "prompt")
         self.assertNotIn("timeout", mock_call_ai.call_args.kwargs)
 
-    @patch("prompttestenv.api.call_ai")
+    @patch("prompttestenv.api.call_ai", autospec=True)
     def test_the_provider_deadline_matches_the_one_we_enforce(self, mock_call_ai):
         """The buffer is 0: the abandoned call's socket must close when we stop
         waiting for it, not seconds later while the next call is being timed."""
@@ -150,7 +151,7 @@ class TestGetLlmResponse(unittest.TestCase):
         # to be made deliberately here too: 240 + 0.
         self.assertEqual(mock_call_ai.call_args.kwargs["timeout"], 240)
 
-    @patch("prompttestenv.api.call_ai")
+    @patch("prompttestenv.api.call_ai", autospec=True)
     def test_a_local_provider_is_pinned_resident(self, mock_call_ai):
         mock_call_ai.return_value = self._fake_response()
         get_llm_response("ollama", "gemma4", None, "prompt", max_response_timeout_seconds=240)
@@ -158,7 +159,7 @@ class TestGetLlmResponse(unittest.TestCase):
             mock_call_ai.call_args.kwargs["extra_options"]["keep_alive"], LOCAL_KEEP_ALIVE
         )
 
-    @patch("prompttestenv.api.call_ai")
+    @patch("prompttestenv.api.call_ai", autospec=True)
     def test_the_pin_does_not_depend_on_a_timeout_being_given(self, mock_call_ai):
         """Residency is a decision of the run, not a function of the deadline."""
         mock_call_ai.return_value = self._fake_response()
@@ -167,19 +168,19 @@ class TestGetLlmResponse(unittest.TestCase):
             mock_call_ai.call_args.kwargs["extra_options"]["keep_alive"], LOCAL_KEEP_ALIVE
         )
 
-    @patch("prompttestenv.api.call_ai")
+    @patch("prompttestenv.api.call_ai", autospec=True)
     def test_non_ollama_provider_gets_no_keep_alive(self, mock_call_ai):
         mock_call_ai.return_value = self._fake_response()
         get_llm_response("google", "gemini", None, "prompt", max_response_timeout_seconds=240)
         self.assertNotIn("keep_alive", mock_call_ai.call_args.kwargs["extra_options"])
 
-    @patch("prompttestenv.api.call_ai")
+    @patch("prompttestenv.api.call_ai", autospec=True)
     def test_max_retries_defaults_to_five_for_judge_and_verdict_calls(self, mock_call_ai):
         mock_call_ai.return_value = self._fake_response()
         get_llm_response("google", "gemini", None, "prompt")
         self.assertEqual(mock_call_ai.call_args.kwargs["max_retries"], 5)
 
-    @patch("prompttestenv.api.call_ai")
+    @patch("prompttestenv.api.call_ai", autospec=True)
     def test_max_retries_is_forwarded_when_given(self, mock_call_ai):
         mock_call_ai.return_value = self._fake_response()
         get_llm_response("google", "gemini", None, "prompt", max_retries=0)
@@ -192,7 +193,7 @@ class TestConfigureAiLogging(unittest.TestCase):
         cfg.logging.level = level
         return cfg
 
-    @patch("prompttestenv.api.set_verbosity")
+    @patch("prompttestenv.api.set_verbosity", autospec=True)
     @patch("prompttestenv.api.get_app_config")
     def test_applies_the_configured_level(self, mock_get_cfg, mock_set_verbosity):
         mock_get_cfg.return_value = self._cfg("debug")
@@ -200,7 +201,7 @@ class TestConfigureAiLogging(unittest.TestCase):
         mock_set_verbosity.assert_called_once_with("debug")
 
     @patch("prompttestenv.logger.log_warning")
-    @patch("prompttestenv.api.set_verbosity")
+    @patch("prompttestenv.api.set_verbosity", autospec=True)
     @patch("prompttestenv.api.get_app_config")
     def test_unknown_level_falls_back_to_warning(self, mock_get_cfg, mock_set_verbosity, mock_warn):
         mock_get_cfg.return_value = self._cfg("chatty")
@@ -213,12 +214,27 @@ class TestConfigureAiLogging(unittest.TestCase):
 
 
 class TestGetTextEmbedding(unittest.TestCase):
-    @patch("prompttestenv.api.get_embedding")
+    @patch("prompttestenv.api.get_embedding", autospec=True)
     def test_delegates_with_lowercased_provider(self, mock_get_embedding):
         mock_get_embedding.return_value = [0.1, 0.2]
         result = get_text_embedding("OLLAMA", "bge-m3", "some text")
         self.assertEqual(result, [0.1, 0.2])
         self.assertEqual(mock_get_embedding.call_args.kwargs["provider"], "ollama")
+
+    @patch("prompttestenv.api.get_embedding", autospec=True)
+    def test_bounds_retries_and_timeout_like_get_llm_response(self, mock_get_embedding):
+        mock_get_embedding.return_value = [0.1]
+        get_text_embedding("ollama", "bge-m3", "t",
+                           max_response_timeout_seconds=30, max_retries=1)
+        kwargs = mock_get_embedding.call_args.kwargs
+        self.assertEqual(kwargs["max_retries"], 1)
+        self.assertEqual(kwargs["timeout"], 30 + PROVIDER_TIMEOUT_BUFFER_SECONDS)
+
+    @patch("prompttestenv.api.get_embedding", autospec=True)
+    def test_no_deadline_leaves_the_client_timeout(self, mock_get_embedding):
+        mock_get_embedding.return_value = [0.1]
+        get_text_embedding("ollama", "bge-m3", "t")
+        self.assertNotIn("timeout", mock_get_embedding.call_args.kwargs)
 
 
 class TestParseJsonObject(unittest.TestCase):
@@ -264,22 +280,22 @@ class TestPreloadModelForRun(ResidencyResetTestCase):
     residency slot, so without the reset these would leak into whatever runs
     next and make the suite order-dependent."""
 
-    @patch("prompttestenv.api.preload_model")
+    @patch("prompttestenv.api.preload_model", autospec=True)
     def test_preloads_for_ollama(self, mock_preload):
         preload_model_for_run("ollama", "gemma4")
         mock_preload.assert_called_once()
 
-    @patch("prompttestenv.api.unload_model")
-    @patch("prompttestenv.api.preload_model")
+    @patch("prompttestenv.api.unload_model", autospec=True)
+    @patch("prompttestenv.api.preload_model", autospec=True)
     def test_a_preload_records_residency(self, _mock_preload, mock_unload):
         """Without the record the judge's model stayed pinned until teardown."""
         preload_model_for_run("ollama", "judge-model")
         release_previous_candidate("ollama", "something-else")
         mock_unload.assert_called_once_with("ollama", "judge-model")
 
-    @patch("prompttestenv.api.unload_model")
-    @patch("prompttestenv.api.preload_model")
-    @patch("prompttestenv.api.warm_up")
+    @patch("prompttestenv.api.unload_model", autospec=True)
+    @patch("prompttestenv.api.preload_model", autospec=True)
+    @patch("prompttestenv.api.warm_up", autospec=True)
     def test_a_preload_releases_whatever_was_pinned_before(
         self, _mock_warm, _mock_preload, mock_unload
     ):
@@ -289,9 +305,9 @@ class TestPreloadModelForRun(ResidencyResetTestCase):
         preload_model_for_run("ollama", "judge-model")
         mock_unload.assert_called_once_with("ollama", "candidate-model")
 
-    @patch("prompttestenv.api.unload_model")
-    @patch("prompttestenv.api.preload_model")
-    @patch("prompttestenv.api.warm_up")
+    @patch("prompttestenv.api.unload_model", autospec=True)
+    @patch("prompttestenv.api.preload_model", autospec=True)
+    @patch("prompttestenv.api.warm_up", autospec=True)
     def test_a_preload_of_the_same_model_releases_nothing(
         self, _mock_warm, _mock_preload, mock_unload
     ):
@@ -299,8 +315,8 @@ class TestPreloadModelForRun(ResidencyResetTestCase):
         preload_model_for_run("ollama", "same-model")
         mock_unload.assert_not_called()
 
-    @patch("prompttestenv.api.unload_model")
-    @patch("prompttestenv.api.preload_model")
+    @patch("prompttestenv.api.unload_model", autospec=True)
+    @patch("prompttestenv.api.preload_model", autospec=True)
     def test_a_non_ollama_preload_touches_neither_slot_nor_provider(
         self, mock_preload, mock_unload
     ):
@@ -308,19 +324,19 @@ class TestPreloadModelForRun(ResidencyResetTestCase):
         mock_preload.assert_not_called()
         mock_unload.assert_not_called()
 
-    @patch("prompttestenv.api.preload_model")
+    @patch("prompttestenv.api.preload_model", autospec=True)
     def test_skips_for_non_ollama_providers(self, mock_preload):
         preload_model_for_run("google", "gemini-2.5-flash")
         mock_preload.assert_not_called()
 
-    @patch("prompttestenv.api.preload_model")
+    @patch("prompttestenv.api.preload_model", autospec=True)
     def test_preloads_pinned_resident(self, mock_preload):
         preload_model_for_run("ollama", "gemma4")
         self.assertEqual(mock_preload.call_args.kwargs["keep_alive"], LOCAL_KEEP_ALIVE)
 
 
 class TestWarmUpForRun(ResidencyResetTestCase):
-    @patch("prompttestenv.api.warm_up")
+    @patch("prompttestenv.api.warm_up", autospec=True)
     def test_forwards_media_paths_as_file_paths(self, mock_warm_up):
         mock_warm_up.return_value = True
         result = warm_up_for_run("google", "gemini-3-flash", ["/abs/paper.pdf"])
@@ -336,22 +352,22 @@ class TestWarmUpForRun(ResidencyResetTestCase):
             },
         )
 
-    @patch("prompttestenv.api.warm_up")
+    @patch("prompttestenv.api.warm_up", autospec=True)
     def test_media_paths_default_to_none(self, mock_warm_up):
         warm_up_for_run("ollama", "gemma4")
         self.assertIsNone(mock_warm_up.call_args.kwargs["file_paths"])
 
-    @patch("prompttestenv.api.warm_up")
+    @patch("prompttestenv.api.warm_up", autospec=True)
     def test_propagates_a_negative_result(self, mock_warm_up):
         mock_warm_up.return_value = False
         self.assertFalse(warm_up_for_run("script", "s.py"))
 
-    @patch("prompttestenv.api.warm_up")
+    @patch("prompttestenv.api.warm_up", autospec=True)
     def test_a_local_model_is_warmed_up_pinned(self, mock_warm_up):
         warm_up_for_run("ollama", "gemma4")
         self.assertEqual(mock_warm_up.call_args.kwargs["keep_alive"], LOCAL_KEEP_ALIVE)
 
-    @patch("prompttestenv.api.warm_up")
+    @patch("prompttestenv.api.warm_up", autospec=True)
     def test_the_load_gets_the_buffered_timeout(self, mock_warm_up):
         """A slow local model must not be cut off by the client's own default."""
         warm_up_for_run("ollama", "gemma4", max_response_timeout_seconds=240)
@@ -362,44 +378,44 @@ class TestWarmUpForRun(ResidencyResetTestCase):
 class TestCandidateBoundary(ResidencyResetTestCase):
     """Local models are pinned, so something has to release the previous one."""
 
-    @patch("prompttestenv.api.unload_model")
-    @patch("prompttestenv.api.warm_up")
+    @patch("prompttestenv.api.unload_model", autospec=True)
+    @patch("prompttestenv.api.warm_up", autospec=True)
     def test_the_first_candidate_releases_nothing(self, _mock_warm_up, mock_unload):
         release_previous_candidate("ollama", "gemma4")
         mock_unload.assert_not_called()
 
-    @patch("prompttestenv.api.unload_model")
-    @patch("prompttestenv.api.warm_up")
+    @patch("prompttestenv.api.unload_model", autospec=True)
+    @patch("prompttestenv.api.warm_up", autospec=True)
     def test_a_different_model_releases_the_previous_one(self, _mock_warm_up, mock_unload):
         warm_up_for_run("ollama", "gemma4")
         release_previous_candidate("ollama", "qwen4")
         mock_unload.assert_called_once_with("ollama", "gemma4")
 
-    @patch("prompttestenv.api.unload_model")
-    @patch("prompttestenv.api.warm_up")
+    @patch("prompttestenv.api.unload_model", autospec=True)
+    @patch("prompttestenv.api.warm_up", autospec=True)
     def test_the_same_model_is_not_reloaded(self, _mock_warm_up, mock_unload):
         """Candidates differing only by system prompt must not pay a reload."""
         warm_up_for_run("ollama", "gemma4")
         release_previous_candidate("ollama", "gemma4")
         mock_unload.assert_not_called()
 
-    @patch("prompttestenv.api.unload_model")
-    @patch("prompttestenv.api.warm_up")
+    @patch("prompttestenv.api.unload_model", autospec=True)
+    @patch("prompttestenv.api.warm_up", autospec=True)
     def test_a_cloud_candidate_still_releases_a_local_one(self, _mock_warm_up, mock_unload):
         warm_up_for_run("ollama", "gemma4")
         release_previous_candidate("google", "gemini")
         mock_unload.assert_called_once_with("ollama", "gemma4")
 
-    @patch("prompttestenv.api.unload_model")
-    @patch("prompttestenv.api.warm_up")
+    @patch("prompttestenv.api.unload_model", autospec=True)
+    @patch("prompttestenv.api.warm_up", autospec=True)
     def test_a_release_is_not_repeated(self, _mock_warm_up, mock_unload):
         warm_up_for_run("ollama", "gemma4")
         release_previous_candidate("ollama", "qwen4")
         release_previous_candidate("ollama", "qwen4")
         mock_unload.assert_called_once()
 
-    @patch("prompttestenv.api.unload_model")
-    @patch("prompttestenv.api.call_ai")
+    @patch("prompttestenv.api.unload_model", autospec=True)
+    @patch("prompttestenv.api.call_ai", autospec=True)
     def test_a_generated_call_marks_residency_without_a_warm_up(self, mock_call_ai, mock_unload):
         """Warm-up can be disabled, or skipped for a fully resumed candidate."""
         resp = MagicMock()
@@ -413,20 +429,41 @@ class TestCandidateBoundary(ResidencyResetTestCase):
 
 
 class TestTeardown(ResidencyResetTestCase):
-    @patch("prompttestenv.api.cleanup")
+    @patch("prompttestenv.api.cleanup", autospec=True)
     def test_calls_cleanup(self, mock_cleanup):
         teardown()
         mock_cleanup.assert_called_once()
 
-    @patch("prompttestenv.api.unload_model")
-    @patch("prompttestenv.api.warm_up")
-    @patch("prompttestenv.api.cleanup")
+    @patch("prompttestenv.api.unload_model", autospec=True)
+    @patch("prompttestenv.api.warm_up", autospec=True)
+    @patch("prompttestenv.api.cleanup", autospec=True)
     def test_forgets_the_resident_candidate(self, _mock_cleanup, _mock_warm_up, mock_unload):
         """cleanup() already released it; a second run must not release it again."""
         warm_up_for_run("ollama", "gemma4")
         teardown()
         release_previous_candidate("ollama", "qwen4")
         mock_unload.assert_not_called()
+
+    @patch("prompttestenv.api.configure_provider", autospec=True)
+    @patch("prompttestenv.api.preload_model", autospec=True)
+    @patch("prompttestenv.api.cleanup", autospec=True)
+    def test_takes_back_a_registered_context_size(self, _cleanup, _preload, mock_configure):
+        preload_model_for_run("ollama", "gemma4", context_size=32768)
+        teardown()
+        mock_configure.assert_called_once_with("ollama", context_size=None)
+
+        teardown()
+        mock_configure.assert_called_once()
+
+    @patch("prompttestenv.api.configure_provider", autospec=True)
+    @patch("prompttestenv.api.preload_model", autospec=True)
+    @patch("prompttestenv.api.cleanup", autospec=True)
+    def test_leaves_the_config_alone_when_nothing_was_registered(
+        self, _cleanup, _preload, mock_configure,
+    ):
+        preload_model_for_run("ollama", "gemma4")
+        teardown()
+        mock_configure.assert_not_called()
 
 
 class TestCallWithTimeout(ResidencyResetTestCase):
@@ -478,7 +515,7 @@ class TestCallWithTimeout(ResidencyResetTestCase):
         with self.assertRaises(ValueError):
             call_with_timeout(boom, timeout=5.0)
 
-    @patch("prompttestenv.api.unload_model")
+    @patch("prompttestenv.api.unload_model", autospec=True)
     def test_timeout_leaves_residency_alone(self, mock_unload):
         """A timeout must not evict the model the next call will reuse.
 
@@ -496,14 +533,14 @@ class TestCallWithTimeout(ResidencyResetTestCase):
         self.assertTrue(timed_out)
         mock_unload.assert_not_called()
 
-    @patch("prompttestenv.api.unload_model")
+    @patch("prompttestenv.api.unload_model", autospec=True)
     def test_the_timed_out_model_stays_in_the_residency_slot(self, mock_unload):
         """The slot must keep telling the truth: the model is still loaded.
 
         Were it cleared, the next candidate boundary would skip the release and
         leave the model resident for the rest of the run.
         """
-        with patch("prompttestenv.api.call_ai") as mock_call:
+        with patch("prompttestenv.api.call_ai", autospec=True) as mock_call:
             mock_call.return_value = MagicMock(
                 text="hi", output_tokens=1, reasoning_tokens=0,
                 reasoning_text="", reasoning_is_summary=False,

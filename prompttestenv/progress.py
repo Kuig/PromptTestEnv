@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.metadata
 import json
 import os
 from dataclasses import dataclass, field
@@ -27,6 +28,12 @@ HASHED_FILENAMES = (
 
 # What a file that does not exist contributes to the hash.
 MISSING_FILE_BYTES = b"missing"
+
+# The distribution whose version the meta line records. Not hashed: a client
+# upgrade can change what is measured (defaults it stops sending, options it
+# starts honouring) without any project file changing, so resuming across one
+# is allowed but announced.
+CLIENT_DISTRIBUTION = "unified-ai-client"
 
 # The placeholder payloads a run stores in place of a real model answer. They
 # are not error messages written for a human to read: they are the values
@@ -231,6 +238,29 @@ def read_stored_hash(project_dir: str) -> str | None:
     return meta.get("config_hash")
 
 
+def client_version() -> str | None:
+    """The installed UnifiedAiClient version, or None if it is not installed."""
+    try:
+        return importlib.metadata.version(CLIENT_DISTRIBUTION)
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
+def _warn_on_client_change(stored: str | None) -> None:
+    """Announce a log written under a different UnifiedAiClient version.
+
+    A log from before the version was recorded carries none, and says nothing
+    either way, so it is left alone.
+    """
+    current = client_version()
+    if stored is not None and stored != current:
+        logger.log_warning(
+            f"progress.jsonl was started with UnifiedAiClient {stored}, now "
+            f"{current}: results already logged may not be comparable with new "
+            f"ones. Use --force-restart to measure everything under {current}."
+        )
+
+
 def append_event(project_dir: str, event: dict) -> None:
     """Append a new JSON event to the progress.jsonl file."""
     progress_file = os.path.join(project_dir, "progress.jsonl")
@@ -366,6 +396,7 @@ class ProgressState:
                     meta = json.loads(lines[0])
                     if meta.get("type") == "meta":
                         last_hash = meta.get("config_hash")
+                        _warn_on_client_change(meta.get("client_version"))
                         if last_hash != current_hash:
                             hash_match = False
                             if not readonly:
@@ -426,7 +457,11 @@ class ProgressState:
 
         if not readonly and not os.path.exists(progress_file):
             with open(progress_file, "w", encoding="utf-8") as f:
-                f.write(json.dumps({"type": "meta", "config_hash": current_hash}) + "\n")
+                f.write(json.dumps({
+                    "type": "meta",
+                    "config_hash": current_hash,
+                    "client_version": client_version(),
+                }) + "\n")
 
         # A key with a "gen" but no "eval" is not stale, it is simply unjudged,
         # and the evaluation phase already picks it up: staleness is only about

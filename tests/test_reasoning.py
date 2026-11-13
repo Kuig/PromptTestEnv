@@ -449,6 +449,16 @@ class TestAnalyzeReasoning(unittest.TestCase):
         self.assertEqual(stats.coverage("framing"), -1.0)
         self.assertEqual(stats.alignment_score, -1)
 
+    def test_judge_exception_is_recorded_as_not_measured(self):
+        """A raising judge used to propagate out of analyze_reasoning and abort phase 3."""
+        with patch("prompttestenv.reasoning.get_llm_response",
+                   side_effect=RuntimeError("HTTP 400: format_json needs a schema")), \
+             patch("prompttestenv.logger.log_error") as mock_error:
+            stats = analyze_reasoning(self.TRACE, self.judge_config)
+        self.assertEqual(stats.coverage("framing"), -1.0)
+        self.assertEqual(stats.alignment_score, -1)
+        self.assertTrue(mock_error.called)
+
     def test_chunking_splits_long_traces_and_merges_the_results(self):
         self.judge_config.reasoning_judge.max_units_per_call = 1
         units = len(split_into_units(self.TRACE, SPLITTING))

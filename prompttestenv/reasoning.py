@@ -26,7 +26,6 @@ import prompttestenv.logger as logger
 from prompttestenv.api import (
     cosine_similarity,
     get_llm_response,
-    get_text_embedding,
     is_local_provider,
     parse_json_object,
 )
@@ -38,6 +37,7 @@ from prompttestenv.models import (
     ReasoningUnit,
     calculate_stats,
 )
+from prompttestenv.test_judge import embed_with_similarity_judge
 
 _FENCE_RE = re.compile(r"^\s*```")
 _HEADING_RE = re.compile(r"^\s*(?:#{1,6}\s|\*\*[^*].*\*\*\s*$)")
@@ -347,20 +347,27 @@ def _ask_judge(prompt: str, judge_config: JudgeConfig) -> dict | None:
 
     rj = judge_config.reasoning_judge
     schema = get_app_config().reasoning_schema
-    result, timed_out = call_with_timeout(
-        get_llm_response,
-        fn_kwargs=dict(
-            provider=rj.provider,
-            model_name=rj.model,
-            system_instruction=schema.system_prompt or None,
-            user_prompt=prompt,
-            temp=rj.temperature,
-            thinking=rj.thinking,
-            response_mime_type="application/json",
-            max_response_timeout_seconds=judge_config.max_response_timeout_seconds,
-        ),
-        timeout=judge_config.max_response_timeout_seconds,
-    )
+    try:
+        result, timed_out = call_with_timeout(
+            get_llm_response,
+            fn_kwargs=dict(
+                provider=rj.provider,
+                model_name=rj.model,
+                system_instruction=schema.system_prompt or None,
+                user_prompt=prompt,
+                temp=rj.temperature,
+                thinking=rj.thinking,
+                response_mime_type="application/json",
+                max_response_timeout_seconds=judge_config.max_response_timeout_seconds,
+            ),
+            timeout=judge_config.max_response_timeout_seconds,
+        )
+    except Exception as exc:
+        # Nothing above this catches it, so one refused call used to abort
+        # phase 3 on its first trace, and the deterministic refusals (a 400,
+        # an unsupported option, a policy refusal) are retried by no one.
+        logger.log_error(f"Reasoning judge call failed: {type(exc).__name__}: {exc}")
+        return None
     if timed_out:
         logger.log_warning(
             f"Reasoning judge timeout ({judge_config.max_response_timeout_seconds}s)."
@@ -606,10 +613,9 @@ def compute_trace_response_drift(
     """
     if not reasoning_text.strip() or not candidate_response.strip():
         return -1.0
-    sj = judge_config.similarity_judge
     try:
-        trace_vec = get_text_embedding(sj.provider, sj.model, reasoning_text)
-        response_vec = get_text_embedding(sj.provider, sj.model, candidate_response)
+        trace_vec = embed_with_similarity_judge(reasoning_text, judge_config)
+        response_vec = embed_with_similarity_judge(candidate_response, judge_config)
     except Exception as exc:
         logger.log_warning(f"Trace/response drift unavailable: {exc}")
         return -1.0

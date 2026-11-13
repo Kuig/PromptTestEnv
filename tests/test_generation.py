@@ -178,7 +178,7 @@ class TestRunGenerationPhaseTimeout(ResidencyResetTestCase):
             time.sleep(0.3)
             return ("too slow", 0, 0, "")
 
-        with patch("prompttestenv.generation.get_llm_response", side_effect=slow_response),              patch("prompttestenv.generation.warm_up_for_run"),              patch("prompttestenv.generation.append_event"),              patch("prompttestenv.api.unload_model") as mock_unload:
+        with patch("prompttestenv.generation.get_llm_response", side_effect=slow_response),              patch("prompttestenv.generation.warm_up_for_run"),              patch("prompttestenv.generation.append_event"),              patch("prompttestenv.api.unload_model", autospec=True) as mock_unload:
             progress = ProgressState()
             pending = run_generation_phase(
                 [_candidate(provider=provider)], results, jc, "/fake/project", progress

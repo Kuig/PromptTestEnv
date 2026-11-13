@@ -564,7 +564,7 @@
           "description": "Textual similarity between the trace and the response, in [0,1]. Computed procedurally with no LLM call. Low values mean the response says something the trace did not."
         },
         "reasoning_is_summary": {
-          "description": "True when the provider returned a summary the model wrote about its own reasoning rather than the raw chain of thought (Google does; the others do not). null for traces recorded before providers reported this — read null as 'unknown', never as 'raw'. Length and composition figures of a summarised trace must never be ranked against a raw one.",
+          "description": "True when the provider returned a summary the model wrote about its own reasoning rather than the raw chain of thought (Google does, and so does Anthropic from Claude 4 on; the others do not). null for traces recorded before providers reported this — read null as 'unknown', never as 'raw'. Length and composition figures of a summarised trace must never be ranked against a raw one.",
           "type": ["boolean", "null"]
         },
         "schema_stamp": {

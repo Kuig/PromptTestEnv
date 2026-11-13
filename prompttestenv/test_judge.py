@@ -154,6 +154,24 @@ def _evaluate_llm_judge(
         return -1, f"LLM evaluation failed: {exc}"
 
 
+def embed_with_similarity_judge(text: str, judge_config: JudgeConfig) -> list[float]:
+    """Embed text with the project's similarity_judge, under the judge budget.
+
+    The one embedding call every evaluator makes, so all of them retry and
+    time out alike: JUDGE_MAX_RETRIES for the same abandoned-worker reason as
+    the llm-judge call, and the project's response deadline per attempt.
+
+    Raises:
+        Whatever UnifiedAiClient raises; every caller degrades it to -1.
+    """
+    sj = judge_config.similarity_judge
+    return get_text_embedding(
+        sj.provider, sj.model, text,
+        max_response_timeout_seconds=judge_config.max_response_timeout_seconds,
+        max_retries=JUDGE_MAX_RETRIES,
+    )
+
+
 def _evaluate_similarity(
     criteria: str,
     candidate_response: str,
@@ -169,18 +187,16 @@ def _evaluate_similarity(
     Returns:
         A tuple of (score, reasoning) where score is 1-10 scaled from the cosine similarity.
     """
-    provider = judge_config.similarity_judge.provider
-    model = judge_config.similarity_judge.model
-
     if not candidate_response.strip():
         return 1, "Empty candidate response. Score set to minimum (1)."
     if not criteria.strip():
         return 1, "Empty reference criteria/target response. Score set to minimum (1)."
 
     try:
-        emb_cand = get_text_embedding(provider, model, candidate_response)
-        emb_ref = get_text_embedding(provider, model, criteria)
-        sim = cosine_similarity(emb_cand, emb_ref)
+        sim = cosine_similarity(
+            embed_with_similarity_judge(candidate_response, judge_config),
+            embed_with_similarity_judge(criteria, judge_config),
+        )
         
         # Scale cosine similarity from 0.0-1.0 to 1-10
         clamped_sim = max(0.0, min(1.0, sim))
@@ -236,11 +252,9 @@ def _evaluate_assert(
         project's ``similarity_judge`` provider/model. Performs a real
         embedding call; a backend failure raises and is caught below as a
         -1 "not measured" result."""
-        provider = judge_config.similarity_judge.provider
-        model = judge_config.similarity_judge.model
         return cosine_similarity(
-            get_text_embedding(provider, model, a),
-            get_text_embedding(provider, model, b),
+            embed_with_similarity_judge(a, judge_config),
+            embed_with_similarity_judge(b, judge_config),
         )
 
     namespace = {
