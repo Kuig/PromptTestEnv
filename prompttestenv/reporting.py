@@ -15,6 +15,7 @@ from prompttestenv.models import (
     parse_grouped_verdict,
     pool_by_candidate,
     project_name,
+    format_temperature,
     render_measured,
     JudgeConfig,
     TestCaseResult,
@@ -280,6 +281,7 @@ def generate_html_report(
         format_thinking_value=format_thinking_value,
         build_trace_segments=build_trace_segments,
         format_cost_per_point=format_cost_per_point,
+        format_temperature=format_temperature,
     )
     report_dir = os.path.join(project_dir, "Report")
     os.makedirs(report_dir, exist_ok=True)

@@ -111,7 +111,10 @@
                 "type": "string",
                 "description": "Provider-side model identifier."
               },
-              "temperature": { "type": "number" },
+              "temperature": {
+                "type": ["number", "null"],
+                "description": "Sampling temperature sent with every call, or null when the project set none and the model ran at its own default."
+              },
               "disable_safety": {
                 "type": "boolean",
                 "description": "Whether provider safety filters were switched off for this candidate."
@@ -223,7 +226,10 @@
               "properties": {
                 "provider": { "type": "string" },
                 "model": { "type": "string" },
-                "temperature": { "type": "number" },
+                "temperature": {
+                  "type": ["number", "null"],
+                  "description": "Sampling temperature sent with every call, or null when the project set none and the model ran at its own default."
+                },
                 "thinking": { "type": ["boolean", "string"] },
                 "dimension_mode": {
                   "type": ["string", "null"],
@@ -361,7 +367,10 @@
       "properties": {
         "provider": { "type": "string" },
         "model": { "type": "string" },
-        "temperature": { "type": "number" },
+        "temperature": {
+          "type": ["number", "null"],
+          "description": "Sampling temperature sent with every call, or null when the project set none and the model ran at its own default."
+        },
         "disable_safety": { "type": "boolean" },
         "thinking": { "type": ["boolean", "string"] }
       }

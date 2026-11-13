@@ -187,7 +187,7 @@ def get_llm_response(
     system_instruction: str | None,
     user_prompt: str,
     local_media_paths: list[str] | None = None,
-    temp: float = 0.7,
+    temp: float | None = None,
     response_mime_type: str | None = None,
     thinking: bool | str = "default",
     disable_safety: bool = False,
@@ -210,7 +210,8 @@ def get_llm_response(
             UnifiedAiClient, which classifies and encodes each one according to
             the provider (base64, upload, or text inline). Text attachments are
             inlined AHEAD of user_prompt, in this order.
-        temp: Sampling temperature.
+        temp: Sampling temperature. None sends none, leaving the model's own
+            default in place.
         response_mime_type: If 'application/json', enables JSON output mode.
         thinking: Whether to enable thinking/reasoning mode.
         disable_safety: Whether to disable safety settings (Google Gemini only).

@@ -272,7 +272,7 @@ class TestDefaultsClassificationGuard(unittest.TestCase):
                     self.assertIs(by_name[name].default, dataclasses.MISSING)
 
     def test_dataclass_defaults_win_where_they_exist(self):
-        self.assertEqual(pio.effective_default(Candidate, "temperature"), 0.7)
+        self.assertIsNone(pio.effective_default(Candidate, "temperature"))
         self.assertEqual(pio.effective_default(TestCase, "judge_type"), "llm-judge")
         self.assertEqual(pio.effective_default(Candidate, "provider"), "google")
 

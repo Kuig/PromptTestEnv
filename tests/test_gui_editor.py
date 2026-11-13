@@ -16,6 +16,7 @@ from pathlib import Path
 from streamlit.testing.v1 import AppTest
 
 import prompttestenv
+from prompttestenv.models import Candidate
 from prompttestenv.progress import HASHED_FILENAMES, append_event, calculate_config_hash
 
 from testutils import LoggerResetTestCase, make_temp_project
@@ -375,6 +376,68 @@ class TestRowDuplication(EditorTestCase):
         self.assertEqual([c["name"] for c in written],
                          ["Alpha", "Alpha (copy)", "Beta", "Gamma"])
         self.assertEqual(written[1]["model"], "m1")
+
+
+class TestOptionalTemperature(EditorTestCase):
+    """Temperature is a checkbox+input pair: unset means none is sent."""
+
+    def setUp(self):
+        super().setUp()
+        (Path(self.project_dir) / "candidates.json").write_text(
+            json.dumps([
+                {"name": "Unset", "provider": "google", "model": "m1"},
+                {"name": "Set", "provider": "google", "model": "m2", "temperature": 0.3},
+            ], indent=4),
+            encoding="utf-8",
+        )
+
+    @staticmethod
+    def _toggles(at: AppTest) -> list:
+        return [w for w in at.checkbox if w.proto.id and ":cand:" in w.proto.id
+                and w.proto.id.endswith(":temperature:on")]
+
+    def _saved(self) -> list[dict]:
+        return json.loads((Path(self.project_dir) / "candidates.json").read_text("utf-8"))
+
+    def test_toggles_reflect_whether_the_file_sets_one(self):
+        at = self._app()
+        self.assertEqual([w.value for w in self._toggles(at)], [False, True])
+
+    def test_setting_one_writes_the_seed_value_and_touches_nothing_else(self):
+        at = self._app()
+        self._toggles(at)[0].check()
+        at.run()
+        self._click(at, "💾 Save")
+        at.run()
+
+        saved = self._saved()
+        self.assertEqual(saved[0]["temperature"], 1.0)
+        self.assertEqual(saved[1], {"name": "Set", "provider": "google",
+                                    "model": "m2", "temperature": 0.3})
+
+    def test_unsetting_one_writes_null_and_loads_as_none(self):
+        at = self._app()
+        self._toggles(at)[1].uncheck()
+        at.run()
+        self._click(at, "💾 Save")
+        at.run()
+
+        saved = self._saved()
+        self.assertNotIn("temperature", saved[0])
+        self.assertIsNone(saved[1]["temperature"])
+        self.assertIsNone(Candidate.load_all(self.project_dir)[1].temperature)
+
+    def test_judge_temperature_is_nullable_too(self):
+        at = self._app()
+        toggle = at.checkbox(key=self._key(at, "tj:temperature:on"))
+        self.assertTrue(toggle.value)
+        toggle.uncheck()
+        at.run()
+        self._click(at, "💾 Save")
+        at.run()
+
+        judge = json.loads((Path(self.project_dir) / "judge_config.json").read_text("utf-8"))
+        self.assertIsNone(judge["test_judge"]["temperature"])
 
 
 class TestSaveConfirmation(EditorTestCase):

@@ -170,7 +170,7 @@ def _row_action_bar(rows: list, index: int, key_prefix: str, label_field: str) -
 
 
 # Field name -> how to read the widget value back. `None` means "as is".
-_CANDIDATE_FIELDS = ("name", "provider", "model", "temperature",
+_CANDIDATE_FIELDS = ("name", "provider", "model",
                      "disable_safety", "thinking", "system_prompt_file")
 _TEST_FIELDS = ("id", "group", "judge_type", "prompt", "criteria", "file")
 
@@ -191,31 +191,41 @@ _JUDGE_TOP_KEYS = {
 _JUDGE_BLOCK_KEYS = {
     "test_judge": {
         "tj:provider": "provider", "tj:model": "model",
-        "tj:temperature": "temperature", "tj:thinking": "thinking",
+        "tj:thinking": "thinking",
         "tj:safety": "disable_safety",
         "tj:sys": "evaluation_system_prompt", "tj:template": "evaluation_template",
     },
     "similarity_judge": {"sj:provider": "provider", "sj:model": "model"},
     "verdict_judge": {
         "vj:provider": "provider", "vj:model": "model",
-        "vj:temperature": "temperature", "vj:thinking": "thinking",
+        "vj:thinking": "thinking",
         "vj:safety": "disable_safety",
         "vj:sys": "verdict_system_prompt", "vj:template": "verdict_template",
         "vj:global": "global_verdict_template",
     },
     "reasoning_judge": {
         "rj:provider": "provider", "rj:model": "model",
-        "rj:temperature": "temperature", "rj:thinking": "thinking",
+        "rj:thinking": "thinking",
     },
 }
 
-# Nullable reasoning_judge settings: None genuinely means "fall back to
-# config.json", which no number input can express — hence the checkbox pair.
-_JUDGE_NULLABLES = (
-    ("rj:ctx", "context_size"),
-    ("rj:k", "reliability_k"),
-    ("rj:units", "max_units_per_call"),
-)
+# Fields where None is a real, distinct setting that no number input can
+# express, hence a checkbox+input pair (see _nullable_number): (widget key
+# before _skey or _wkey, field name, cast). An unset temperature sends none, so
+# the model's own default applies; the reasoning_judge knobs fall back to
+# config.json.
+_TEMPERATURE = ("temperature", float)
+_CANDIDATE_NULLABLES = (_TEMPERATURE,)
+_JUDGE_NULLABLES = {
+    "test_judge": (("tj:temperature", *_TEMPERATURE),),
+    "verdict_judge": (("vj:temperature", *_TEMPERATURE),),
+    "reasoning_judge": (
+        ("rj:temperature", *_TEMPERATURE),
+        ("rj:ctx", "context_size", int),
+        ("rj:k", "reliability_k", int),
+        ("rj:units", "max_units_per_call", int),
+    ),
+}
 
 _GLOBAL_KEYS = {
     "gc:mode": "mode",
@@ -228,43 +238,47 @@ _GLOBAL_KEYS = {
 }
 
 
-def _harvest_row(kind: str, row: dict, names: tuple[str, ...], cls: type) -> None:
-    values = {}
-    for name in names:
-        key = _wkey(kind, row["uid"], name)
-        if key in st.session_state:
-            values[name] = st.session_state[key]
+def _widget_values(key_map: dict[str, str], nullables=()) -> dict:
+    """Last run's widget values, keyed by field name.
+
+    Args:
+        key_map: Full widget key -> field name, for plain widgets.
+        nullables: (full widget key, field name, cast) for checkbox+input pairs.
+            Unchecked reads as None, which merge_preserving_shape writes only
+            when the key was already in the file: adding an explicit null where
+            the author simply omitted the key would be a change they did not make.
+
+    Returns:
+        Field name -> value, for the widgets that have state. A widget that was
+        not rendered leaves its field out, so the model keeps its own value.
+    """
+    state = st.session_state
+    values = {field: state[key] for key, field in key_map.items() if key in state}
+    for key, field, cast in nullables:
+        if f"{key}:on" not in state:
+            continue
+        if not state[f"{key}:on"]:
+            values[field] = None
+        elif key in state:
+            values[field] = cast(state[key])
+    return values
+
+
+def _harvest_row(kind: str, row: dict, names: tuple[str, ...], cls: type,
+                 nullables=()) -> None:
+    def key(name: str) -> str:
+        return _wkey(kind, row["uid"], name)
+    values = _widget_values({key(name): name for name in names},
+                            [(key(name), name, cast) for name, cast in nullables])
     if values:
         row["data"] = pio.merge_preserving_shape(row["data"], values, cls)
 
 
-def _harvest_mapping(target: dict, key_map: dict[str, str], cls: type) -> dict:
-    values = {
-        field: st.session_state[_skey(key)]
-        for key, field in key_map.items()
-        if _skey(key) in st.session_state
-    }
+def _harvest_mapping(target: dict, key_map: dict[str, str], cls: type,
+                     nullables=()) -> dict:
+    values = _widget_values({_skey(key): field for key, field in key_map.items()},
+                            [(_skey(key), field, cast) for key, field, cast in nullables])
     return pio.merge_preserving_shape(target, values, cls) if values else target
-
-
-def _harvest_nullables(block: dict) -> dict:
-    """Read the checkbox+input pairs of reasoning_judge's nullable settings.
-
-    Unchecking means None ("fall back to config.json"), which is only written
-    when the key was already in the file — adding an explicit null where the
-    author simply omitted the key would be a change they did not make.
-    """
-    out = dict(block)
-    for name, field_name in _JUDGE_NULLABLES:
-        key = _skey(name)
-        if f"{key}:on" not in st.session_state:
-            continue
-        if not st.session_state[f"{key}:on"]:
-            if field_name in out:
-                out[field_name] = None
-        elif key in st.session_state:
-            out[field_name] = int(st.session_state[key])
-    return out
 
 
 def _harvest() -> None:
@@ -280,7 +294,7 @@ def _harvest() -> None:
     draft = ed["draft"]
 
     for row in ed["candidates"]:
-        _harvest_row("cand", row, _CANDIDATE_FIELDS, Candidate)
+        _harvest_row("cand", row, _CANDIDATE_FIELDS, Candidate, _CANDIDATE_NULLABLES)
     for row in ed["tests"]:
         _harvest_row("test", row, _TEST_FIELDS, TestCase)
 
@@ -289,9 +303,8 @@ def _harvest() -> None:
         existing = draft.judge.get(block_name)
         if not isinstance(existing, dict) and existing is not None:
             continue
-        merged = _harvest_mapping(existing or {}, key_map, pio.JUDGE_BLOCKS[block_name])
-        if block_name == "reasoning_judge":
-            merged = _harvest_nullables(merged)
+        merged = _harvest_mapping(existing or {}, key_map, pio.JUDGE_BLOCKS[block_name],
+                                  _JUDGE_NULLABLES.get(block_name, ()))
         # A block the file never had is only created once it holds something
         # other than defaults. Otherwise merely opening the tab would add an
         # empty block — and for a hashed file that is a real change.
@@ -333,22 +346,43 @@ def _thinking_widget(label_prefix: str, current, key: str) -> None:
         st.text_input(f"{label_prefix}Thinking (non-standard)", value=str(current), key=key)
 
 
-def _nullable_number(label: str, current, key: str, *, minimum: int, step: int,
-                     fallback, help_text: str) -> None:
-    """A checkbox+input pair for a field where None means "use config.json".
+def _nullable_number(label: str, current, key: str, *, minimum, step, unset: str,
+                     help_text: str | None = None, maximum=None, seed=None) -> None:
+    """A checkbox+input pair for a field where None is a real setting.
 
-    st.number_input cannot express None, and None here is a real, distinct
-    setting rather than a missing one. Renders only — _harvest reads it back.
+    st.number_input cannot express None, and None here is a distinct setting
+    rather than a missing one. Renders only — _harvest reads it back.
+
+    Args:
+        label: Field label, lower case.
+        current: The model's value, None when unset.
+        key: Full widget key; the checkbox gets ``key + ":on"``.
+        minimum: Lower bound. Its type (int or float) is the input's type.
+        step: Input step.
+        unset: Caption shown while the box is unchecked.
+        help_text: Checkbox tooltip.
+        maximum: Optional upper bound.
+        seed: Value the input starts from when the box is first checked;
+            defaults to `minimum`.
     """
     enabled = st.checkbox(
         f"Set {label}", value=current is not None, key=f"{key}:on", help=help_text,
     )
     if not enabled:
-        st.caption(f"Using the config.json default: {fallback}")
+        st.caption(unset)
         return
-    st.number_input(
-        label, min_value=minimum, step=step,
-        value=int(current) if current is not None else int(minimum), key=key,
+    start = current if current is not None else (minimum if seed is None else seed)
+    st.number_input(label, min_value=minimum, max_value=maximum, step=step,
+                    value=type(minimum)(start), key=key)
+
+
+def _temperature_widget(current, key: str) -> None:
+    """Temperature as a nullable pair: unset sends none at all."""
+    _nullable_number(
+        "temperature", current, key, minimum=0.0, maximum=2.0, step=0.05, seed=1.0,
+        unset="Not sent: the model's own default applies.",
+        help_text="Unset sends no temperature at all, so the model runs at the "
+                  "sampling its provider ships it with.",
     )
 
 
@@ -582,11 +616,8 @@ with tab_cand:
 
             left, mid, right = st.columns(3)
             with left:
-                st.number_input(
-                    "Temperature", min_value=0.0, max_value=2.0, step=0.05,
-                    value=float(data.get("temperature", 0.7)),
-                    key=_wkey("cand", row["uid"], "temperature"),
-                )
+                _temperature_widget(data.get("temperature"),
+                                    _wkey("cand", row["uid"], "temperature"))
             with mid:
                 _thinking_widget("", data.get("thinking", "default"),
                                   _wkey("cand", row["uid"], "thinking"))
@@ -752,9 +783,7 @@ def _judge_common(block: dict, prefix: str, cls: type, *, safety: bool) -> None:
         st.text_input("Model", value=_field(block, "model", cls), key=_skey(f"{prefix}:model"))
     left, mid, right = st.columns(3)
     with left:
-        st.number_input("Temperature", min_value=0.0, max_value=2.0, step=0.05,
-                        value=float(_field(block, "temperature", cls)),
-                        key=_skey(f"{prefix}:temperature"))
+        _temperature_widget(_field(block, "temperature", cls), _skey(f"{prefix}:temperature"))
     with mid:
         _thinking_widget("", _field(block, "thinking", cls), _skey(f"{prefix}:thinking"))
     if safety:
@@ -875,18 +904,20 @@ with tab_judge:
 
             _nullable_number(
                 "context size", block.get("context_size"), _skey("rj:ctx"),
-                minimum=256, step=1024, fallback="the server's own",
+                minimum=256, step=1024, unset="Using the server's own default.",
                 help_text="Ollama only. Unset (or 0) means the server default.",
             )
         with right:
             _nullable_number(
                 "reliability k", block.get("reliability_k"), _skey("rj:k"),
-                minimum=1, step=1, fallback=defaults.reliability_k,
+                minimum=1, step=1,
+                unset=f"Using the config.json default: {defaults.reliability_k}",
                 help_text="How many times each scoring call is repeated.",
             )
             _nullable_number(
                 "max units per call", block.get("max_units_per_call"), _skey("rj:units"),
-                minimum=1, step=10, fallback=defaults.max_units_per_call,
+                minimum=1, step=10,
+                unset=f"Using the config.json default: {defaults.max_units_per_call}",
                 help_text="Trace units sent to the judge in one request.",
             )
 

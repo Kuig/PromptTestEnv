@@ -16,6 +16,7 @@ from prompttestenv.models import (
     REASONING_DIMENSIONS,
     REASONING_SCOPE_ALL,
     REASONING_SCOPE_BEST,
+    format_temperature,
     pool_by_candidate,
     render_measured,
 )
@@ -53,7 +54,7 @@ def save_verdict_debug_file(
     prompt: str,
     provider: str,
     model: str,
-    temp: float,
+    temp: float | None,
     filename: str = DEFAULT_DEBUG_FILENAME,
 ) -> None:
     """Save verdict judge payload and configuration to a debug file.
@@ -64,7 +65,7 @@ def save_verdict_debug_file(
         prompt: Full user prompt sent to the verdict judge.
         provider: LLM provider name.
         model: Model identifier.
-        temp: Sampling temperature.
+        temp: Sampling temperature, or None for the model's own default.
         filename: Debug file name, relative to project_dir. Defaults to the
             single shared name; generate_verdict() picks a distinct one per
             group (plus one for the global synthesis call) so that
@@ -74,7 +75,7 @@ def save_verdict_debug_file(
     debug_path = os.path.join(project_dir, filename)
     debug_content = (
         "=" * 72 + "\nVERDICT JUDGE DEBUG INFO\n" + "=" * 72 + "\n\n"
-        f"PROVIDER: {provider}\nMODEL:    {model}\nTEMP:     {temp}\n\n"
+        f"PROVIDER: {provider}\nMODEL:    {model}\nTEMP:     {format_temperature(temp)}\n\n"
         + "-" * 72 + "\nSYSTEM INSTRUCTION:\n" + "-" * 72 + f"\n\n{sys_prompt}\n\n"
         + "-" * 72 + "\nUSER PROMPT (PAYLOAD):\n" + "-" * 72 + f"\n\n{prompt}\n"
     )

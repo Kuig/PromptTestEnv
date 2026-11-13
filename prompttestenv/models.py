@@ -169,6 +169,16 @@ def render_measured(value: float | None, text: str) -> str:
     return NOT_MEASURED if value is None or value < 0 else text
 
 
+# How an unset temperature reads in logs and reports. Unset is not "unknown":
+# it means no temperature was sent, so the model ran at its own default.
+TEMPERATURE_DEFAULT = "default"
+
+
+def format_temperature(value: float | None) -> str:
+    """Render a configured temperature, or TEMPERATURE_DEFAULT when none is set."""
+    return TEMPERATURE_DEFAULT if value is None else str(value)
+
+
 @dataclass
 class LlmResult:
     """One completed LLM call, as returned by api.get_llm_response().
@@ -498,7 +508,8 @@ class Candidate:
     name: str
     provider: str
     model: str
-    temperature: float = 0.7
+    # None sends no temperature at all, so the provider's own default applies.
+    temperature: float | None = None
     disable_safety: bool = False
     thinking: bool | str = "default"
     system_prompt_file: str | None = None
@@ -545,7 +556,7 @@ class Candidate:
                 name=cand.get("name"),
                 provider=cand.get("provider", "google"),
                 model=cand.get("model"),
-                temperature=cand.get("temperature", 0.7),
+                temperature=cand.get("temperature"),
                 disable_safety=cand.get("disable_safety", False),
                 thinking=cand.get("thinking", "default"),
                 system_prompt_file=cand.get("system_prompt_file"),
@@ -660,7 +671,7 @@ class TestCase:
 class TestJudgeSettings:
     provider: str = "google"
     model: str = "gemini-3-flash-preview"
-    temperature: float = 0.2
+    temperature: float | None = None
     disable_safety: bool = True
     thinking: bool | str = "default"
     evaluation_system_prompt: str = ""
@@ -688,7 +699,7 @@ class ReasoningJudgeSettings:
 
     provider: str = "google"
     model: str = "gemini-3-flash-preview"
-    temperature: float = 0.2
+    temperature: float | None = None
     thinking: bool | str = False
     # Ollama allocates its context window at load time; leaving this unset lets
     # the server default silently truncate a long raw trace.
@@ -833,7 +844,7 @@ class ReasoningStats:
 class VerdictJudgeSettings:
     provider: str = "google"
     model: str = "gemini-3-flash-preview"
-    temperature: float = 0.2
+    temperature: float | None = None
     disable_safety: bool = True
     thinking: bool | str = "default"
     verdict_system_prompt: str = ""

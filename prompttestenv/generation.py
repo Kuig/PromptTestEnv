@@ -13,7 +13,7 @@ from prompttestenv.config import get_app_config
 from prompttestenv.progress import GEN_ERROR_TEXT, GEN_TIMEOUT_TEXT, ProgressState, RunKey, append_event
 from prompttestenv.models import (
     Candidate, TestCaseResult, CandidatePerformance, GenerationOutcome, JudgeConfig, LlmResult,
-    apply_gen_event,
+    apply_gen_event, format_temperature,
 )
 
 # Candidate generation does not retry: a retry lands on the measured elapsed
@@ -158,7 +158,7 @@ def run_generation_phase(
         cand_id = cand.name
         provider = cand.provider
         logger.log_ai(
-            f"Generation with: {cand_id} [{cand.model}, {provider}, T={cand.temperature}]"
+            f"Generation with: {cand_id} [{cand.model}, {provider}, T={format_temperature(cand.temperature)}]"
         )
 
         # Before the clock, and before this candidate's model is loaded: the

@@ -130,6 +130,20 @@ class TestGetLlmResponse(unittest.TestCase):
         self.assertEqual(mock_call_ai.call_args.kwargs["provider"], "google")
 
     @patch("prompttestenv.api.call_ai", autospec=True)
+    def test_unset_temperature_is_passed_as_none_not_invented(self, mock_call_ai):
+        # None is what makes call_ai send no temperature, so the model's own
+        # default applies; a fallback number here would silently override it.
+        mock_call_ai.return_value = self._fake_response()
+        get_llm_response("google", "gemini", None, "prompt")
+        self.assertIsNone(mock_call_ai.call_args.kwargs["temperature"])
+
+    @patch("prompttestenv.api.call_ai", autospec=True)
+    def test_set_temperature_is_passed_through(self, mock_call_ai):
+        mock_call_ai.return_value = self._fake_response()
+        get_llm_response("google", "gemini", None, "prompt", temp=0.3)
+        self.assertEqual(mock_call_ai.call_args.kwargs["temperature"], 0.3)
+
+    @patch("prompttestenv.api.call_ai", autospec=True)
     def test_json_mime_type_enables_format_json(self, mock_call_ai):
         mock_call_ai.return_value = self._fake_response()
         get_llm_response("google", "gemini", None, "prompt", response_mime_type="application/json")

@@ -83,7 +83,7 @@ class TestCandidateLoadAll(LoggerResetTestCase):
         candidates = Candidate.load_all(self.project_dir)
         self.assertEqual(len(candidates), 1)
         self.assertEqual(candidates[0].provider, "google")
-        self.assertEqual(candidates[0].temperature, 0.7)
+        self.assertIsNone(candidates[0].temperature)
         self.assertIsNone(candidates[0].resolved_system_instruction)
 
     def test_resolves_system_prompt_file(self):
@@ -265,6 +265,24 @@ class TestSettingsFromDict(unittest.TestCase):
         settings = _settings_from_dict(TestJudgeSettings, {"temperature": 0.9})
         self.assertEqual(settings.temperature, 0.9)
         self.assertEqual(settings.provider, TestJudgeSettings().provider)
+
+    def test_no_judge_invents_a_temperature(self):
+        jc = JudgeConfig.from_dict({})
+        for block in (jc.test_judge, jc.verdict_judge, jc.reasoning_judge):
+            with self.subTest(block=type(block).__name__):
+                self.assertIsNone(block.temperature)
+
+
+class TestFormatTemperature(unittest.TestCase):
+    def test_unset_reads_as_default(self):
+        from prompttestenv.models import TEMPERATURE_DEFAULT, format_temperature
+
+        self.assertEqual(format_temperature(None), TEMPERATURE_DEFAULT)
+
+    def test_zero_is_a_real_setting_not_unset(self):
+        from prompttestenv.models import format_temperature
+
+        self.assertEqual(format_temperature(0.0), "0.0")
 
 
 class TestJudgeConfigFromDict(unittest.TestCase):

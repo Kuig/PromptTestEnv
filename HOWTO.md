@@ -21,7 +21,7 @@ This file defines the LLM configurations (the "candidates") you want to compare 
 - `name` *(string, required)*: The display name of the candidate in the reports.
 - `provider` *(string, required)*: The AI provider (e.g., `"google"`, `"ollama"`, `"openai"`, `"anthropic"` depending on your `UnifiedAiClient` support).
 - `model` *(string, required)*: The specific model ID (e.g., `"gemini-2.5-flash"`, `"gemma4:e2b"`).
-- `temperature` *(float, optional)*: Sampling temperature (default: `0.7`).
+- `temperature` *(float, optional)*: Sampling temperature. When omitted none is sent, and the model runs at its provider's own default. This holds for every judge block below too.
 - `disable_safety` *(boolean, optional)*: Disables safety filters if supported by the provider (default: `False`).
 - `thinking` *(boolean | string, optional)*: Controls the "Thinking" or reasoning mode. Can be `true`, `false`, or `"default"`.
 - `system_prompt_file` *(string, optional)*: A relative path to a text file inside the `system_prompts/` folder. This allows you to assign different personas to different candidates.
@@ -61,7 +61,7 @@ This is the core engine configuration file. It dictates how the framework behave
 
 **`test_judge` Options:**
 *Configures the LLM that scores individual responses.*
-- `provider`, `model`, `temperature`, `disable_safety`, `thinking`: Standard LLM parameters (typically set to a smart model with low temperature, e.g., `0.2`). `anthropic` cannot serve as test judge or reasoning judge yet: both ask for JSON, and the Messages API has no JSON mode without a schema, so every call is refused and every score is -1.
+- `provider`, `model`, `temperature`, `disable_safety`, `thinking`: Standard LLM parameters (typically a smart model with a low temperature, e.g. `0.2`, which `init` writes for every judge). `anthropic` cannot serve as test judge or reasoning judge yet: both ask for JSON, and the Messages API has no JSON mode without a schema, so every call is refused and every score is -1.
 - `evaluation_system_prompt`: The system persona for the judge (e.g., "You are an impartial AI judge...").
 - `evaluation_template`: The template defining how the candidate's response, the original prompt, and the criteria are presented to the judge. **Must** expect a JSON output with `score` (1-10) and `reasoning`. **Must include the variables:** `{user_prompt}`, `{candidate_response}`, and `{criteria}`.
 
