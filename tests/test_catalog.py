@@ -186,6 +186,23 @@ class TestCandidateWarnings(OfflineFindingsTestCase):
         tests = [self._test(file="test_files/clip.mp4")]
         self.assertEqual(self._run([Candidate("S", "script", "m")], tests), ([], []))
 
+    def test_json_output_on_an_anthropic_candidate_warns_but_does_not_block(self):
+        json_test = TestCase(id="j1", prompt="p", criteria="c", json_output=True)
+        errors, warnings = self._run([Candidate("C", "anthropic", "m")],
+                                     [self._test(), json_test])
+        self.assertEqual(errors, [])
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("'C'", warnings[0])
+        self.assertIn("j1", warnings[0])
+        self.assertNotIn("t1", warnings[0])
+
+    def test_json_output_is_silent_where_the_provider_has_a_json_mode(self):
+        json_test = TestCase(id="j1", prompt="p", criteria="c", json_output=True)
+        self.assertEqual(self._run([Candidate("G", "google", "m")], [json_test]), ([], []))
+
+    def test_an_anthropic_candidate_without_json_tests_is_silent(self):
+        self.assertEqual(self._run([Candidate("C", "anthropic", "m")], [self._test()]), ([], []))
+
     def test_an_unknown_candidate_provider_warns_but_does_not_block(self):
         errors, warnings = self._run([Candidate("X", "nosuchprovider", "m")], [self._test()])
         self.assertEqual(errors, [])

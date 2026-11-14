@@ -507,6 +507,7 @@ class TestCaseResult:
     media_file_paths: list[str] = field(default_factory=list)
     candidates_perf: dict[str, CandidatePerformance] = field(default_factory=dict)
     judge_type: str = JUDGE_TYPE_LLM
+    json_output: bool = False
 
 
 @dataclass
@@ -619,6 +620,8 @@ class TestCase:
     file: str | list[str] | None = None
     group: str = DEFAULT_GROUP
     judge_type: str = JUDGE_TYPE_LLM
+    # Ask the candidate for a response in the provider's JSON mode.
+    json_output: bool = False
 
     def attachments(self) -> list[str]:
         """This test case's attachments as normalised relative paths.
@@ -679,6 +682,7 @@ class TestCase:
             file=data.get("file"),
             group=data.get("group", DEFAULT_GROUP),
             judge_type=data.get("judge_type", JUDGE_TYPE_LLM),
+            json_output=bool(data.get("json_output", False)),
         )
 
     @staticmethod

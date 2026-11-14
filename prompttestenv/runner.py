@@ -40,6 +40,7 @@ def _initialize_test_results(test_cases: list[TestCase], project_dir: str) -> li
             criteria=test.criteria,
             group=test.group,
             judge_type=test.judge_type,
+            json_output=test.json_output,
         )
         # Normalised paths, not the raw `file` value: they are what the report
         # links to and what the verdict payload names.

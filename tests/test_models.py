@@ -124,6 +124,15 @@ class TestTestCaseLoadAll(unittest.TestCase):
         self.assertEqual(cases[0].group, "Default group")
         self.assertEqual(cases[0].judge_type, "llm-judge")
         self.assertIsNone(cases[0].file)
+        self.assertIs(cases[0].json_output, False)
+
+    def test_json_output_is_read_when_set(self):
+        test_file = Path(self.project_dir) / "test_cases.json"
+        test_file.write_text(
+            json.dumps([{"id": "t1", "prompt": "p", "criteria": "c", "json_output": True}]),
+            encoding="utf-8",
+        )
+        self.assertIs(TestCase.load_all(self.project_dir)[0].json_output, True)
 
     def test_malformed_file_value_raises_naming_the_test_case(self):
         test_file = Path(self.project_dir) / "test_cases.json"

@@ -46,6 +46,7 @@ This file contains the actual prompts (the tasks) that the candidates will execu
 
 Every evaluator normally returns a score of 1-10, or the shared `-1` "not measured" sentinel when it failed to produce one at all (excluded from every average, never counted as a zero): a judge LLM call that errored, or a `similarity`/`assert` evaluation that raised an exception. `assert` is the one place the framework does **not** clamp the score for you: your lambda is your own arbitrary Python, so keeping its return value in the range you intend is your job, and you may return `-1` yourself to mark a specific response "not applicable/not measured". `similarity`'s score, by contrast, is computed by the framework, so it is always clamped to 1-10 on your behalf.
 - `group` *(string, optional)*: Assigns the test case to a specific category (e.g., `"Coding"`, `"Creative Writing"`). Used in combination with `group_verdicts` (default: `"Default group"`).
+- `json_output` *(boolean, optional)*: If `true`, the candidate is asked for its response in the provider's JSON mode for this test (default: `false`, which is also what an absent key means). It constrains the format only: say in the `prompt` which JSON shape you want, and check it with an `assert` lambda (e.g. `json.loads(s)`) if the shape matters. `anthropic` has no JSON mode without a schema yet, so an `anthropic` candidate fails such a test with a generation error; the pre-run checks warn about it (see [section 7](#7-providers-models-and-the-pre-run-checks)).
 
 ### C. `judge_config.json`
 This is the core engine configuration file. It dictates how the framework behaves, how many times tests are repeated, and defines the LLMs used for judging and summarizing.
@@ -503,8 +504,9 @@ actually call:
   The verdict judge is not checked under `winner_only`, which never calls it.
 - **Warnings, for the candidates.** A candidate whose provider cannot take a
   test's attachment will skip that test (see
-  [section 6](#two-outcomes-that-are-not-failures)), and an unknown candidate
-  provider will fail every generation. Both are announced and the run proceeds.
+  [section 6](#two-outcomes-that-are-not-failures)), an unknown candidate
+  provider will fail every generation, and an `anthropic` candidate will fail
+  every test that sets `json_output`. All are announced and the run proceeds.
 
 A model missing from its provider is not checked here, since only a live listing
 knows: a missing local judge model is fixed with `ollama pull` and then

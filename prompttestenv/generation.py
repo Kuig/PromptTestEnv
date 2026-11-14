@@ -228,6 +228,9 @@ def run_generation_phase(
                             user_prompt=test_result.prompt,
                             local_media_paths=test_result.media_file_paths or None,
                             temp=cand.temperature,
+                            response_mime_type=(
+                                "application/json" if test_result.json_output else None
+                            ),
                             thinking=thinking,
                             disable_safety=cand.disable_safety,
                             max_response_timeout_seconds=timeout_val,

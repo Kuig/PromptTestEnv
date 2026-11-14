@@ -482,6 +482,44 @@ class TestOptionalTemperature(EditorTestCase):
         self.assertIsNone(judge["test_judge"]["temperature"])
 
 
+class TestJsonOutput(EditorTestCase):
+    """json_output is a plain checkbox, written only when it carries information."""
+
+    def setUp(self):
+        super().setUp()
+        (Path(self.project_dir) / "test_cases.json").write_text(
+            json.dumps([
+                {"id": "plain", "prompt": "p", "criteria": "c"},
+                {"id": "json", "prompt": "p", "criteria": "c", "json_output": True},
+            ], indent=4),
+            encoding="utf-8",
+        )
+
+    @staticmethod
+    def _toggles(at: AppTest) -> list:
+        return [w for w in at.checkbox if w.proto.id and ":test:" in w.proto.id
+                and w.proto.id.endswith(":json_output")]
+
+    def _saved(self) -> list[dict]:
+        return json.loads((Path(self.project_dir) / "test_cases.json").read_text("utf-8"))
+
+    def test_toggles_reflect_the_file(self):
+        at = self._app()
+        self.assertEqual([w.value for w in self._toggles(at)], [False, True])
+
+    def test_checking_one_writes_true_and_touches_nothing_else(self):
+        at = self._app()
+        self._toggles(at)[0].check()
+        at.run()
+        self._click(at, "💾 Save")
+        at.run()
+
+        saved = self._saved()
+        self.assertEqual(saved[0], {"id": "plain", "prompt": "p", "criteria": "c",
+                                    "json_output": True})
+        self.assertEqual(saved[1]["json_output"], True)
+
+
 class TestModelMenus(EditorTestCase):
     """Provider and model menus come from the live catalog, cached per session."""
 

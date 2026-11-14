@@ -185,7 +185,7 @@ def _row_action_bar(rows: list, index: int, key_prefix: str, label_field: str) -
 # Field name -> how to read the widget value back. `None` means "as is".
 _CANDIDATE_FIELDS = ("name", "provider", "model",
                      "disable_safety", "thinking", "system_prompt_file")
-_TEST_FIELDS = ("id", "group", "judge_type", "prompt", "criteria", "file")
+_TEST_FIELDS = ("id", "group", "judge_type", "json_output", "prompt", "criteria", "file")
 
 # judge_config.json widgets: widget key (before _skey) -> field name. Top-level scalars
 # first, then one map per nested block. Harvesting from a table rather than
@@ -857,6 +857,11 @@ with tab_tests:
             st.radio("Judge type", JUDGE_TYPES,
                      index=JUDGE_TYPES.index(judge_type) if judge_type in JUDGE_TYPES else 0,
                      horizontal=True, key=_wkey("test", row["uid"], "judge_type"))
+            st.checkbox("Ask for JSON output",
+                        value=bool(data.get("json_output", False)),
+                        key=_wkey("test", row["uid"], "json_output"),
+                        help="Puts the candidate in the provider's JSON mode for "
+                             "this test. Not available on anthropic yet.")
 
             st.text_area("Prompt", value=data.get("prompt") or "", height=180,
                          key=_wkey("test", row["uid"], "prompt"))

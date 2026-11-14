@@ -76,6 +76,20 @@ class TestRunGenerationPhaseNormal(unittest.TestCase):
 
         self.assertEqual(mock_llm.call_args.kwargs["max_retries"], 0)
 
+    def test_json_output_selects_json_mode_only_for_that_test(self):
+        jc = _judge_config()
+        plain = _result()
+        json_test = TestCaseResult(test_id="t2", prompt="p", criteria="c", json_output=True)
+        with patch("prompttestenv.generation.get_llm_response") as mock_llm, \
+             patch("prompttestenv.generation.warm_up_for_run"), \
+             patch("prompttestenv.generation.append_event"):
+            mock_llm.return_value = LlmResult(text="{}", output_tokens=1)
+            run_generation_phase([_candidate()], [plain, json_test], jc, "/fake/project",
+                                 ProgressState())
+
+        mimes = [c.kwargs["response_mime_type"] for c in mock_llm.call_args_list]
+        self.assertEqual(mimes, [None, "application/json"])
+
 
 class TestRunGenerationPhaseResume(unittest.TestCase):
     def test_resumed_entry_skips_llm_call(self):

@@ -724,7 +724,15 @@ class TestAsLoaded(unittest.TestCase):
         (candidate,), _, (test,) = draft.as_loaded()
         self.assertEqual((candidate.provider, candidate.model, candidate.thinking),
                          ("google", None, "default"))
-        self.assertEqual((test.id, test.judge_type), ("N/A", "llm-judge"))
+        self.assertEqual((test.id, test.judge_type, test.json_output),
+                         ("N/A", "llm-judge", False))
+
+    def test_an_absent_json_output_is_not_added_on_merge(self):
+        original = {"id": "t", "prompt": "p", "criteria": "c"}
+        merged = pio.merge_preserving_shape(original, {"json_output": False}, TestCase)
+        self.assertEqual(merged, original)
+        merged = pio.merge_preserving_shape(original, {"json_output": True}, TestCase)
+        self.assertIs(merged["json_output"], True)
 
 
 if __name__ == "__main__":

@@ -49,9 +49,10 @@ _UNCHECKED_PROVIDER = "script"
 
 # TEMPORARY, by name rather than by capability: the Messages API has no JSON
 # mode without a schema, and both the test judge and the reasoning judge ask
-# for JSON without one, so UnifiedAiClient refuses every such call. Remove this
-# together with that limitation (passing each judge's schema through
-# extra_options), not before.
+# for JSON without one, so UnifiedAiClient refuses every such call. The same
+# holds for a candidate on a test with json_output, which is only a warning
+# (see offline_findings). Remove this together with that limitation (passing
+# each judge's schema through extra_options), not before.
 _NO_SCHEMALESS_JSON = frozenset({"anthropic"})
 
 
@@ -265,6 +266,14 @@ def offline_findings(
                 f"so every generation will fail."
             )
             continue
+        if name in _NO_SCHEMALESS_JSON:
+            json_tests = [t.id for t in test_cases if t.json_output]
+            if json_tests:
+                warnings.append(
+                    f"Candidate '{cand.name}': provider '{name}' cannot return JSON "
+                    f"without a schema yet, so test(s) {', '.join(json_tests)} "
+                    f"(json_output) will fail with a generation error."
+                )
         if name == _UNCHECKED_PROVIDER:
             continue
         for test in test_cases:
