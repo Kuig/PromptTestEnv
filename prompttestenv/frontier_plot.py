@@ -28,6 +28,7 @@ from prompttestenv.frontier import (
     X_AXIS_TIME,
     Panel,
     PanelPoint,
+    format_axis_value,
 )
 
 WIDTH = 560
@@ -66,13 +67,6 @@ _OFFSETS = (
 
 def score_color(score: float) -> str:
     return RED if score < 6 else YELLOW if score < 8 else GREEN if score < 9 else BLUE
-
-
-def format_axis_value(value: float, x_axis: str) -> str:
-    """A cost value as the report prints it: seconds, or a token count."""
-    if x_axis == X_AXIS_TIME:
-        return f"{value:.2f}s"
-    return f"{value:,.0f}"
 
 
 def _tick_label(value: float, x_axis: str) -> str:

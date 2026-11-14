@@ -133,7 +133,7 @@ def _generate_output(
         verdict = progress_state.verdict
         logger.log_info("Verdict resumed from log.")
     else:
-        verdict = generate_verdict(candidates, results, project_dir, judge_config)
+        verdict = generate_verdict(candidates, results, project_dir, judge_config, frontiers)
         if verdict is None:
             # Deliberately not logged as a verdict event: generation and
             # evaluation are already saved, so the run is resumable and the

@@ -180,6 +180,7 @@ class VerdictMetadata:
     score_scales: str = ""
     cost_per_point: str = ""
     reasoning_profile: str = ""
+    frontier: str = ""
     judge_types_intro: str = ""
     judge_llm: str = ""
     judge_similarity: str = ""

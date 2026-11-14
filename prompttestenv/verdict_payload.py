@@ -60,6 +60,7 @@ def _build_metadata(
     pooled: dict[str, CandidatePerformance],
     judge_config: JudgeConfig,
     profile_shown: bool,
+    frontier_shown: bool = False,
 ) -> str:
     """Assemble the payload header from the sections this payload actually needs.
 
@@ -73,6 +74,7 @@ def _build_metadata(
         pooled: Per-candidate pooled records, read for whether any cost exists.
         judge_config: JudgeConfig, for the repetition count.
         profile_shown: Whether the reasoning profile table is being emitted.
+        frontier_shown: Whether an EFFICIENCY FRONTIER section is being emitted.
 
     Returns:
         The metadata block, sections separated by blank lines.
@@ -93,6 +95,9 @@ def _build_metadata(
     if profile_shown:
         parts.append(_section(metadata, "reasoning_profile"))
 
+    if frontier_shown:
+        parts.append(_section(metadata, "frontier"))
+
     judge_types = {row.judge_type for row in rows}
     legend = [_section(metadata, "judge_types_intro")]
     for judge_type, field_name in (
@@ -109,6 +114,18 @@ def _build_metadata(
     parts.append(_build_global_criteria_legend(metadata, judge_config.global_criteria))
 
     return "\n\n".join(parts) + "\n"
+
+
+def frontier_metadata() -> str:
+    """The frontier caveat alone, for the global synthesis call.
+
+    That call carries no other metadata, since it sees no figures but the
+    frontiers; this is the one section that still has something to explain.
+
+    Raises:
+        MetadataError: If the section is missing or malformed.
+    """
+    return _section(get_app_config().verdict_metadata, "frontier")
 
 
 _GLOBAL_CRITERIA_FIELDS = {

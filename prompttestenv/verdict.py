@@ -20,8 +20,17 @@ from prompttestenv.models import (
     pool_by_candidate,
     render_measured,
 )
+from prompttestenv.frontier import (
+    AXIS_COLUMNS,
+    AXIS_LABELS,
+    FRONT_LOWER,
+    FrontierPanels,
+    Panel,
+    build_panels,
+    format_axis_value,
+)
 from prompttestenv.reasoning import aggregate_reasoning_stats
-from prompttestenv.verdict_payload import _build_metadata
+from prompttestenv.verdict_payload import _build_metadata, frontier_metadata
 
 # Set to False to skip writing verdict_prompt_debug*.txt entirely — e.g. on a
 # shared machine, or once payload inspection is no longer needed. A plain module
@@ -403,10 +412,50 @@ def _build_overall_aggregate(
     return "".join(parts), True
 
 
+def _format_frontier_section(panel: Panel) -> str:
+    """Render one frontier panel as a payload section, or "" when it has no points.
+
+    Only the listed frontier is sent, not every point: the OVERALL AGGREGATE
+    table above already carries every candidate's figures, and what the judge
+    cannot reliably work out from it is exactly this two-axis dominance.
+
+    Args:
+        panel: The panel, from frontier.build_panels.
+
+    Returns:
+        A heading plus a table, with no trailing blank line.
+    """
+    if not panel.points:
+        return ""
+    options = panel.options
+    front = "lower front" if options.front == FRONT_LOWER else "upper front"
+    heading = (
+        f"# EFFICIENCY FRONTIER: {panel.name} "
+        f"({AXIS_LABELS[options.x_axis]} vs mean task score, {front}"
+    )
+    if options.threshold is not None:
+        sign = "<" if options.front == FRONT_LOWER else ">"
+        heading += f", listing scores {sign} {options.threshold:g}"
+    heading += ")\n\n"
+
+    listed = panel.listed
+    if not listed:
+        return heading + "No frontier candidate passes the threshold."
+    pooled = len(panel.groups) > 1
+    headers = ["Candidate", "Task", AXIS_COLUMNS[options.x_axis]] + (["Groups"] if pooled else [])
+    rows = [
+        [p.candidate, f"{p.y:.2f}", format_axis_value(p.x, options.x_axis)]
+        + ([f"{p.n}/{len(panel.groups)}"] if pooled else [])
+        for p in listed
+    ]
+    return heading + _render_table(headers, rows).rstrip("\n")
+
+
 def _build_summary_data(
     rows: list[TestCaseResult],
     candidates: list[Candidate],
     judge_config: JudgeConfig,
+    frontier_panel: Panel | None = None,
 ) -> tuple[str, str]:
     """Build the two halves of a verdict prompt: metadata and results.
 
@@ -423,6 +472,9 @@ def _build_summary_data(
         candidates: Resolved candidate configurations.
         judge_config: JudgeConfig instance (repetition count and the
             reasoning_analysis scope).
+        frontier_panel: The efficiency frontier these rows describe (the
+            group's panel, or "All tests" for an ungrouped verdict), placed
+            right after OVERALL AGGREGATE; None sends none.
 
     Returns:
         (metadata_text, summary_data): metadata_text is ready to append to
@@ -431,9 +483,15 @@ def _build_summary_data(
     """
     pooled = pool_by_candidate(candidates, rows)
     aggregate, profile_shown = _build_overall_aggregate(pooled, judge_config)
-    metadata_text = _build_metadata(rows, pooled, judge_config, profile_shown)
+    frontier = _format_frontier_section(frontier_panel) if frontier_panel is not None else ""
+    metadata_text = _build_metadata(
+        rows, pooled, judge_config, profile_shown, frontier_shown=bool(frontier),
+    )
 
-    parts = [aggregate, "\n# TEST RESULTS\n"]
+    parts = [aggregate]
+    if frontier:
+        parts.append(f"\n{frontier}\n")
+    parts.append("\n# TEST RESULTS\n")
     for row in rows:
         parts.append(
             f"\n## TEST ID: {row.test_id}\n"
@@ -490,6 +548,7 @@ def _run_verdict_call(
     sys_prompt: str,
     project_dir: str,
     debug_filename: str = DEFAULT_DEBUG_FILENAME,
+    frontier_panel: Panel | None = None,
 ) -> str:
     """Build one verdict payload, call the verdict judge, return its response text.
 
@@ -523,12 +582,15 @@ def _run_verdict_call(
             project_dir. Callers pass a distinct name per group (and for the
             global synthesis call) so group_verdicts: true does not leave
             every payload but the last overwritten on disk.
+        frontier_panel: Passed through to _build_summary_data.
 
     Returns:
         The judge's response text, with any wrapping code fence stripped.
     """
     vj = judge_config.verdict_judge
-    metadata_text, summary_data = _build_summary_data(rows, candidates, judge_config)
+    metadata_text, summary_data = _build_summary_data(
+        rows, candidates, judge_config, frontier_panel,
+    )
     call_sys_prompt = f"{sys_prompt}\n\n{metadata_text}"
     prompt = f"{summary_data}\n\n---\n\n{verdict_template}"
 
@@ -556,14 +618,23 @@ def generate_verdict(
     results: list[TestCaseResult],
     project_dir: str,
     judge_config: JudgeConfig,
+    frontiers: FrontierPanels | None = None,
 ) -> str | None:
     """Generate a final comparative verdict across all candidates.
+
+    Each payload carries the efficiency frontier of what it covers: a group's
+    own panel, or "All tests" for an ungrouped verdict. The global synthesis
+    call gets "All tests" plus every cluster panel, after the group verdicts.
+    group_clusters.json's include_in_verdict: false sends none of them.
 
     Args:
         candidates: Resolved candidate configurations.
         results: Completed test case results with scores.
         project_dir: Benchmark project directory path.
         judge_config: JudgeConfig instance.
+        frontiers: The efficiency-frontier panels, from frontier.build_panels.
+            None computes them with the default settings, as if the project
+            had no group_clusters.json, exactly as the report renderers do.
 
     Returns:
         Verdict text (Markdown, or JSON if grouped) from the verdict judge, or
@@ -579,6 +650,10 @@ def generate_verdict(
     thinking = judge_config.verdict_judge.thinking
     sys_prompt = judge_config.verdict_judge.verdict_system_prompt
     disable_safety = judge_config.verdict_judge.disable_safety
+
+    if frontiers is None:
+        frontiers = build_panels(candidates, results)
+    send_frontiers = frontiers.include_in_verdict
 
     try:
         verdict_template = judge_config.verdict_judge.verdict_template
@@ -600,6 +675,7 @@ def generate_verdict(
                     group_results, candidates, judge_config, verdict_template,
                     sys_prompt, project_dir,
                     debug_filename=f"verdict_prompt_debug_group_{_sanitize_filename_part(group_name)}.txt",
+                    frontier_panel=frontiers.group_panel(group_name) if send_frontiers else None,
                 )
                 group_verdicts_list.append({"group_name": group_name, "verdict": response_text})
 
@@ -619,21 +695,37 @@ def generate_verdict(
             # same heading in every project, so global_verdict_template is
             # just the trailer text (typically ANALYSIS INSTRUCTIONS) that
             # follows it, used verbatim rather than through str.format().
-            global_prompt = f"# GROUP VERDICTS:\n{group_verdicts_data}\n\n---\n\n{global_verdict_template}"
+            # The cross-group frontiers are the one set of figures this call
+            # sees: "All tests" and each cluster pool several groups, which no
+            # group verdict could describe.
+            frontier_sections = []
+            if send_frontiers:
+                for panel in [frontiers.overall, *frontiers.clusters]:
+                    section = _format_frontier_section(panel)
+                    if section:
+                        frontier_sections.append(section)
+            frontier_data = "".join(f"\n{s}\n" for s in frontier_sections)
+            global_prompt = (
+                f"# GROUP VERDICTS:\n{group_verdicts_data}{frontier_data}\n\n---\n\n"
+                f"{global_verdict_template}"
+            )
 
-            # No metadata tail here: the global call never sees {summary_data},
-            # only the prose of the already-written group verdicts, so there is
-            # nothing left for the metadata to explain.
+            # Otherwise no metadata tail here: the global call never sees
+            # {summary_data}, only the prose of the already-written group
+            # verdicts, so the frontier caveat is the only thing left to explain.
+            global_sys_prompt = (
+                f"{sys_prompt}\n\n{frontier_metadata()}" if frontier_sections else sys_prompt
+            )
             if SAVE_PAYLOAD_DEBUG_FILES:
                 save_verdict_debug_file(
-                    project_dir, sys_prompt, global_prompt, v_provider, v_model, v_judge_temp,
+                    project_dir, global_sys_prompt, global_prompt, v_provider, v_model, v_judge_temp,
                     filename="verdict_prompt_debug_global.txt",
                 )
 
             global_result = get_llm_response(
                 provider=v_provider,
                 model_name=v_model,
-                system_instruction=sys_prompt,
+                system_instruction=global_sys_prompt,
                 user_prompt=global_prompt,
                 temp=v_judge_temp,
                 thinking=thinking,
@@ -652,6 +744,7 @@ def generate_verdict(
         else:
             response_text = _run_verdict_call(
                 results, candidates, judge_config, verdict_template, sys_prompt, project_dir,
+                frontier_panel=frontiers.overall if send_frontiers else None,
             )
             return response_text
     except Exception as exc:

@@ -745,6 +745,110 @@ class TestGenerateVerdict(unittest.TestCase):
 
 
 
+class TestFrontierInVerdict(unittest.TestCase):
+    """The efficiency frontier reaches every payload that has one to describe."""
+
+    def setUp(self):
+        self.project_dir = tempfile.mkdtemp(prefix="prompttestenv_test_")
+        self.addCleanup(shutil.rmtree, self.project_dir, ignore_errors=True)
+        self.candidates = [
+            Candidate(name="Fast", provider="ollama", model="m"),
+            Candidate(name="Slow", provider="ollama", model="m"),
+            Candidate(name="Ref", provider="ollama", model="m", role="baseline"),
+        ]
+        self.results = []
+        for test_id, group in (("t1", "G1"), ("t2", "G2")):
+            row = TestCaseResult(test_id=test_id, prompt="p", criteria="c", group=group)
+            for name, score, time in (("Fast", 5.0, 1.0), ("Slow", 9.0, 30.0), ("Ref", 9.5, 0.5)):
+                row.candidates_perf[name] = CandidatePerformance(
+                    scores=[score], global_scores=[10.0], times=[time], tokens=[10], reasoning_tokens=[0],
+                )
+            self.results.append(row)
+
+    def _judge_config(self, grouped: bool) -> JudgeConfig:
+        jc = JudgeConfig()
+        jc.verdict_judge.verdict_template = "INSTRUCTIONS"
+        jc.verdict_judge.global_verdict_template = "GLOBAL INSTRUCTIONS"
+        jc.global_criteria = GlobalCriteria(mode="none")
+        jc.group_verdicts = grouped
+        return jc
+
+    def _run(self, grouped: bool, frontiers=None):
+        replies = [LlmResult(text="g1"), LlmResult(text="g2"), LlmResult(text="global")]
+        with patch("prompttestenv.verdict.get_llm_response") as mock_llm:
+            mock_llm.side_effect = replies if grouped else replies[:1]
+            generate_verdict(self.candidates, self.results, self.project_dir,
+                             self._judge_config(grouped), frontiers)
+        return mock_llm.call_args_list
+
+    def test_ungrouped_payload_carries_the_all_tests_frontier(self):
+        call = self._run(grouped=False)[0].kwargs
+        prompt = call["user_prompt"]
+        self.assertIn("# EFFICIENCY FRONTIER: All tests (mean time (s) vs mean task score, upper front)", prompt)
+        section = prompt[prompt.index("# EFFICIENCY FRONTIER"):prompt.index("# TEST RESULTS")]
+        self.assertIn("Fast", section)
+        self.assertIn("Slow", section)
+        # A baseline is never on a frontier, even one it would dominate.
+        self.assertNotIn("Ref", section)
+        self.assertIn("2/2", section)
+        self.assertLess(prompt.index("# OVERALL AGGREGATE"), prompt.index("# EFFICIENCY FRONTIER"))
+        self.assertIn("EFFICIENCY FRONTIER tables are computed", call["system_instruction"])
+
+    def test_group_payloads_carry_their_own_panel_and_the_global_call_the_cross_group_ones(self):
+        from prompttestenv.frontier import ClusterSpec, GroupClusters, PanelOptions, build_panels
+        frontiers = build_panels(self.candidates, self.results, GroupClusters(
+            clusters=[ClusterSpec("Both", ["G1", "G2"], PanelOptions(threshold=6))],
+        ))
+        calls = self._run(grouped=True, frontiers=frontiers)
+        self.assertIn("# EFFICIENCY FRONTIER: G1 ", calls[0].kwargs["user_prompt"])
+        self.assertIn("# EFFICIENCY FRONTIER: G2 ", calls[1].kwargs["user_prompt"])
+        # A single-group panel has no Groups column to speak of.
+        self.assertNotIn("Groups", calls[0].kwargs["user_prompt"].split("# TEST RESULTS")[0])
+
+        glob = calls[2].kwargs
+        self.assertIn("# EFFICIENCY FRONTIER: All tests", glob["user_prompt"])
+        both = glob["user_prompt"][glob["user_prompt"].index("# EFFICIENCY FRONTIER: Both"):]
+        self.assertIn("listing scores > 6", both)
+        self.assertNotIn("Fast", both.split("---")[0])
+        self.assertLess(glob["user_prompt"].index("# GROUP VERDICTS"),
+                        glob["user_prompt"].index("# EFFICIENCY FRONTIER"))
+        self.assertIn("EFFICIENCY FRONTIER tables are computed", glob["system_instruction"])
+
+    def test_include_in_verdict_false_sends_none(self):
+        from prompttestenv.frontier import GroupClusters, build_panels
+        frontiers = build_panels(self.candidates, self.results, GroupClusters(include_in_verdict=False))
+        for call in self._run(grouped=True, frontiers=frontiers):
+            self.assertNotIn("EFFICIENCY FRONTIER", call.kwargs["user_prompt"])
+            self.assertNotIn("EFFICIENCY FRONTIER", call.kwargs["system_instruction"])
+
+    def test_nothing_measurable_sends_no_section_and_no_caveat(self):
+        for row in self.results:
+            for perf in row.candidates_perf.values():
+                perf.times = [-1]
+        call = self._run(grouped=False)[0].kwargs
+        self.assertNotIn("EFFICIENCY FRONTIER", call["user_prompt"])
+        self.assertNotIn("EFFICIENCY FRONTIER", call["system_instruction"])
+
+    def test_threshold_that_lists_nobody_says_so(self):
+        from prompttestenv.frontier import GroupClusters, PanelOptions, build_panels
+        frontiers = build_panels(self.candidates, self.results,
+                                 GroupClusters(defaults=PanelOptions(threshold=9.5)))
+        prompt = self._run(grouped=False, frontiers=frontiers)[0].kwargs["user_prompt"]
+        self.assertIn("No frontier candidate passes the threshold.", prompt)
+
+    def test_missing_frontier_section_raises(self):
+        config = get_app_config()
+        original = config.verdict_metadata.frontier
+        config.verdict_metadata.frontier = ""
+        self.addCleanup(setattr, config.verdict_metadata, "frontier", original)
+        with patch("prompttestenv.verdict.get_llm_response") as mock_llm:
+            result = generate_verdict(self.candidates, self.results, self.project_dir,
+                                      self._judge_config(False))
+        # generate_verdict converts the MetadataError into its usual None.
+        self.assertIsNone(result)
+        mock_llm.assert_not_called()
+
+
 class TestVerdictFailuresAreNotPersisted(LoggerResetTestCase):
     """A verdict that failed must stay retryable.
 

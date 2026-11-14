@@ -61,6 +61,20 @@ AXIS_LABELS = {
     X_AXIS_OUT_TOKENS: "mean output tokens",
     X_AXIS_THINK_TOKENS: "mean thinking tokens",
 }
+# Column headers in the verdict payload's tables, in the style of its
+# OVERALL AGGREGATE table.
+AXIS_COLUMNS = {
+    X_AXIS_TIME: "Time",
+    X_AXIS_OUT_TOKENS: "Out tok",
+    X_AXIS_THINK_TOKENS: "Think tok",
+}
+
+
+def format_axis_value(value: float, x_axis: str) -> str:
+    """A cost value as the report and the payload print it: seconds, or a token count."""
+    if x_axis == X_AXIS_TIME:
+        return f"{value:.2f}s"
+    return f"{value:,.0f}"
 
 # "upper": no other candidate is both cheaper and scores HIGHER (the usual
 # reading). "lower": no other candidate is both cheaper and scores LOWER, for a
