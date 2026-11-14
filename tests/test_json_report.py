@@ -71,7 +71,7 @@ class TestGenerateJsonReport(unittest.TestCase):
 
     def test_writes_parsable_json_under_report_dir(self):
         payload = self._export()
-        self.assertEqual(payload["schema_version"], "1.0")
+        self.assertEqual(payload["schema_version"], "1.1")
         self.assertIn("Baseline", payload["aggregate"])
         self.assertEqual([t["test_id"] for t in payload["test_cases"]], ["t1"])
 

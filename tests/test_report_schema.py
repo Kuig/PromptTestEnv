@@ -23,6 +23,7 @@ from prompttestenv.models import (
     ReasoningUnit,
     TestCaseResult,
 )
+from prompttestenv.frontier import ClusterSpec, GroupClusters, build_panels
 from prompttestenv.json_report import generate_json_report
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -108,7 +109,7 @@ def build_payload(project_dir: str, *, grouped: bool, filename: str) -> dict:
     """Render a JSON report exercising every branch of the exporter."""
     candidates = [
         Candidate(
-            name="Baseline", provider="google", model="gemini",
+            name="Baseline", provider="google", model="gemini", role="baseline",
             system_prompt_file=None, resolved_system_instruction="RESOLVED SECRET",
         ),
         Candidate(
@@ -163,6 +164,10 @@ def build_payload(project_dir: str, *, grouped: bool, filename: str) -> dict:
         project_dir, rows, candidates, verdict,
         GlobalCriteria(mode="llm-judge", llm_judge_criteria="Be concise."),
         judge_config, filename=filename,
+        # A cluster, so the walker descends into a non-empty `clusters` list too.
+        frontiers=build_panels(candidates, rows, GroupClusters(
+            clusters=[ClusterSpec("Both", ["Writing", "Extraction"])],
+        )),
     )
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
@@ -203,7 +208,7 @@ class TestSchemaDescribesTheRealPayload(unittest.TestCase):
 
     def test_declared_schema_version_matches_the_exporter(self):
         payload = build_payload(self.project_dir, grouped=False, filename="version.json")
-        self.assertEqual(payload["schema_version"], "1.0")
+        self.assertEqual(payload["schema_version"], "1.1")
 
     def test_the_guard_actually_catches_an_undeclared_key(self):
         """Without this, a walker that silently passes everything looks like a green guard."""

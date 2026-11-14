@@ -41,10 +41,12 @@ from prompttestenv.models import (
     TestCaseResult,
     GlobalCriteria,
 )
+from prompttestenv.frontier import FrontierPanels, Panel, build_panels
 from prompttestenv.reasoning import aggregate_reasoning_stats
 
 
-JSON_SCHEMA_VERSION = "1.0"
+# 1.1: `frontiers`, and `role` on every configured candidate.
+JSON_SCHEMA_VERSION = "1.1"
 
 
 def _stat_block(values: list) -> dict:
@@ -123,6 +125,45 @@ def _verdict_block(verdict_text: str) -> dict:
     }
 
 
+def _panel_block(panel: Panel) -> dict:
+    """One frontier panel: its options, every point, and who is on the frontier.
+
+    The points are emitted in full (baselines included, flagged) so a consumer
+    can redraw the plot; `frontier` and `listed` are candidate names, cheapest
+    first, `listed` being the frontier after the panel's threshold.
+    """
+    return {
+        "kind": panel.kind,
+        "name": panel.name,
+        "groups": list(panel.groups),
+        "x_axis": panel.options.x_axis,
+        "front": panel.options.front,
+        "threshold": panel.options.threshold,
+        "points": [
+            {
+                "candidate": p.candidate,
+                "x": p.x,
+                "y": p.y,
+                "n": p.n,
+                "baseline": p.baseline,
+                "on_front": p.on_front,
+            }
+            for p in panel.points
+        ],
+        "frontier": [p.candidate for p in panel.frontier],
+        "listed": [p.candidate for p in panel.listed],
+    }
+
+
+def _frontiers_block(frontiers: FrontierPanels) -> dict:
+    return {
+        "include_in_verdict": frontiers.include_in_verdict,
+        "overall": _panel_block(frontiers.overall),
+        "groups": [_panel_block(p) for p in frontiers.groups],
+        "clusters": [_panel_block(p) for p in frontiers.clusters],
+    }
+
+
 def _active_global_criteria(global_criteria: GlobalCriteria) -> str:
     """The criteria text the project's global mode actually uses.
 
@@ -174,6 +215,7 @@ def _configuration_block(
                 "disable_safety": cand.disable_safety,
                 "thinking": cand.thinking,
                 "system_prompt_file": cand.system_prompt_file,
+                "role": cand.role,
             }
             for cand in candidates
         ],
@@ -225,6 +267,7 @@ def generate_json_report(
     global_criteria: GlobalCriteria,
     judge_config: JudgeConfig,
     filename: str = "report_benchmark.json",
+    frontiers: FrontierPanels | None = None,
 ) -> str:
     """Export the report as structured JSON instead of a rendered page.
 
@@ -250,10 +293,15 @@ def generate_json_report(
         global_criteria: The project's global criteria.
         judge_config: The project's judge configuration.
         filename: Report file name, written under ``Report/``.
+        frontiers: The efficiency-frontier panels, from frontier.build_panels.
+            None computes them with the default settings, as if the project
+            had no group_clusters.json.
 
     Returns:
         Path to the written JSON file.
     """
+    if frontiers is None:
+        frontiers = build_panels(candidates, results)
     stats = pool_by_candidate(candidates, results)
 
     aggregate = {}
@@ -303,6 +351,7 @@ def generate_json_report(
         "configuration": _configuration_block(candidates, global_criteria, judge_config),
         "aggregate": aggregate,
         "test_cases": test_cases,
+        "frontiers": _frontiers_block(frontiers),
     }
 
     report_dir = os.path.join(project_dir, "Report")

@@ -41,11 +41,28 @@
         .trace-marker { font-size: 0.85em; vertical-align: super; color: #c62828; font-weight: bold; }
         .reasoning-legend { display: flex; gap: 12px; flex-wrap: wrap; font-size: 0.72em; color: #555; margin-top: 3px; }
         .reasoning-legend span::before { content: '\25A0 '; }
+        /* Efficiency frontiers (frontier_plot.py). */
+        .frontier-figure { margin: 14px 0; padding: 10px; background: #fff; border: 1px solid #e4e3df; border-radius: 6px; max-width: 640px; }
+        .frontier-figure figcaption { font-size: 0.85em; color: #333; margin-bottom: 6px; }
+        .frontier-svg { display: block; width: 100%; height: auto; }
+        .frontier-legend { display: flex; flex-wrap: wrap; gap: 10px; font-size: 0.72em; color: #5a5955; margin: 6px 0; }
+        .frontier-legend i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
+        .frontier-legend i.hollow { background: #fff; border: 2px solid; width: 6px; height: 6px; }
+        .frontier-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 460px), 1fr)); gap: 14px; }
+        .frontier-grid .frontier-figure { margin: 0; max-width: none; }
+        table.frontier-table { table-layout: auto; width: auto; margin: 4px 0 0; box-shadow: none; font-size: 0.8em; }
+        table.frontier-table th, table.frontier-table td { padding: 4px 10px; position: static; }
+        table.frontier-table td + td { text-align: right; font-family: monospace; }
+        .frontier-note { font-size: 0.8em; color: #6c757d; font-style: italic; }
+        .role-badge { background: #e2e3e5; color: #41464b; border-radius: 10px; padding: 1px 8px; font-size: 0.8em; margin-left: 4px; }
     </style>
 </head>
 <body>
     <h1>Benchmark Report: {{ project_name }}</h1>
     <div class="verdict-box"><b>⚖️ Verdict:</b><br>{{ verdict_html | safe }}</div>
+    {% if frontier_clusters_html %}
+    <div class="verdict-box"><b>Efficiency frontiers by cluster</b> (group_clusters.json)<br><br>{{ frontier_clusters_html | safe }}</div>
+    {% endif %}
     <table>
         <thead>
             <tr>
@@ -244,7 +261,7 @@
             {% set safe_str = "🔴 Disabled" if cand.disable_safety else "🟢 Default" %}
             {% set c_thinking = format_thinking_value(cand.thinking) %}
             <div class="cand-card">
-                <span class="cand-name">{{ cand.name }}</span> | 
+                <span class="cand-name">{{ cand.name }}</span>{% if cand.is_baseline %}<span class="role-badge">baseline</span>{% endif %} |
                 <b>Model:</b> {{ cand.model }} | 
                 <b>Temp:</b> {{ format_temperature(cand.temperature) }} | 
                 <b>Safety:</b> {{ safe_str }} |

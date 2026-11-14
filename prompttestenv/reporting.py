@@ -21,6 +21,8 @@ from prompttestenv.models import (
     TestCaseResult,
     GlobalCriteria,
 )
+from prompttestenv.frontier import FrontierPanels, build_panels
+from prompttestenv.frontier_plot import render_panel_html, render_panels_grid
 from prompttestenv.reasoning import aggregate_reasoning_stats
 
 
@@ -206,6 +208,7 @@ def generate_html_report(
     global_criteria: GlobalCriteria,
     judge_config: JudgeConfig,
     filename: str = "report_benchmark.html",
+    frontiers: FrontierPanels | None = None,
 ) -> str:
     """Render the full HTML report and write it under Report/.
 
@@ -225,10 +228,15 @@ def generate_html_report(
         global_criteria: The project's global criteria.
         judge_config: The project's judge configuration.
         filename: Report file name, written under ``Report/``.
+        frontiers: The efficiency-frontier panels, from frontier.build_panels.
+            None computes them with the default settings, as if the project
+            had no group_clusters.json.
 
     Returns:
         Path to the written HTML file.
     """
+    if frontiers is None:
+        frontiers = build_panels(candidates, results)
     verdict_data = parse_grouped_verdict(verdict_text)
     is_grouped = verdict_data is not None
 
@@ -240,12 +248,27 @@ def generate_html_report(
             group_name = html.escape(str(g["group_name"]))
             verdict_html += f"<details>\n<summary><strong>Verdict for Group: {group_name}</strong></summary>\n<div style='padding-top: 10px;'>\n"
             verdict_html += md_to_html(g["verdict"])
+            # Looked up by name: a stored verdict may predate a group rename,
+            # and a group with no panel simply gets no plot.
+            panel = frontiers.group_panel(str(g["group_name"]))
+            if panel is not None:
+                verdict_html += render_panel_html(panel)
             verdict_html += "\n</div>\n</details>\n<br>\n"
         verdict_html += "<details open>\n<summary><strong>Global Verdict</strong></summary>\n<div style='padding-top: 10px;'>\n"
         verdict_html += md_to_html(verdict_data["global_verdict"])
+        verdict_html += render_panel_html(frontiers.overall)
         verdict_html += "\n</div>\n</details>"
     else:
         verdict_html = md_to_html(verdict_text)
+        verdict_html += render_panel_html(frontiers.overall)
+        # Groups without per-group verdicts still get their panels, folded
+        # away: there is no verdict for each one to sit under.
+        if len(frontiers.groups) > 1:
+            verdict_html += (
+                "<details><summary><strong>Efficiency frontier by group</strong></summary>"
+                + render_panels_grid(frontiers.groups) + "</details>"
+            )
+    frontier_clusters_html = render_panels_grid(frontiers.clusters) if frontiers.clusters else ""
     
     # One aggregation for every surface: the same pooled records the verdict
     # payload reads. This used to be a second, hand-rolled copy returning raw
@@ -269,6 +292,7 @@ def generate_html_report(
     html_content = template.render(
         project_name=project_name(project_dir),
         verdict_html=verdict_html,
+        frontier_clusters_html=frontier_clusters_html,
         candidates=candidates,
         results=results,
         stats=stats,

@@ -8,6 +8,7 @@ from prompttestenv.analysis import attach_best, attach_reasoning, keys_to_analyz
 from prompttestenv.api import teardown
 from prompttestenv.catalog import offline_findings
 from prompttestenv.evaluator import run_evaluation_phase
+from prompttestenv.frontier import FrontierPanels, GroupClusters, build_panels
 from prompttestenv.verdict import generate_verdict, evaluate_best_candidate_fast
 from prompttestenv.generation import run_generation_phase
 from prompttestenv.reporting import generate_html_report
@@ -78,6 +79,21 @@ def _missing_attachments(
     ]
 
 
+def _build_frontiers(
+    project_dir: str, candidates: list[Candidate], results: list[TestCaseResult],
+) -> FrontierPanels:
+    """Read group_clusters.json and compute every frontier panel, once.
+
+    Done here rather than in each renderer so that the HTML, the JSON and the
+    verdict payload read the very same panels, and so that a name the file
+    uses but the project lacks is announced once rather than per surface.
+    """
+    frontiers = build_panels(candidates, results, GroupClusters.load(project_dir))
+    for message in frontiers.warnings:
+        logger.log_warning(message)
+    return frontiers
+
+
 def _generate_output(
     output_mode: str,
     candidates: list[Candidate],
@@ -111,6 +127,8 @@ def _generate_output(
     if output_mode == "winner_only":
         return evaluate_best_candidate_fast(candidates, results)
 
+    frontiers = _build_frontiers(project_dir, candidates, results)
+
     if progress_state.verdict and not verdict_is_stale:
         verdict = progress_state.verdict
         logger.log_info("Verdict resumed from log.")
@@ -141,7 +159,7 @@ def _generate_output(
     if output_mode == "json":
         json_file = generate_json_report(
             project_dir, results, candidates, verdict, global_criteria, judge_config,
-            filename=f"{base_filename}.json",
+            filename=f"{base_filename}.json", frontiers=frontiers,
         )
         logger.log_save(f"JSON report saved: {json_file}")
         return f"JSON report: {json_file}"
@@ -158,7 +176,7 @@ def _generate_output(
     if output_mode == "html":
         html_file = generate_html_report(
             project_dir, results, candidates, verdict, global_criteria, judge_config,
-            filename=f"{base_filename}.html",
+            filename=f"{base_filename}.html", frontiers=frontiers,
         )
         logger.log_success(f"HTML report saved: {html_file}")
         return f"Full process complete. HTML Report: {html_file}"

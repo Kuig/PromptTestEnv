@@ -11,14 +11,15 @@
     "verdict",
     "configuration",
     "aggregate",
-    "test_cases"
+    "test_cases",
+    "frontiers"
   ],
   "additionalProperties": false,
   "properties": {
     "schema_version": {
       "type": "string",
       "description": "Version of this report format. Bumped when the payload shape changes.",
-      "examples": ["1.0"]
+      "examples": ["1.1"]
     },
     "generated_at": {
       "type": "string",
@@ -95,7 +96,8 @@
               "temperature",
               "disable_safety",
               "thinking",
-              "system_prompt_file"
+              "system_prompt_file",
+              "role"
             ],
             "additionalProperties": false,
             "properties": {
@@ -126,6 +128,11 @@
               "system_prompt_file": {
                 "type": ["string", "null"],
                 "description": "File under the project's system_prompts/ whose content was used as the system instruction, or null for a bare baseline. The resolved text itself is deliberately not included here."
+              },
+              "role": {
+                "type": "string",
+                "enum": ["candidate", "baseline"],
+                "description": "What the candidate is in the comparison. A \"baseline\" is measured like any other candidate; only the efficiency frontiers treat it differently, as a reference point that is never on a frontier."
               }
             }
           }
@@ -356,10 +363,111 @@
           }
         }
       }
+    },
+
+    "frontiers": {
+      "type": "object",
+      "description": "The efficiency frontiers drawn in the HTML report: for each panel, which candidates no other candidate beats on both mean task score and mean cost. Configured by the project's optional group_clusters.json, which is not part of the run hash.",
+      "required": ["include_in_verdict", "overall", "groups", "clusters"],
+      "additionalProperties": false,
+      "properties": {
+        "include_in_verdict": {
+          "type": "boolean",
+          "description": "Whether the frontiers were sent to the verdict judge (group_clusters.json's include_in_verdict)."
+        },
+        "overall": {
+          "$ref": "#/$defs/frontierPanel",
+          "description": "The \"All tests\" panel, over every group of the project."
+        },
+        "groups": {
+          "type": "array",
+          "description": "One panel per group, in order of first appearance.",
+          "items": { "$ref": "#/$defs/frontierPanel" }
+        },
+        "clusters": {
+          "type": "array",
+          "description": "One panel per cluster declared in group_clusters.json that covers at least one existing group. Empty without that file.",
+          "items": { "$ref": "#/$defs/frontierPanel" }
+        }
+      }
     }
   },
 
   "$defs": {
+    "frontierPanel": {
+      "type": "object",
+      "required": ["kind", "name", "groups", "x_axis", "front", "threshold", "points", "frontier", "listed"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["group", "cluster", "overall"]
+        },
+        "name": {
+          "type": "string",
+          "description": "The group name, the cluster name, or \"All tests\"."
+        },
+        "groups": {
+          "type": "array",
+          "description": "The groups this panel averages over. A cluster point is the mean of the per-group means, so every group weighs the same however many test cases it holds.",
+          "items": { "type": "string" }
+        },
+        "x_axis": {
+          "type": "string",
+          "enum": ["time", "out_tokens", "think_tokens"],
+          "description": "The cost axis: mean seconds per response, mean output tokens, or mean thinking tokens."
+        },
+        "front": {
+          "type": "string",
+          "enum": ["upper", "lower"],
+          "description": "\"upper\": no other candidate is both cheaper and scores higher. \"lower\": no other candidate is both cheaper and scores lower."
+        },
+        "threshold": {
+          "type": ["number", "null"],
+          "description": "Filters `listed` only: above it for an upper front, below it for a lower one. null when unset."
+        },
+        "points": {
+          "type": "array",
+          "description": "One point per candidate with a usable measurement in at least one of the panel's groups. Candidates listed in group_clusters.json's exclude_candidates are absent.",
+          "items": {
+            "type": "object",
+            "required": ["candidate", "x", "y", "n", "baseline", "on_front"],
+            "additionalProperties": false,
+            "properties": {
+              "candidate": { "type": "string" },
+              "x": {
+                "type": "number",
+                "description": "Mean cost on `x_axis`. 0.0 is a real measurement here (a model that does not think), never 'not measured': a candidate with no measurement has no point at all."
+              },
+              "y": {
+                "type": "number",
+                "description": "Mean task score."
+              },
+              "n": {
+                "type": "integer",
+                "description": "How many of the panel's groups this point averages over; below the length of `groups` when some had no usable measurement."
+              },
+              "baseline": {
+                "type": "boolean",
+                "description": "A candidate with role \"baseline\": drawn as a reference, never on the frontier."
+              },
+              "on_front": { "type": "boolean" }
+            }
+          }
+        },
+        "frontier": {
+          "type": "array",
+          "description": "Candidate names on the frontier, cheapest first.",
+          "items": { "type": "string" }
+        },
+        "listed": {
+          "type": "array",
+          "description": "`frontier` after the threshold.",
+          "items": { "type": "string" }
+        }
+      }
+    },
+
     "judgeSettings": {
       "type": "object",
       "required": ["provider", "model", "temperature", "disable_safety", "thinking"],
