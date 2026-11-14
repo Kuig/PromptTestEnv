@@ -36,8 +36,11 @@ from prompttestenv import catalog
 from prompttestenv import projectio as pio
 from prompttestenv.api import configure_ai_logging
 from prompttestenv.config import get_app_config
+from prompttestenv.frontier import FRONTS, X_AXES
 from prompttestenv.gui.common import browse_button
 from prompttestenv.models import (
+    CANDIDATE_ROLES,
+    DEFAULT_GROUP,
     REASONING_SCOPES,
     Candidate,
     ReasoningJudgeSettings,
@@ -85,6 +88,7 @@ def _load(project_dir: str) -> None:
     """Load a project into session state, invalidating every widget key."""
     draft = pio.load_project(project_dir)
     previous = st.session_state.get("ed", {}).get("gen", 0)
+    cluster_list = draft.clusters.get("clusters", [])
     st.session_state.ed = {
         "project_dir": project_dir,
         # Bumping this changes every widget key, so every widget is created
@@ -94,6 +98,18 @@ def _load(project_dir: str) -> None:
         "draft": draft,
         "candidates": _rows(draft.candidates),
         "tests": _rows(draft.tests),
+        # None when the file's `clusters` is not a list of objects: that is
+        # validate()'s error to report, and the rows are not rendered, so the
+        # hand-written value is never overwritten from the form.
+        "clusters": (
+            _rows(cluster_list)
+            if isinstance(cluster_list, list) and all(isinstance(c, dict) for c in cluster_list)
+            else None
+        ),
+        # group_clusters.json keys present on disk. A key the form added and
+        # then emptied again is dropped, so trying an option out and taking it
+        # back leaves the file (or its absence) exactly as it was.
+        "clusters_disk_keys": set(draft.clusters),
         "confirm_save": False,
         "flash": None,
     }
@@ -122,6 +138,27 @@ def _sync_draft() -> None:
     ed = st.session_state.ed
     ed["draft"].candidates = [row["data"] for row in ed["candidates"]]
     ed["draft"].tests = [row["data"] for row in ed["tests"]]
+    if ed["clusters"] is not None:
+        ed["draft"].clusters["clusters"] = [row["data"] for row in ed["clusters"]]
+    _drop_added_empty_cluster_keys()
+
+
+# A group_clusters.json key holding this value says nothing the absence of the
+# key would not, so one the form added is removed again once it is back here.
+_CLUSTER_EMPTY_VALUES = {
+    "defaults": {},
+    "include_in_verdict": True,
+    "exclude_candidates": [],
+    "clusters": [],
+}
+
+
+def _drop_added_empty_cluster_keys() -> None:
+    ed = st.session_state.ed
+    doc = ed["draft"].clusters
+    for key, empty in _CLUSTER_EMPTY_VALUES.items():
+        if key in doc and key not in ed["clusters_disk_keys"] and doc[key] == empty:
+            del doc[key]
 
 
 def _unique_label(base: str, taken: set) -> str:
@@ -184,7 +221,7 @@ def _row_action_bar(rows: list, index: int, key_prefix: str, label_field: str) -
 
 # Field name -> how to read the widget value back. `None` means "as is".
 _CANDIDATE_FIELDS = ("name", "provider", "model",
-                     "disable_safety", "thinking", "system_prompt_file")
+                     "disable_safety", "thinking", "system_prompt_file", "role")
 _TEST_FIELDS = ("id", "group", "judge_type", "json_output", "prompt", "criteria", "file")
 
 # judge_config.json widgets: widget key (before _skey) -> field name. Top-level scalars
@@ -325,7 +362,64 @@ def _harvest() -> None:
             draft.judge[block_name] = merged
 
     draft.criteria = _harvest_mapping(draft.criteria, _GLOBAL_KEYS, GlobalCriteria)
+    _harvest_clusters()
     _sync_draft()
+
+
+# group_clusters.json. No dataclass describes its on-disk shape (an option is
+# absent to mean "inherit"), so it is harvested by hand rather than through
+# merge_preserving_shape: the two rules that matter are that "inherit" REMOVES
+# the key instead of writing a value, and that a number keeps its on-disk form.
+_INHERIT = "(inherit)"
+_CLUSTER_OPTION_FIELDS = ("x_axis", "front")
+
+
+def _harvest_options(target: dict, prefix: str) -> None:
+    """Read the x_axis/front/threshold widgets under `prefix` into `target`."""
+    state = st.session_state
+    for field in _CLUSTER_OPTION_FIELDS:
+        key = f"{prefix}:{field}"
+        if key not in state:
+            continue
+        if state[key] == _INHERIT:
+            target.pop(field, None)
+        else:
+            target[field] = state[key]
+    key = f"{prefix}:threshold"
+    if f"{key}:on" in state:
+        if not state[f"{key}:on"]:
+            target.pop("threshold", None)
+        elif key in state:
+            target["threshold"] = pio.preserve_form(target.get("threshold"), state[key])
+
+
+def _harvest_clusters() -> None:
+    ed = st.session_state.ed
+    doc = ed["draft"].clusters
+    state = st.session_state
+
+    defaults = doc.get("defaults")
+    if defaults is None or isinstance(defaults, dict):
+        merged = dict(defaults or {})
+        _harvest_options(merged, _skey("gcl:defaults"))
+        doc["defaults"] = merged
+
+    key = _skey("gcl:include")
+    if key in state:
+        doc["include_in_verdict"] = bool(state[key])
+    key = _skey("gcl:exclude")
+    if key in state:
+        doc["exclude_candidates"] = list(state[key])
+
+    for row in ed["clusters"] or []:
+        data = row["data"]
+        name_key = _wkey("cl", row["uid"], "name")
+        if name_key in state:
+            data["name"] = state[name_key]
+        groups_key = _wkey("cl", row["uid"], "groups")
+        if groups_key in state:
+            data["groups"] = list(state[groups_key])
+        _harvest_options(data, _wkey("cl", row["uid"], "opt"))
 
 
 # ── Widget helpers ────────────────────────────────────────────────────────────
@@ -710,9 +804,9 @@ with issues_slot:
     for message in warnings:
         st.warning(message)
 
-tab_cand, tab_tests, tab_judge, tab_global, tab_prompts, tab_files = st.tabs(
+tab_cand, tab_tests, tab_judge, tab_global, tab_prompts, tab_files, tab_clusters = st.tabs(
     ["Candidates", "Test cases", "Judge config", "Global criteria",
-     "System prompts", "Test files"]
+     "System prompts", "Test files", "Group clusters"]
 )
 
 
@@ -730,7 +824,8 @@ with tab_cand:
         st.dataframe(
             [{"name": c["data"].get("name"), "provider": c["data"].get("provider"),
               "model": c["data"].get("model"),
-              "system prompt": c["data"].get("system_prompt_file") or "—"}
+              "system prompt": c["data"].get("system_prompt_file") or "—",
+              "role": c["data"].get("role", "candidate")}
              for c in ed["candidates"]],
             width="stretch", hide_index=True,
         )
@@ -770,11 +865,12 @@ with tab_cand:
                             key=_wkey("cand", row["uid"], "disable_safety"),
                             help="Google Gemini only.")
 
+            prompt_col, role_col = st.columns([2, 1])
             current_prompt = data.get("system_prompt_file")
             options = ["(none)"] + prompt_names
             if current_prompt and current_prompt not in prompt_names:
                 options.append(current_prompt)
-            picked_prompt = st.selectbox(
+            picked_prompt = prompt_col.selectbox(
                 "System prompt file", options,
                 index=options.index(current_prompt) if current_prompt in options else 0,
                 key=f"{_wkey('cand', row['uid'], 'system_prompt_file')}:pick",
@@ -782,6 +878,17 @@ with tab_cand:
             )
             st.session_state[_wkey("cand", row["uid"], "system_prompt_file")] = (
                 None if picked_prompt == "(none)" else picked_prompt
+            )
+            # An out-of-vocabulary role stays listed, so it is shown rather than
+            # silently rewritten; validate() reports it as an error.
+            current_role = data.get("role", "candidate")
+            role_options = list(dict.fromkeys([*CANDIDATE_ROLES, current_role]))
+            role_col.selectbox(
+                "Role", role_options, index=role_options.index(current_role),
+                key=_wkey("cand", row["uid"], "role"),
+                help="A baseline is measured like any candidate, but the report's "
+                     "efficiency frontiers draw it as a reference point and never "
+                     "put it on a frontier. Part of the run hash.",
             )
 
             extras = [k for k in data if k not in _CANDIDATE_FIELDS]
@@ -1183,3 +1290,122 @@ with tab_files:
                 st.rerun()
             except (ValueError, OSError) as exc:
                 st.error(str(exc))
+
+
+# ── Group clusters ────────────────────────────────────────────────────────────
+
+def _choice_with_inherit(label: str, options, current, key: str, inherit_label: str) -> None:
+    """A closed choice whose first entry means "not set here", keeping an odd value."""
+    choices = [_INHERIT, *options]
+    if current is not None and current not in choices:
+        choices.append(current)
+    st.selectbox(
+        label, choices, index=choices.index(current) if current is not None else 0, key=key,
+        format_func=lambda v: inherit_label if v == _INHERIT else str(v),
+    )
+
+
+def _cluster_option_widgets(current: dict, prefix: str, *, defaults: bool) -> None:
+    """The x_axis / front / threshold trio, for `defaults` or for one cluster.
+
+    Renders only; _harvest_options reads it back. A threshold the file holds as
+    something other than a number is shown, not offered, so the form never
+    rewrites it: validate() reports it as an error to fix by hand.
+    """
+    inherit = "(not set: {})" if defaults else "(inherit: {})"
+    x_col, front_col, threshold_col = st.columns(3)
+    with x_col:
+        _choice_with_inherit("Cost axis (x)", X_AXES, current.get("x_axis"), f"{prefix}:x_axis",
+                             inherit.format("time" if defaults else "defaults"))
+    with front_col:
+        _choice_with_inherit("Frontier", FRONTS, current.get("front"), f"{prefix}:front",
+                             inherit.format("upper" if defaults else "defaults"))
+    with threshold_col:
+        threshold = current.get("threshold")
+        if threshold is not None and (
+            isinstance(threshold, bool) or not isinstance(threshold, (int, float))
+        ):
+            st.caption(f"Threshold `{threshold!r}` is not a number: fix it by hand.")
+        else:
+            _nullable_number(
+                "threshold", threshold, f"{prefix}:threshold",
+                minimum=0.0, maximum=10.0, step=0.5, seed=6.0,
+                unset="Every frontier candidate is listed." if defaults
+                      else "Inherited from the defaults.",
+                help_text="Filters only the listed frontier (the table and the verdict "
+                          "payload): above it on an upper frontier, below it on a lower "
+                          "one. The plot always shows the whole frontier.",
+            )
+
+
+with tab_clusters:
+    st.info(
+        "Optional. Configures the report's efficiency frontiers (mean cost against "
+        "mean task score) and groups test groups into clusters, each with its own "
+        "panel. **Not part of the run hash**: editing it never invalidates "
+        "progress.jsonl, and `prompttestenv render` picks it up at no cost."
+    )
+    clusters_doc = draft.clusters
+    test_groups = list(dict.fromkeys(
+        str(t["data"].get("group") or DEFAULT_GROUP) for t in ed["tests"]
+    ))
+    candidate_names = [str(c["data"]["name"]) for c in ed["candidates"] if c["data"].get("name")]
+
+    st.subheader("Defaults")
+    st.caption("Used by every per-group panel and by 'All tests', and inherited by "
+               "each cluster that does not set its own.")
+    cl_defaults = clusters_doc.get("defaults")
+    if cl_defaults is None or isinstance(cl_defaults, dict):
+        _cluster_option_widgets(cl_defaults or {}, _skey("gcl:defaults"), defaults=True)
+    else:
+        st.caption("`defaults` in the file is not an object: fix it by hand.")
+
+    include = clusters_doc.get("include_in_verdict", True)
+    if isinstance(include, bool):
+        st.checkbox("Send the frontiers to the verdict judge", value=include,
+                    key=_skey("gcl:include"))
+    else:
+        st.caption("`include_in_verdict` in the file is not true/false: fix it by hand.")
+
+    excluded = clusters_doc.get("exclude_candidates", [])
+    if isinstance(excluded, list) and all(isinstance(c, str) for c in excluded):
+        st.multiselect(
+            "Exclude candidates", list(dict.fromkeys([*candidate_names, *excluded])),
+            default=excluded, key=_skey("gcl:exclude"),
+            help="Left out of every panel entirely. To keep a candidate as a "
+                 "reference point instead, give it the baseline role.",
+        )
+    else:
+        st.caption("`exclude_candidates` in the file is not a list of names: fix it by hand.")
+
+    st.subheader("Clusters")
+    if ed["clusters"] is None:
+        st.caption("`clusters` in the file is not a list of objects: fix it by hand.")
+    else:
+        if st.button("➕ Add cluster", key="add_cluster"):
+            ed["clusters"].append({"uid": uuid4().hex, "data": {"name": "", "groups": []}})
+            _sync_draft()
+            st.rerun()
+        for index, row in enumerate(ed["clusters"]):
+            data = row["data"]
+            groups = data.get("groups", [])
+            groups_ok = isinstance(groups, list) and all(isinstance(g, str) for g in groups)
+            title = f"{data.get('name') or '(unnamed)'} · " + (
+                f"{len(groups)} group{'s' if len(groups) != 1 else ''}" if groups_ok else "?"
+            )
+            with st.expander(title, expanded=len(ed["clusters"]) <= 3,
+                             key=f"clexp:{row['uid']}"):
+                st.text_input("Name", value=str(data.get("name") or ""),
+                              key=_wkey("cl", row["uid"], "name"))
+                if groups_ok:
+                    st.multiselect(
+                        "Groups", list(dict.fromkeys([*test_groups, *groups])),
+                        default=groups, key=_wkey("cl", row["uid"], "groups"),
+                    )
+                else:
+                    st.caption("`groups` in the file is not a list of names: fix it by hand.")
+                _cluster_option_widgets(data, _wkey("cl", row["uid"], "opt"), defaults=False)
+                if st.button("🗑 Remove cluster", key=f"clrm:{row['uid']}"):
+                    ed["clusters"].pop(index)
+                    _sync_draft()
+                    st.rerun()

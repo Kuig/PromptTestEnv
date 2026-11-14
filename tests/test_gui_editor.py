@@ -17,6 +17,7 @@ from unittest.mock import patch
 from streamlit.testing.v1 import AppTest
 
 import prompttestenv
+from prompttestenv import projectio as pio
 from prompttestenv.models import Candidate
 from prompttestenv.progress import HASHED_FILENAMES, append_event, calculate_config_hash
 
@@ -25,7 +26,7 @@ from testutils import LoggerResetTestCase, make_temp_project
 APP_PATH = str(Path(prompttestenv.__file__).parent / "gui" / "editor.py")
 
 TAB_LABELS = ["Candidates", "Test cases", "Judge config", "Global criteria",
-              "System prompts", "Test files"]
+              "System prompts", "Test files", "Group clusters"]
 
 
 class EditorTestCase(LoggerResetTestCase):
@@ -145,7 +146,7 @@ class TestEditorLoads(EditorTestCase):
     def test_open_populates_the_forms(self):
         at = self._app()
         self.assertEqual(list(at.exception), [])
-        self.assertEqual([t.label for t in at.tabs][:6], TAB_LABELS)
+        self.assertEqual([t.label for t in at.tabs][:7], TAB_LABELS)
 
         on_disk = json.loads((Path(self.project_dir) / "candidates.json").read_text("utf-8"))
         self.assertEqual(self._candidate_names(at), [c["name"] for c in on_disk])
@@ -652,6 +653,138 @@ class TestSaveConfirmation(EditorTestCase):
         self.assertFalse(at.session_state["ed"]["confirm_save"])
         written = json.loads((Path(self.project_dir) / "judge_config.json").read_text("utf-8"))
         self.assertEqual(written["repetitions"], 7)
+
+
+class TestCandidateRole(EditorTestCase):
+    def _role_boxes(self, at):
+        return [w for w in at.selectbox if w.proto.id and w.proto.id.endswith(":role")
+                and ":cand:" in w.proto.id]
+
+    def test_default_role_is_shown_and_never_written(self):
+        at = self._app()
+        self.assertTrue(all(box.value == "candidate" for box in self._role_boxes(at)))
+        self.assertTrue(any("No unsaved changes" in s.value for s in at.success))
+
+    def test_marking_a_baseline_writes_only_that_key(self):
+        before = json.loads((Path(self.project_dir) / "candidates.json").read_text("utf-8"))
+        at = self._app()
+        self._role_boxes(at)[0].set_value("baseline")
+        at.run()
+        self._click(at, "💾 Save")
+        at.run()
+        after = json.loads((Path(self.project_dir) / "candidates.json").read_text("utf-8"))
+        self.assertEqual(after[0], {**before[0], "role": "baseline"})
+        self.assertEqual(after[1:], before[1:])
+
+
+class TestGroupClustersTab(EditorTestCase):
+    FILE = "group_clusters.json"
+
+    def _path(self) -> Path:
+        return Path(self.project_dir) / self.FILE
+
+    def _save(self, at) -> None:
+        self._click(at, "💾 Save")
+        at.run()
+
+    def _row_key(self, at, index: int, field: str) -> str:
+        uid = at.session_state["ed"]["clusters"][index]["uid"]
+        return self._key(at, f"cl:{uid}:{field}")
+
+    def test_opening_never_creates_the_file(self):
+        at = self._app()
+        self.assertTrue(any("No unsaved changes" in s.value for s in at.success))
+        self.assertFalse(self._path().exists())
+
+    def test_trying_an_option_and_taking_it_back_leaves_nothing_to_save(self):
+        at = self._app()
+        box = at.selectbox(key=self._key(at, "gcl:defaults:x_axis"))
+        box.set_value("think_tokens")
+        at.run()
+        self.assertTrue(any(self.FILE in w.value for w in at.sidebar.warning))
+        at.selectbox(key=self._key(at, "gcl:defaults:x_axis")).set_value("(inherit)")
+        at.run()
+        # Checked on this file alone: a second rerun of a project with no
+        # reasoning_judge block dirties judge_config.json on its own (a
+        # pre-existing "false" vs False mismatch in that block's harvest).
+        self.assertNotIn(self.FILE, pio.changed_files(at.session_state["ed"]["draft"]))
+        self.assertEqual(at.session_state["ed"]["draft"].clusters, {})
+
+    def test_a_default_saves_without_confirmation_even_with_a_run(self):
+        self._add_progress_log()
+        hash_before = calculate_config_hash(self.project_dir)
+        at = self._app()
+        at.selectbox(key=self._key(at, "gcl:defaults:x_axis")).set_value("think_tokens")
+        at.run()
+        self._save(at)
+        self.assertFalse(at.session_state["ed"]["confirm_save"])
+        self.assertEqual(json.loads(self._path().read_text("utf-8")),
+                         {"defaults": {"x_axis": "think_tokens"}})
+        self.assertEqual(calculate_config_hash(self.project_dir), hash_before)
+
+    def test_adding_a_cluster(self):
+        at = self._app()
+        self._click(at, "➕ Add cluster")
+        at.run()
+        at.text_input(key=self._row_key(at, 0, "name")).set_value("Everything")
+        at.multiselect(key=self._row_key(at, 0, "groups")).set_value(["Default group"])
+        at.selectbox(key=self._row_key(at, 0, "opt:front")).set_value("lower")
+        at.run()
+        self._save(at)
+        self.assertEqual(json.loads(self._path().read_text("utf-8")), {"clusters": [
+            {"name": "Everything", "groups": ["Default group"], "front": "lower"},
+        ]})
+
+    def test_an_unnamed_cluster_blocks_saving(self):
+        at = self._app()
+        self._click(at, "➕ Add cluster")
+        at.run()
+        self.assertTrue(any("has no name" in e.value for e in at.error))
+
+    def test_an_existing_file_round_trips_and_a_cluster_can_be_removed(self):
+        original = json.dumps({
+            "defaults": {"threshold": 6},
+            "clusters": [
+                {"name": "A", "groups": ["Default group"]},
+                {"name": "B", "groups": ["Default group"], "x_axis": "time"},
+            ],
+        }, indent=4).replace("\n", "\r\n") + "\r\n"
+        self._path().write_text(original, encoding="utf-8", newline="")
+        at = self._app()
+        # The int threshold and the CRLF survive: nothing is pending.
+        self.assertTrue(any("No unsaved changes" in s.value for s in at.success))
+        self._click(at, "🗑 Remove cluster")
+        at.run()
+        self._save(at)
+        raw = self._path().read_bytes()
+        self.assertIn(b"\r\n", raw)
+        self.assertEqual(json.loads(raw), {
+            "defaults": {"threshold": 6},
+            "clusters": [{"name": "B", "groups": ["Default group"], "x_axis": "time"}],
+        })
+
+    def test_discard_reseeds_the_tab_from_disk(self):
+        at = self._app()
+        self._click(at, "➕ Add cluster")
+        at.run()
+        at.text_input(key=self._row_key(at, 0, "name")).set_value("Temp")
+        at.selectbox(key=self._key(at, "gcl:defaults:front")).set_value("lower")
+        at.run()
+        self._click(at, "↩️ Discard")
+        at.run()
+        self.assertEqual(at.session_state["ed"]["clusters"], [])
+        self.assertEqual(at.session_state["ed"]["draft"].clusters, {})
+        self.assertEqual(at.selectbox(key=self._key(at, "gcl:defaults:front")).value, "(inherit)")
+
+    def test_excluding_a_candidate(self):
+        name = json.loads((Path(self.project_dir) / "candidates.json").read_text("utf-8"))[0]["name"]
+        at = self._app()
+        at.multiselect(key=self._key(at, "gcl:exclude")).set_value([name])
+        at.checkbox(key=self._key(at, "gcl:include")).uncheck()
+        at.run()
+        self._save(at)
+        self.assertEqual(json.loads(self._path().read_text("utf-8")),
+                         {"include_in_verdict": False, "exclude_candidates": [name]})
 
 
 class TestValidationGate(EditorTestCase):
