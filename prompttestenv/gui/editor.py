@@ -61,6 +61,9 @@ GLOBAL_MODES = ("llm-judge", "similarity", "assert", "none")
 DIMENSION_MODES = ("split", "joint")
 
 _NULLABLE_SENTINEL = "(config.json default)"
+# Session-state key of the {widget key: first value} map _nullable_number keeps.
+_NULLABLE_SEEDS_KEY = "nullable_seeds"
+_NO_PROMPT = "(none)"
 
 # Provider and model listings are live requests (an Ollama listing is one
 # request per installed model), so they are fetched once per session and kept
@@ -304,6 +307,7 @@ def _widget_values(key_map: dict[str, str], nullables=()) -> dict:
     """
     state = st.session_state
     values = {field: state[key] for key, field in key_map.items() if key in state}
+    seeds = state.get(_NULLABLE_SEEDS_KEY, {})
     for key, field, cast in nullables:
         if f"{key}:on" not in state:
             continue
@@ -311,6 +315,12 @@ def _widget_values(key_map: dict[str, str], nullables=()) -> dict:
             values[field] = None
         elif key in state:
             values[field] = cast(state[key])
+        elif key in seeds:
+            # The box was ticked on the previous run, so its input has never
+            # been rendered and holds no state yet. Its first value is the seed
+            # it will show; reading it here is what lets this same run see the
+            # change (and enable Save) instead of one interaction later.
+            values[field] = cast(seeds[key])
     return values
 
 
@@ -331,6 +341,29 @@ def _harvest_mapping(target: dict, key_map: dict[str, str], cls: type,
     return pio.merge_preserving_shape(target, values, cls) if values else target
 
 
+def _mirror_pickers() -> None:
+    """Turn the two picker widgets' values into their fields' on-disk form.
+
+    The system-prompt and attachment menus hold a display value ("(none)", a
+    list), not the field's value, so each row's field key is filled from its
+    picker here, at harvest time. It used to be written during render, which
+    is AFTER the harvest: the draft only caught up one run later, so a pick
+    left Save disabled until the next interaction. That went unnoticed only
+    because an unrelated spurious change had kept Save enabled.
+    """
+    state = st.session_state
+    ed = state.ed
+    for row in ed["candidates"]:
+        key = _wkey("cand", row["uid"], "system_prompt_file")
+        if f"{key}:pick" in state:
+            picked = state[f"{key}:pick"]
+            state[key] = None if picked == _NO_PROMPT else picked
+    for row in ed["tests"]:
+        key = _wkey("test", row["uid"], "file")
+        if f"{key}:pick" in state:
+            state[key] = pio.attachment_value(list(state[f"{key}:pick"]))
+
+
 def _harvest() -> None:
     """Copy last run's widget values into the model, before rendering anything.
 
@@ -343,6 +376,7 @@ def _harvest() -> None:
     ed = st.session_state.ed
     draft = ed["draft"]
 
+    _mirror_pickers()
     for row in ed["candidates"]:
         _harvest_row("cand", row, _CANDIDATE_FIELDS, Candidate, _CANDIDATE_NULLABLES)
     for row in ed["tests"]:
@@ -588,13 +622,18 @@ def _nullable_number(label: str, current, key: str, *, minimum, step, unset: str
         seed: Value the input starts from when the box is first checked;
             defaults to `minimum`.
     """
+    # Recorded for _widget_values, which runs before this on the next run and
+    # needs the input's first value when the box was ticked but the input has
+    # not been rendered yet.
+    start_if_unset = type(minimum)(minimum if seed is None else seed)
+    st.session_state.setdefault(_NULLABLE_SEEDS_KEY, {})[key] = start_if_unset
     enabled = st.checkbox(
         f"Set {label}", value=current is not None, key=f"{key}:on", help=help_text,
     )
     if not enabled:
         st.caption(unset)
         return
-    start = current if current is not None else (minimum if seed is None else seed)
+    start = current if current is not None else start_if_unset
     st.number_input(label, min_value=minimum, max_value=maximum, step=step,
                     value=type(minimum)(start), key=key)
 
@@ -867,17 +906,15 @@ with tab_cand:
 
             prompt_col, role_col = st.columns([2, 1])
             current_prompt = data.get("system_prompt_file")
-            options = ["(none)"] + prompt_names
+            options = [_NO_PROMPT] + prompt_names
             if current_prompt and current_prompt not in prompt_names:
                 options.append(current_prompt)
-            picked_prompt = prompt_col.selectbox(
+            # Read back by _mirror_pickers, which turns "(none)" into None.
+            prompt_col.selectbox(
                 "System prompt file", options,
                 index=options.index(current_prompt) if current_prompt in options else 0,
                 key=f"{_wkey('cand', row['uid'], 'system_prompt_file')}:pick",
                 help="A bare filename, resolved under system_prompts/.",
-            )
-            st.session_state[_wkey("cand", row["uid"], "system_prompt_file")] = (
-                None if picked_prompt == "(none)" else picked_prompt
             )
             # An out-of-vocabulary role stays listed, so it is shown rather than
             # silently rewritten; validate() reports it as an error.
@@ -993,15 +1030,13 @@ with tab_tests:
             # A referenced-but-absent path stays selectable, so it remains
             # visible in the UI instead of silently dropping out of the file.
             options += [p for p in current_files if p not in options]
-            picked_files = st.multiselect(
+            # Read back by _mirror_pickers, through attachment_value.
+            st.multiselect(
                 "Attachments", options, default=current_files,
                 help="Sent to the candidate, and to the judge when "
                      "pass_media_to_judge is on. Order is the order they reach "
                      "the model.",
                 key=f"{_wkey('test', row['uid'], 'file')}:pick",
-            )
-            st.session_state[_wkey("test", row["uid"], "file")] = (
-                pio.attachment_value(picked_files)
             )
 
             extras = [k for k in data if k not in _TEST_FIELDS]

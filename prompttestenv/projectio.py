@@ -298,7 +298,15 @@ def merge_preserving_shape(original: dict, new_values: dict, cls: type) -> dict:
         if name in out or name not in new_values:
             continue
         value = new_values[name]
-        if name in always or value != effective_default(cls, name):
+        default = effective_default(cls, name)
+        if name == "thinking":
+            # Same spelling rule as for a key already present, applied against
+            # the default: ReasoningJudgeSettings.thinking defaults to the bool
+            # False while the widget hands back "false", and without this an
+            # untouched form added a reasoning_judge block to a hashed file on
+            # its second run.
+            value = preserve_thinking(default, value)
+        if name in always or value != default:
             out[name] = value
     return out
 

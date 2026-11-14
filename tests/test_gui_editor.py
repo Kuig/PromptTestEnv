@@ -276,6 +276,30 @@ class TestNoOpSave(EditorTestCase):
         at = self._app()
         self.assertTrue(any("No unsaved changes" in s.value for s in at.success))
 
+    def test_rerunning_without_edits_leaves_nothing_to_save(self):
+        """Every interaction is a rerun, and the second one is where the harvest
+        first reads widget state back. The fixture has no reasoning_judge block,
+        whose bool `thinking` default the widget spells "false": that used to add
+        the block, and change a hashed file, on a form nobody had touched.
+        """
+        self.assertNotIn("reasoning_judge", json.loads(
+            (Path(self.project_dir) / "judge_config.json").read_text("utf-8")))
+        at = self._app()
+        at.run()
+        at.run()
+        self.assertTrue(any("No unsaved changes" in s.value for s in at.success))
+        self.assertNotIn("reasoning_judge", at.session_state["ed"]["draft"].judge)
+
+    def test_a_pick_enables_save_on_the_same_run(self):
+        """Picker values are harvested, not mirrored during render one run late."""
+        at = self._app()
+        pickers = [w for w in at.selectbox if w.proto.id.endswith(":system_prompt_file:pick")]
+        current = pickers[0].value
+        pickers[0].set_value("(none)" if current != "(none)" else pickers[0].options[-1])
+        at.run()
+        self.assertTrue(any("Unsaved changes: candidates.json" in w.value
+                            for w in at.sidebar.warning))
+
     def test_opening_and_saving_changes_no_bytes(self):
         before = self._disk()
         at = self._app()
@@ -704,10 +728,7 @@ class TestGroupClustersTab(EditorTestCase):
         self.assertTrue(any(self.FILE in w.value for w in at.sidebar.warning))
         at.selectbox(key=self._key(at, "gcl:defaults:x_axis")).set_value("(inherit)")
         at.run()
-        # Checked on this file alone: a second rerun of a project with no
-        # reasoning_judge block dirties judge_config.json on its own (a
-        # pre-existing "false" vs False mismatch in that block's harvest).
-        self.assertNotIn(self.FILE, pio.changed_files(at.session_state["ed"]["draft"]))
+        self.assertTrue(any("No unsaved changes" in s.value for s in at.success))
         self.assertEqual(at.session_state["ed"]["draft"].clusters, {})
 
     def test_a_default_saves_without_confirmation_even_with_a_run(self):

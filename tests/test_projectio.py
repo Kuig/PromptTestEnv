@@ -136,6 +136,15 @@ class TestMergePreservingShape(unittest.TestCase):
         )
         self.assertNotIn("thinking", merged)
 
+    def test_absent_thinking_spelled_like_a_bool_default_stays_absent(self):
+        """ReasoningJudgeSettings.thinking defaults to False; the widget says "false"."""
+        merged = pio.merge_preserving_shape({}, {"thinking": "false"}, ReasoningJudgeSettings)
+        self.assertEqual(merged, {})
+
+    def test_absent_thinking_that_differs_from_a_bool_default_is_written(self):
+        merged = pio.merge_preserving_shape({}, {"thinking": "true"}, ReasoningJudgeSettings)
+        self.assertEqual(merged, {"thinking": "true"})
+
     def test_absent_non_default_key_gets_emitted(self):
         original = {"name": "A", "provider": "google", "model": "m"}
         merged = pio.merge_preserving_shape(
