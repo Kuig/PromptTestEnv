@@ -322,6 +322,20 @@ class TestValidation(unittest.TestCase):
         draft = self._draft(candidates=[{"name": "A"}])
         self.assertTrue(any("has no model" in e for e in self._errors(draft)))
 
+    def test_unknown_role_is_an_error(self):
+        draft = self._draft(candidates=[{"name": "A", "model": "m", "role": "basline"}])
+        self.assertTrue(any("unknown role 'basline'" in e for e in self._errors(draft)))
+
+    def test_baseline_role_is_valid(self):
+        draft = self._draft(candidates=[{"name": "A", "model": "m", "role": "baseline"}])
+        self.assertEqual([e for e in self._errors(draft) if "role" in e], [])
+
+    def test_default_role_is_not_written(self):
+        merged = pio.merge_preserving_shape(
+            {"name": "A", "model": "m"}, {"role": "candidate"}, Candidate,
+        )
+        self.assertNotIn("role", merged)
+
     def test_missing_system_prompt_is_only_a_warning(self):
         draft = self._draft(candidates=[
             {"name": "A", "model": "m", "system_prompt_file": "nope.txt"},

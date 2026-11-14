@@ -35,6 +35,15 @@ REASONING_SCOPES = (REASONING_SCOPE_NONE, REASONING_SCOPE_BEST, REASONING_SCOPE_
 # the startup of every subcommand.
 OUTPUT_MODES = ("html", "md", "json", "winner_only")
 
+# What a candidate is in the comparison. A "baseline" is measured and scored
+# exactly like any other candidate, and nothing in the run treats it
+# differently; only the efficiency-frontier panels do, drawing it as a reference
+# point that is never itself on the frontier (see frontier.py). Hashed like
+# every other candidates.json key, so marking one invalidates an existing run.
+CANDIDATE_ROLE_CANDIDATE = "candidate"
+CANDIDATE_ROLE_BASELINE = "baseline"
+CANDIDATE_ROLES = (CANDIDATE_ROLE_CANDIDATE, CANDIDATE_ROLE_BASELINE)
+
 # Axes of the reasoning profile. Mirrored as fields on ReasoningUnit and
 # ReasoningStats as real fields rather than a dict, so changing this
 # tuple is a code change, not a config change: config.json may reword a
@@ -520,7 +529,12 @@ class Candidate:
     disable_safety: bool = False
     thinking: bool | str = "default"
     system_prompt_file: str | None = None
+    role: str = CANDIDATE_ROLE_CANDIDATE
     resolved_system_instruction: str | None = None
+
+    @property
+    def is_baseline(self) -> bool:
+        return self.role == CANDIDATE_ROLE_BASELINE
 
     @classmethod
     def load_all(cls, project_dir: str | Path) -> list[Candidate]:
@@ -584,6 +598,7 @@ class Candidate:
             disable_safety=data.get("disable_safety", False),
             thinking=data.get("thinking", "default"),
             system_prompt_file=data.get("system_prompt_file"),
+            role=_parse_candidate_role(data.get("role", CANDIDATE_ROLE_CANDIDATE), data.get("name")),
             resolved_system_instruction=resolved_system_instruction,
         )
 
@@ -977,6 +992,30 @@ def _settings_from_dict(cls: type, data: dict):
     """
     known = {f.name for f in fields(cls)}
     return cls(**{k: v for k, v in data.items() if k in known})
+
+
+def _parse_candidate_role(value, name) -> str:
+    """Read a candidate's role, degrading an unknown value to a plain candidate.
+
+    Same posture as _parse_reasoning_scope: an unknown value is announced rather
+    than passed through. Degrading to "candidate" rather than raising is safe
+    because the role only changes how the frontier panels draw a point; the
+    editor and projectio.validate reject the typo before it reaches a run.
+
+    Args:
+        value: Raw value from candidates.json.
+        name: The candidate's name, for the warning.
+
+    Returns:
+        One of CANDIDATE_ROLES.
+    """
+    if isinstance(value, str) and value.lower() in CANDIDATE_ROLES:
+        return value.lower()
+    logger.log_warning(
+        f"candidates.json: candidate '{name}' has unknown role '{value}'. "
+        f"Expected one of {', '.join(CANDIDATE_ROLES)}. Treating it as '{CANDIDATE_ROLE_CANDIDATE}'."
+    )
+    return CANDIDATE_ROLE_CANDIDATE
 
 
 def _parse_reasoning_scope(value) -> str:

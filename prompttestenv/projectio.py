@@ -52,6 +52,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from prompttestenv.models import (
+    CANDIDATE_ROLE_CANDIDATE,
+    CANDIDATE_ROLES,
     Candidate,
     GlobalCriteria,
     JudgeConfig,
@@ -712,6 +714,14 @@ def validate(draft: ProjectDraft) -> tuple[list[str], list[str]]:
         if isinstance(thinking, str) and thinking.lower() not in THINKING_CHOICES:
             warnings.append(
                 f"Candidate '{label}' has a non-standard thinking value '{thinking}'."
+            )
+        # An error, not a warning, although the loader degrades it: a mistyped
+        # "baseline" would quietly put the reference point on the frontier.
+        role = cand.get("role", CANDIDATE_ROLE_CANDIDATE)
+        if role not in CANDIDATE_ROLES:
+            errors.append(
+                f"Candidate '{label}' has unknown role '{role}'. "
+                f"Expected one of {', '.join(CANDIDATE_ROLES)}."
             )
 
     # Test cases: id keys the same events.
