@@ -5,7 +5,8 @@
         "model": "gemini-2.5-flash",
         "temperature": 0.8,
         "disable_safety": false,
-        "thinking": false
+        "thinking": false,
+        "role": "baseline"
     },
     {
         "name": "Pirate Call Center",

@@ -1,0 +1,12 @@
+{
+    "include_in_verdict": false,
+    "clusters": [
+        {
+            "name": "Remote, thinking cost",
+            "groups": [
+                "Default group"
+            ],
+            "x_axis": "think_tokens"
+        }
+    ]
+}

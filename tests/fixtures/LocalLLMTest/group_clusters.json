@@ -1,0 +1,13 @@
+{
+    "clusters": [
+        {
+            "name": "Local, thinking cost",
+            "groups": [
+                "Default group"
+            ],
+            "x_axis": "think_tokens",
+            "front": "lower",
+            "threshold": 8
+        }
+    ]
+}

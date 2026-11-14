@@ -1,0 +1,23 @@
+{
+    "defaults": {
+        "x_axis": "time"
+    },
+    "clusters": [
+        {
+            "name": "All features",
+            "groups": [
+                "Corporate tests",
+                "Default group"
+            ],
+            "threshold": 6
+        },
+        {
+            "name": "Corporate, thinking cost",
+            "groups": [
+                "Corporate tests"
+            ],
+            "x_axis": "think_tokens",
+            "front": "lower"
+        }
+    ]
+}

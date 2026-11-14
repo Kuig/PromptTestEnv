@@ -1,0 +1,14 @@
+{
+    "defaults": {
+        "threshold": 5
+    },
+    "clusters": [
+        {
+            "name": "Quick, output tokens",
+            "groups": [
+                "Default group"
+            ],
+            "x_axis": "out_tokens"
+        }
+    ]
+}
