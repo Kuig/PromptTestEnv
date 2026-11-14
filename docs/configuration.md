@@ -157,7 +157,7 @@ against a remote one. Reasoning-analysis calls follow the same rule.
 
 ### `verdict_metadata`
 
-The self-describing header the verdict payload opens with, as fifteen named
+The self-describing header the verdict payload opens with, as sixteen named
 sections. It is appended to the verdict judge's system prompt, so it reads as
 standing instructions rather than as more data, and with `group_verdicts` on it
 is not resent once per group.
@@ -175,6 +175,7 @@ business, in `verdict_template`.
 | `score_scales` | Always. Both scores run 1 to 10, and `N/A` means not computed. |
 | `cost_per_point` | When any candidate has thinking tokens. |
 | `reasoning_profile` | When the reasoning profile table is actually rendered. |
+| `frontier` | When the payload carries an `EFFICIENCY FRONTIER` table: what a frontier is, that a baseline is never on one, and that it is not a ranking. |
 | `judge_types_intro` | When any judge-type legend entry is emitted. |
 | `judge_llm` | When at least one test case uses `judge_type: "llm-judge"`. |
 | `judge_similarity` | When at least one test case uses `judge_type: "similarity"`. |
@@ -193,9 +194,12 @@ Every field defaults to the empty string, but an empty section that the payload
 *needs* is a hard error rather than a silent omission: the figures would still
 reach the judge, just without the caveats that keep it from over-claiming.
 
-The final group-synthesis call gets no metadata at all. It never sees the results
-data, only the prose of the already-written group verdicts, so there is nothing
-left for the metadata to explain.
+The final group-synthesis call gets only the `frontier` section, and only when it
+carries frontiers. It never sees the per-test results, only the prose of the
+already-written group verdicts plus the "All tests" and cluster frontiers, so
+the frontier caveat is the one thing left for the metadata to explain. A
+project's frontiers are configured by its optional `group_clusters.json`, which
+[HOWTO.md](../HOWTO.md#f-efficiency-frontiers-group_clustersjson) documents.
 
 ## `secrets.json`
 

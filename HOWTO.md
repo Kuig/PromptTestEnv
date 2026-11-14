@@ -25,6 +25,7 @@ This file defines the LLM configurations (the "candidates") you want to compare 
 - `disable_safety` *(boolean, optional)*: Disables safety filters if supported by the provider (default: `False`).
 - `thinking` *(boolean | string, optional)*: Controls the "Thinking" or reasoning mode. Can be `true`, `false`, or `"default"`.
 - `system_prompt_file` *(string, optional)*: A relative path to a text file inside the `system_prompts/` folder. This allows you to assign different personas to different candidates.
+- `role` *(string, optional)*: `"candidate"` (the default, and what an absent key means) or `"baseline"`. A baseline is generated, judged and reported exactly like any other candidate; only the [efficiency frontiers](#f-efficiency-frontiers-group_clustersjson) treat it differently, drawing it as a hollow reference point that is never on a frontier. Typical use: a known model re-run in several projects, so their results can be compared through it. The key is part of the resume hash like every other one in this file, so marking a baseline in a project that already has a `progress.jsonl` invalidates that run.
 
 ### B. `test_cases.json`
 This file contains the actual prompts (the tasks) that the candidates will execute. It is a JSON array of objects.
@@ -76,8 +77,8 @@ This is the core engine configuration file. It dictates how the framework behave
 *Configures the LLM that writes the final markdown/HTML report.*
 - `provider`, `model`, `temperature`, `disable_safety`, `thinking`: Standard LLM parameters.
 - `verdict_system_prompt`: The system persona for the analyst writing the report.
-- `verdict_template`: The template used to generate a single global verdict (if `group_verdicts` is false) or the individual group verdicts. **No placeholders at all**, it is plain trailer text (typically ANALYSIS INSTRUCTIONS), used verbatim, with no `.format()` call and no need to escape literal `{`/`}` (e.g. a JSON example). The framework builds the rest of the payload around it automatically: the user prompt is `{data}\n\n---\n\n{your template}`, where `{data}` opens directly with the `# OVERALL AGGREGATE` table, then the per-test-case results; the system prompt gets a BENCHMARK METADATA block appended (repetition count, metric semantics, the judge-type legend, and a "How the global score was produced" section with the criteria text itself), and there is nothing to do in either template for that to happen.
-- `global_verdict_template`: The template used to generate the final overarching conclusion when `group_verdicts` is true. Same deal, one level up: **no placeholders**, just the trailer text after `# GROUP VERDICTS:\n{the group verdicts}\n\n---\n\n`, which the framework builds for you. This call gets no metadata tail on its system prompt: it never sees the results data, only the already-written group verdicts, so there is nothing left for the metadata to explain.
+- `verdict_template`: The template used to generate a single global verdict (if `group_verdicts` is false) or the individual group verdicts. **No placeholders at all**, it is plain trailer text (typically ANALYSIS INSTRUCTIONS), used verbatim, with no `.format()` call and no need to escape literal `{`/`}` (e.g. a JSON example). The framework builds the rest of the payload around it automatically: the user prompt is `{data}\n\n---\n\n{your template}`, where `{data}` opens directly with the `# OVERALL AGGREGATE` table, then the `# EFFICIENCY FRONTIER` table of what the call covers (the group's own, or "All tests" without `group_verdicts`, see [section F](#f-efficiency-frontiers-group_clustersjson)), then the per-test-case results; the system prompt gets a BENCHMARK METADATA block appended (repetition count, metric semantics, the judge-type legend, and a "How the global score was produced" section with the criteria text itself), and there is nothing to do in either template for that to happen.
+- `global_verdict_template`: The template used to generate the final overarching conclusion when `group_verdicts` is true. Same deal, one level up: **no placeholders**, just the trailer text after `# GROUP VERDICTS:\n{the group verdicts}`, the "All tests" and cluster `# EFFICIENCY FRONTIER` tables, and `\n\n---\n\n`, which the framework builds for you. Its system prompt gets only the frontier caveat as a metadata tail: it never sees the per-test results, only the already-written group verdicts and those frontiers, so nothing else is left for the metadata to explain.
 
 ### D. `global_criteria.json`
 A structured JSON file that defines the global rules applied to all test cases, with support for the different evaluation modes.
@@ -193,6 +194,50 @@ Each candidate gets one horizontal bar per dimension, plus the density figure, t
 
 ---
 
+### F. Efficiency frontiers (`group_clusters.json`)
+
+Every report shows which candidates give the best score for what they cost. A panel plots one point per candidate, its mean task score against a mean cost, and marks the **Pareto frontier**: the candidates for which no other candidate is both cheaper and better. Three kinds of panel exist:
+
+- **One per group**, under that group's verdict (folded away when `group_verdicts` is off).
+- **"All tests"**, under the final verdict, covering every group.
+- **One per cluster**, in a section of their own, when `group_clusters.json` declares clusters: a cluster is a set of groups you want read together, such as several benchmarks that probe the same skill.
+
+The same panels reach the JSON export (`frontiers`) and the verdict judge, which gets each frontier as a table it does not have to work out for itself. Under each plot, a table lists the frontier candidates.
+
+`group_clusters.json` is **optional**, sits in the project directory beside the other config files, and is **not part of the resume hash**: it only decides how the results are read, never what was measured, so editing it never invalidates a run and `prompttestenv render` redraws everything at no cost. Without it, the group and "All tests" panels are still drawn, with the built-in settings. Write it by hand, in the **Group clusters** tab of `prompttestenv editor`, or through a patch ([section 5](#5-editing-a-project-without-a-file-editor)).
+
+```json
+{
+    "defaults": {"x_axis": "time", "front": "upper", "threshold": null},
+    "include_in_verdict": true,
+    "exclude_candidates": ["Draft persona"],
+    "clusters": [
+        {"name": "Formal reasoning", "groups": ["GPQA Diamond", "AIME 2025 I", "BBEH"], "threshold": 6},
+        {"name": "Safety", "groups": ["HarmBench"], "front": "lower", "threshold": 6}
+    ]
+}
+```
+
+Every key is optional.
+
+- `defaults` *(object)*: the options of every per-group panel and of "All tests", inherited by each cluster that does not set its own. Its three keys:
+  - `x_axis`: the cost on the horizontal axis. `"time"` (mean seconds per response, the default), `"out_tokens"` (mean output tokens) or `"think_tokens"` (mean thinking tokens). The axis is logarithmic; a thinking count of 0 is a real measurement, so those points sit on a separate "0" band at the left instead of disappearing.
+  - `front`: `"upper"` (the default) keeps the candidates no one beats on a cheaper *and higher* score. `"lower"` keeps those no one beats on a cheaper *and lower* score, for a cluster where the low end is the interesting one.
+  - `threshold` *(number or null)*: filters only the **listed** frontier, in the table and in the verdict payload: above it on an upper frontier, below it on a lower one. The plot always shows the whole frontier. `null` or absent lists everything.
+- `clusters` *(array)*: each entry has a unique `name`, the `groups` it covers (the `group` values of your test cases), and optionally its own `x_axis`, `front` and `threshold`. A cluster's options apply to its own panel only, never to the panels of the groups it contains.
+- `exclude_candidates` *(array of names)*: left out of every panel entirely. To keep a candidate visible as a reference instead, give it `"role": "baseline"` in `candidates.json`.
+- `include_in_verdict` *(boolean, default `true`)*: `false` keeps the frontiers out of the verdict payload, and leaves the report as it is.
+
+How the figures are built:
+
+- A **group** point is the candidate's mean over that group's repetitions, `-1` "not measured" values excluded. A candidate with no valid score, or no valid value on the cost axis, has no point in that group.
+- A **cluster** or **"All tests"** point is the **mean of the per-group means**, so every group weighs the same however many test cases it holds. When a candidate has a point in only some of the panel's groups, its label says so, e.g. `(2/3)`.
+- A timed-out response counts at the deadline it hit, so a slow candidate is not made to look faster by its timeouts.
+
+A cluster that names a group no test case uses, or an excluded name that is not a candidate, is a warning, and the panel covers whatever exists. A malformed file never stops a run: its invalid parts are dropped with a warning, while the editor and `prompttestenv edit` refuse to save them.
+
+---
+
 ## 3. Choosing an Output Mode
 
 When you run a benchmark you pick what it writes:
@@ -238,6 +283,12 @@ Two conventions will bite you if you do not know them:
 The export carries the best-scoring repetition's response and trace, the same
 one the HTML report shows. The other repetitions' texts stay in
 `progress.jsonl`; their scores, token counts and timings are all in the export.
+
+`frontiers` carries every efficiency-frontier panel the HTML draws (see
+[section F](#f-efficiency-frontiers-group_clustersjson)), with every point, so a
+script can redraw them or merge several projects' panels: `overall`, then
+`groups` and `clusters`, each with its options, its `points`, and the candidate
+names on the `frontier` and in the thresholded `listed`.
 
 ---
 

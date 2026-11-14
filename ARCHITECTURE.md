@@ -34,6 +34,7 @@ Projects/<benchmark>/
 ├── judge_config.json         ← judge LLM configuration and templates
 ├── test_cases.json           ← prompts, evaluation criteria and evaluation modes
 ├── global_criteria.json      ← global criteria, with a mode selector
+├── group_clusters.json       ← optional: efficiency-frontier settings and clusters (not hashed)
 ├── system_prompts/           ← optional system prompt files
 ├── test_files/               ← attachments (images, audio, PDFs, text files)
 ├── progress.jsonl            ← resume-safe run log: every response, score and analysis
@@ -74,8 +75,10 @@ and then produces output; `analyze_project` runs the third phase alone;
    report and the verdict payload record which scope produced the figures, since
    figures from the two scopes are not comparable.
 
-Then `verdict.py` has a judge LLM write the report body, and `reporting.py` or
-`json_report.py` renders it.
+Then `runner.py` computes the efficiency frontiers once (`frontier.py`, from the
+results and the optional `group_clusters.json`), `verdict.py` has a judge LLM
+write the report body with those frontiers in its payload, and `reporting.py` or
+`json_report.py` renders it with the same frontiers.
 
 ### Modules
 
@@ -101,12 +104,18 @@ Then `verdict.py` has a judge LLM write the report body, and `reporting.py` or
 - `reporting.py`: the Jinja2 HTML report and its presentation helpers (badges,
   trace colouring, a small Markdown to HTML converter).
 - `json_report.py`: the JSON export.
+- `frontier.py`: the efficiency frontiers. Reads `group_clusters.json`
+  (`GroupClusters`, plus `check_group_clusters`, the one definition of a valid
+  file) and computes every panel (`build_panels`): one per group, one per
+  cluster, and "All tests", each with its Pareto frontier. Computation only.
+- `frontier_plot.py`: draws a panel as inline SVG for the HTML report, with no
+  plotting dependency.
 - `models.py`: every domain dataclass, each owning its own file I/O, plus
   `pool_by_candidate`, the one per-candidate aggregation.
 - `config.py`: `AppConfig` over the root `config.json`, and `init_project`.
 - `projectio.py`: byte-faithful load and serialise of the four project config
-  files, their validation, and the guards on the two asset directories. Shared
-  by every interface that edits a project.
+  files and the optional `group_clusters.json`, their validation, and the guards
+  on the two asset directories. Shared by every interface that edits a project.
 - `projectedit.py`: `read_project` and `edit_project`, the interface-agnostic
   editing API. Applies a partial patch on top of `projectio`.
 - `catalog.py`: what the client can reach (`list_catalog`, the live provider and
@@ -160,7 +169,18 @@ process. `gui/__init__.py` exists only so the package ships in a wheel.
 **`reporting.py` and `json_report.py` share no code.** They are two renderers of
 one aggregation, `pool_by_candidate` in `models.py`, which is what stops the HTML
 and the JSON from reporting a candidate differently. A helper both sides want
-belongs in `models.py` or `reasoning.py`, never in a cross-import between them.
+belongs in `models.py`, `reasoning.py` or `frontier.py`, never in a cross-import
+between them. The frontiers follow the same rule one step further: `runner.py`
+builds the panels once and hands the same objects to the verdict payload, the
+HTML and the JSON, so the three cannot disagree about who is on a frontier.
+
+**What reads the results is not what was measured.** `group_clusters.json`
+decides only how a report reads the results, so it is outside the resume hash,
+and nothing in it may stop a run: an invalid part is dropped with a warning,
+while the two editing paths refuse to save it. A candidate's `role` is the
+deliberate exception: it too affects only the frontiers, but it lives in
+`candidates.json` and is hashed like the rest of that file, so marking a
+baseline invalidates an existing run.
 
 **The measurement instrument is not per project.** The reasoning dimensions,
 their definitions and prompts, the sentence-splitting parameters, the

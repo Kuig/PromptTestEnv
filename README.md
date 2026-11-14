@@ -15,7 +15,7 @@ structured JSON export, or a single winner line (see
 
 | Document | What it covers |
 |---|---|
-| [HOWTO.md](HOWTO.md) | Authoring a benchmark: every option of the four project config files, the reasoning analysis, and how to repurpose the framework for bulk document processing. |
+| [HOWTO.md](HOWTO.md) | Authoring a benchmark: every option of the four project config files and of the optional `group_clusters.json` (the efficiency frontiers), the reasoning analysis, and how to repurpose the framework for bulk document processing. |
 | [docs/configuration.md](docs/configuration.md) | Key-by-key reference for the root `config.json` and `secrets.json`. |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Internal design: the pipeline, the module map, and the invariants. |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Development install, the test suite, and the fixtures. |
@@ -151,7 +151,7 @@ a single LLM call**.
 
 | Mode | Writes | What it is |
 |---|---|---|
-| `html` (default) | `Report/<timestamp>_<N>C_<M>T.html` | The full report, for a human. Verdict, per-test-case scores with mean and sd, best response per candidate, and the thinking trace colour-coded in place by the reasoning analysis. |
+| `html` (default) | `Report/<timestamp>_<N>C_<M>T.html` | The full report, for a human. Verdict, efficiency-frontier plots (score against time or tokens) per group, per cluster and overall, per-test-case scores with mean and sd, best response per candidate, and the thinking trace colour-coded in place by the reasoning analysis. |
 | `md` | `Report/<timestamp>_<N>C_<M>T.md` | The verdict text alone, as a readable summary. Deliberately just that: it is meant for someone who wants the conclusion without the apparatus, or for an LLM driving PromptTestEnv as a tool, which needs the outcome without spending its context on four hundred rows of statistics. The detail is not gone, it is in `progress.jsonl`. |
 | `json` | `Report/<timestamp>_<N>C_<M>T.json` | The same content the HTML carries, structured for a program instead of a page, **plus** the per-repetition raw values the page reduces to mean and sd. Described field by field in [`report.schema.json`](report.schema.json). |
 | `winner_only` | nothing | One line naming the highest average task score. The cheapest mode: it skips the verdict judge entirely, so it is the one to use for a smoke run. |
