@@ -140,6 +140,28 @@ class TestEvaluateAssert(unittest.TestCase):
         self.assertEqual(score, 1)
         self.assertEqual(reasoning, "too far")
 
+    def test_split_sentences_is_available_inside_the_lambda(self):
+        score, _ = self._assert("s: (len(split_sentences(s)), 'n')",
+                                "First sentence here. Second sentence here.")
+        self.assertEqual(score, 2)
+
+    def test_split_sentences_matches_the_reasoning_splitter(self):
+        from prompttestenv.reasoning import split_into_units
+        text = "A first sentence here. Then a second one.\n\n```\ncode. block.\n```\n# Heading"
+        expected = [text[a:b] for a, b in split_into_units(text)]
+        _, reasoning = self._assert("s: (10, json.dumps(split_sentences(s)))", text)
+        self.assertEqual(json.loads(reasoning), expected)
+
+    def test_split_sentences_combines_with_similarity_per_sentence(self):
+        with patch("prompttestenv.test_judge.get_text_embedding") as mock_embed:
+            mock_embed.return_value = [1.0, 0.0]
+            expr = ("s: (10, 'all close') if min(similarity(x, 'ref') "
+                    "for x in split_sentences(s)) > 0.8 else (1, 'drift')")
+            score, _ = self._assert(expr, "First sentence here. Second sentence here.")
+        self.assertEqual(score, 10)
+        # Two sentences, each embedded alongside the reference.
+        self.assertEqual(mock_embed.call_count, 4)
+
     def test_similarity_backend_failure_degrades_to_not_measured(self):
         with patch("prompttestenv.test_judge.get_text_embedding") as mock_embed:
             mock_embed.side_effect = RuntimeError("embedding backend down")

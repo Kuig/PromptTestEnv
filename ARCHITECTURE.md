@@ -92,7 +92,8 @@ Then `verdict.py` has a judge LLM write the report body, and `reporting.py` or
 - `test_judge.py`: judge dispatch for one response. Three evaluators, one score.
   The `assert` evaluator's lambda runs against an explicit namespace (its
   argument, the full builtins, `re`, `math`, `json`, `statistics`, `datetime`,
-  `string`, and a `similarity(a, b)` embedding helper), not this module's
+  `string`, a `similarity(a, b)` embedding helper, and `split_sentences(text)`,
+  the reasoning analysis's own sentence splitter), not this module's
   globals.
 - `reasoning.py`: trace segmentation into units, the per-dimension judge calls,
   and the metrics computed without a judge.

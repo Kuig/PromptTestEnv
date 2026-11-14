@@ -237,7 +237,9 @@ def _evaluate_assert(
     unstripped candidate response), the stdlib modules ``re``, ``math``,
     ``json``, ``statistics``, ``datetime`` and ``string``, a
     ``similarity(a, b)`` helper (raw cosine of the two strings' embeddings via
-    the configured ``similarity_judge``), and the full Python builtins
+    the configured ``similarity_judge``), a ``split_sentences(text)`` helper
+    (the reasoning analysis's sentence splitter, returning strings), and the
+    full Python builtins
     (``__import__`` included). This is not a sandbox: the criteria are trusted
     project-owned code. It just stops the lambda depending on whatever
     happened to be imported at module scope.
@@ -257,6 +259,15 @@ def _evaluate_assert(
             embed_with_similarity_judge(b, judge_config),
         )
 
+    def split_sentences(text: str) -> list[str]:
+        """Return ``text`` split into sentences, exactly as the reasoning
+        analysis splits a trace (reasoning.split_into_units: fenced code and
+        headings stay atomic, short fragments merge into a neighbour, the
+        parameters come from config.json's unit_splitting)."""
+        # Lazy: reasoning imports this module, so a top-level import would cycle.
+        from prompttestenv.reasoning import split_into_units
+        return [text[a:b] for a, b in split_into_units(text)]
+
     namespace = {
         "__builtins__": __builtins__,
         "re": re,
@@ -266,6 +277,7 @@ def _evaluate_assert(
         "datetime": datetime,
         "string": string,
         "similarity": similarity,
+        "split_sentences": split_sentences,
     }
 
     try:
