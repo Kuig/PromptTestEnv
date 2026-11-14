@@ -203,6 +203,73 @@ class TestUnknownKeys(ProjectEditTestCase):
         self.assertFalse(pe.edit_project(self.project_dir, [1, 2]).ok)
 
 
+class TestGroupClusters(ProjectEditTestCase):
+    """group_clusters.json through a patch: merged by name, never gated by the hash."""
+
+    FILE = pio.GROUP_CLUSTERS_FILE
+
+    def _seed(self):
+        result = pe.edit_project(self.project_dir, {"group_clusters": {
+            "defaults": {"x_axis": "time", "threshold": 6},
+            "clusters": [
+                {"name": "A", "groups": ["Default group"], "front": "lower"},
+                {"name": "B", "groups": ["Default group"]},
+            ],
+        }})
+        self.assertTrue(result.ok, result.errors)
+        return result
+
+    def test_creating_it_writes_only_that_file(self):
+        self.assertEqual(self._seed().written, [self.FILE])
+        self.assertEqual(pe.read_project(self.project_dir)["group_clusters"]["defaults"],
+                         {"x_axis": "time", "threshold": 6})
+
+    def test_read_project_reports_an_absent_file_as_empty(self):
+        self.assertEqual(pe.read_project(self.project_dir)["group_clusters"], {})
+
+    def test_the_hash_gate_never_fires_for_it(self):
+        stored = self._stamp_progress()
+        result = self._seed()
+        self.assertFalse(result.hash_changed)
+        self.assertEqual(result.new_hash, stored)
+
+    def test_clusters_merge_by_name_and_null_takes_an_override_back(self):
+        self._seed()
+        result = pe.edit_project(self.project_dir, {"group_clusters": {
+            "defaults": {"threshold": None},
+            "clusters": [{"name": "A", "front": None, "x_axis": "out_tokens"},
+                         {"name": "C", "groups": ["Default group"]}],
+        }})
+        self.assertTrue(result.ok, result.errors)
+        data = self._json(self.FILE)
+        self.assertEqual(data["defaults"], {"x_axis": "time"})
+        self.assertEqual([c["name"] for c in data["clusters"]], ["A", "B", "C"])
+        self.assertEqual(data["clusters"][0],
+                         {"name": "A", "groups": ["Default group"], "x_axis": "out_tokens"})
+
+    def test_delete_by_cluster_name(self):
+        self._seed()
+        result = pe.edit_project(self.project_dir, {"delete": {"group_clusters": ["A"]}})
+        self.assertTrue(result.ok, result.errors)
+        self.assertEqual([c["name"] for c in self._json(self.FILE)["clusters"]], ["B"])
+
+    def test_deleting_an_absent_cluster_is_an_error(self):
+        result = pe.edit_project(self.project_dir, {"delete": {"group_clusters": ["Ghost"]}})
+        self.assertFalse(result.ok)
+        self.assertIn("no cluster named 'Ghost'", result.errors[0])
+
+    def test_a_typo_in_a_key_is_an_error(self):
+        result = pe.edit_project(self.project_dir, {"group_clusters": {"cluster": []}})
+        self.assertFalse(result.ok)
+        self.assertTrue(any("unknown key 'cluster'" in e for e in result.errors))
+        self.assertFalse((Path(self.project_dir) / self.FILE).exists())
+
+    def test_a_cluster_without_a_name_is_an_error(self):
+        result = pe.edit_project(self.project_dir, {"group_clusters": {"clusters": [{"groups": []}]}})
+        self.assertFalse(result.ok)
+        self.assertIn("needs a 'name'", result.errors[0])
+
+
 class TestDelete(ProjectEditTestCase):
     def test_deleting_a_candidate_removes_only_that_entry(self):
         names = [c["name"] for c in self._json("candidates.json")]

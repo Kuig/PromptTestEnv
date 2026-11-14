@@ -1,4 +1,8 @@
-"""Byte-faithful load/serialise of a project's four config files.
+"""Byte-faithful load/serialise of a project's config files.
+
+The four hashed configs, plus the optional ``group_clusters.json``, which
+follows the same fidelity rules but sits outside the run hash and is never
+created by a save that leaves it empty (see EDITABLE_FILENAMES).
 
 Every interface that edits a project goes through here: the Streamlit editor,
 `projectedit`'s headless API, and therefore the CLI and the MCP server too. It
@@ -54,6 +58,7 @@ from pathlib import Path
 from prompttestenv.models import (
     CANDIDATE_ROLE_CANDIDATE,
     CANDIDATE_ROLES,
+    DEFAULT_GROUP,
     Candidate,
     GlobalCriteria,
     JudgeConfig,
@@ -63,6 +68,12 @@ from prompttestenv.models import (
     TestJudgeSettings,
     VerdictJudgeSettings,
     attachment_paths,
+)
+from prompttestenv.frontier import (
+    GROUP_CLUSTERS_FILE,
+    GroupClusters,
+    check_group_clusters,
+    reference_warnings,
 )
 from prompttestenv.progress import (
     HASHED_FILENAMES,
@@ -74,6 +85,15 @@ CANDIDATES_FILE = "candidates.json"
 TEST_CASES_FILE = "test_cases.json"
 JUDGE_CONFIG_FILE = "judge_config.json"
 GLOBAL_CRITERIA_FILE = "global_criteria.json"
+
+# Every JSON file this module reads and writes: the four hashed configs plus
+# group_clusters.json, which is optional and deliberately outside the run hash
+# (it changes how results are read, never what was measured). The fidelity
+# rules apply to it all the same; the hash only ever sees HASHED_FILENAMES.
+EDITABLE_FILENAMES = HASHED_FILENAMES + (GROUP_CLUSTERS_FILE,)
+# Files that may be absent. An absent one whose draft is still empty is never
+# created, so opening and saving a project cannot add a file to it.
+OPTIONAL_FILENAMES = (GROUP_CLUSTERS_FILE,)
 
 SYSTEM_PROMPTS_DIR = "system_prompts"
 TEST_FILES_DIR = "test_files"
@@ -356,7 +376,11 @@ def merge_judge(judge: dict, values: dict) -> dict:
 
 @dataclass
 class ProjectDraft:
-    """A project's four config files, as raw data plus the bytes they came from.
+    """A project's config files, as raw data plus the bytes they came from.
+
+    The four hashed files, plus the optional group_clusters.json in `clusters`
+    (an empty dict both when the file is absent and when it holds `{}`; `disk`
+    tells the two apart).
 
     `disk` is what makes "did this actually change?" answerable exactly: the
     draft is serialised and compared byte for byte, rather than tracking
@@ -375,6 +399,7 @@ class ProjectDraft:
     tests: list[dict] = field(default_factory=list)
     judge: dict = field(default_factory=dict)
     criteria: dict = field(default_factory=dict)
+    clusters: dict = field(default_factory=dict)
     disk: dict[str, bytes | None] = field(default_factory=dict)
     trailing_newline: dict[str, bool] = field(default_factory=dict)
     newline: dict[str, str] = field(default_factory=dict)
@@ -469,7 +494,7 @@ def _parse(raw: bytes | None, fallback):
 
 
 def load_project(project_dir: str) -> ProjectDraft:
-    """Read a project's four config files as raw data.
+    """Read a project's config files as raw data.
 
     A missing or unparseable file loads as empty rather than raising: the editor
     is the tool you reach for to *fix* such a project.
@@ -481,12 +506,13 @@ def load_project(project_dir: str) -> ProjectDraft:
         A ProjectDraft carrying both the parsed data and the original bytes.
     """
     base = Path(project_dir)
-    raws = {name: _read_raw(base / name) for name in HASHED_FILENAMES}
+    raws = {name: _read_raw(base / name) for name in EDITABLE_FILENAMES}
 
     candidates = _parse(raws[CANDIDATES_FILE], [])
     tests = _parse(raws[TEST_CASES_FILE], [])
     judge = _parse(raws[JUDGE_CONFIG_FILE], {})
     criteria = _parse(raws[GLOBAL_CRITERIA_FILE], {})
+    clusters = _parse(raws[GROUP_CLUSTERS_FILE], {})
 
     return ProjectDraft(
         project_dir=str(project_dir),
@@ -494,6 +520,7 @@ def load_project(project_dir: str) -> ProjectDraft:
         tests=tests if isinstance(tests, list) else [],
         judge=judge if isinstance(judge, dict) else {},
         criteria=criteria if isinstance(criteria, dict) else {},
+        clusters=clusters if isinstance(clusters, dict) else {},
         disk=raws,
         trailing_newline={
             name: (raw.endswith(b"\n") if raw is not None else True)
@@ -517,18 +544,30 @@ def serialize(data, *, trailing_newline: bool, newline: str = "\n") -> bytes:
     return text.encode("utf-8")
 
 
-def serialize_all(draft: ProjectDraft) -> dict[str, bytes]:
-    """Serialise every config file of a draft.
-
-    Returns:
-        Maps each of HASHED_FILENAMES to the bytes that would be written.
-    """
+def _payloads(draft: ProjectDraft) -> dict:
+    """Each file's data, minus an optional file that is absent and still empty."""
     payloads = {
         CANDIDATES_FILE: draft.candidates,
         TEST_CASES_FILE: draft.tests,
         JUDGE_CONFIG_FILE: draft.judge,
         GLOBAL_CRITERIA_FILE: draft.criteria,
+        GROUP_CLUSTERS_FILE: draft.clusters,
     }
+    for name in OPTIONAL_FILENAMES:
+        if draft.disk.get(name) is None and not payloads[name]:
+            del payloads[name]
+    return payloads
+
+
+def serialize_all(draft: ProjectDraft) -> dict[str, bytes]:
+    """Serialise every config file of a draft.
+
+    Returns:
+        Maps each of EDITABLE_FILENAMES to the bytes that would be written,
+        leaving out an optional file that does not exist and would be empty.
+        Only the HASHED_FILENAMES entries feed the run hash.
+    """
+    payloads = _payloads(draft)
     return {
         name: serialize(
             data,
@@ -557,6 +596,7 @@ _SAVERS = {
     TEST_CASES_FILE: TestCase.save_all,
     JUDGE_CONFIG_FILE: JudgeConfig.save,
     GLOBAL_CRITERIA_FILE: GlobalCriteria.save,
+    GROUP_CLUSTERS_FILE: GroupClusters.save,
 }
 
 
@@ -567,20 +607,15 @@ def save_project(draft: ProjectDraft) -> list[str]:
         draft: The draft to persist.
 
     Returns:
-        The filenames written, in HASHED_FILENAMES order.
+        The filenames written, in EDITABLE_FILENAMES order.
 
     Raises:
         OSError: If a file cannot be written (see models._write_json_atomic).
     """
-    payloads = {
-        CANDIDATES_FILE: draft.candidates,
-        TEST_CASES_FILE: draft.tests,
-        JUDGE_CONFIG_FILE: draft.judge,
-        GLOBAL_CRITERIA_FILE: draft.criteria,
-    }
+    payloads = _payloads(draft)
     pending = changed_files(draft)
     written = []
-    for name in HASHED_FILENAMES:
+    for name in EDITABLE_FILENAMES:
         if name not in pending:
             continue
         _SAVERS[name](
@@ -791,6 +826,29 @@ def validate(draft: ProjectDraft) -> tuple[list[str], list[str]]:
         if problem:
             errors.append(f"global_criteria.assert_criteria {problem}")
 
+    # Group clusters. A file that exists but did not load as an object is an
+    # error, not a quiet `{}`: saving would otherwise overwrite the author's
+    # hand-written content with an empty object.
+    clusters_raw = draft.disk.get(GROUP_CLUSTERS_FILE)
+    if clusters_raw is not None and not isinstance(_parse(clusters_raw, None), dict) \
+            and not draft.clusters:
+        errors.append(
+            f"{GROUP_CLUSTERS_FILE} is not a readable JSON object; fix it by hand "
+            "before saving, or the save would replace it."
+        )
+    elif draft.clusters or clusters_raw is not None:
+        cluster_errors, cluster_warnings = check_group_clusters(draft.clusters)
+        errors.extend(f"{GROUP_CLUSTERS_FILE}: {e}" for e in cluster_errors)
+        warnings.extend(f"{GROUP_CLUSTERS_FILE}: {w}" for w in cluster_warnings)
+        if not cluster_errors:
+            groups = list(dict.fromkeys(
+                str(t.get("group") or DEFAULT_GROUP) for _, t in tests
+            ))
+            warnings.extend(reference_warnings(
+                GroupClusters.from_dict(draft.clusters), groups,
+                [str(c.get("name")) for _, c in candidates if c.get("name")],
+            ))
+
     # Orphans, in both directions. Over the well-formed entries only: a
     # malformed one is already an error, and it has no references to honour.
     used_prompts = {c.get("system_prompt_file") for _, c in candidates}
@@ -848,14 +906,21 @@ def save_status(draft: ProjectDraft) -> SaveStatus:
         A SaveStatus. `errors` non-empty must block the write.
     """
     pending = serialize_all(draft)
-    changed = [name for name in HASHED_FILENAMES if pending[name] != draft.disk.get(name)]
+    changed = [
+        name for name in EDITABLE_FILENAMES
+        if name in pending and pending[name] != draft.disk.get(name)
+    ]
     errors, warnings = validate(draft)
 
     stored = read_stored_hash(draft.project_dir)
     would_be = config_hash_from_bytes(pending)
 
+    # Hashed files only: reformatting an unhashed one costs nothing, and this
+    # list exists to explain a hash change the content does not account for.
     reformat_only = []
     for name in changed:
+        if name not in HASHED_FILENAMES:
+            continue
         try:
             if json.loads(pending[name]) == json.loads(draft.disk.get(name) or b"null"):
                 reformat_only.append(name)
@@ -985,7 +1050,7 @@ def externally_modified(draft: ProjectDraft) -> list[str]:
     """
     base = Path(draft.project_dir)
     return [
-        name for name in HASHED_FILENAMES
+        name for name in EDITABLE_FILENAMES
         if _read_raw(base / name) != draft.disk.get(name)
     ]
 

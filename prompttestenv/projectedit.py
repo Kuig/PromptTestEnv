@@ -22,11 +22,14 @@ confirmation dialog, and it exists because the alternative is an agent silently
 discarding an expensive run while tidying up a prompt. Nothing is ever deleted
 either way: the next run renames the log to progress.jsonl.bak.
 
-Two asymmetries worth knowing before reading further:
+Three asymmetries worth knowing before reading further:
 
 - Editing only `reasoning_analysis` or the `reasoning_judge` block never trips
   the gate. `progress` strips both before hashing precisely so that tuning the
   measurement never costs a re-run of the measured.
+- `group_clusters.json` is not hashed either, and rightly so: it only decides
+  how the report reads the results (the efficiency frontiers), never what was
+  measured, so editing it is always free.
 - `system_prompts/` and `test_files/` are not hashed at all, so changing one
   never trips the gate either, and a resumed run will happily mix responses
   produced under the old and the new version. That is the more dangerous of the
@@ -56,6 +59,7 @@ PATCH_KEYS = (
     "test_cases",
     "judge_config",
     "global_criteria",
+    "group_clusters",
     "system_prompts",
     "test_files",
     "delete",
@@ -71,7 +75,7 @@ _SECTIONS: dict[str, tuple[str, type]] = {
 # Patch section -> the ProjectDraft attribute it edits.
 _DRAFT_ATTR = {"candidates": "candidates", "test_cases": "tests"}
 
-_DELETE_KEYS = ("candidates", "test_cases", "system_prompts", "test_files")
+_DELETE_KEYS = ("candidates", "test_cases", "group_clusters", "system_prompts", "test_files")
 
 
 @dataclass(frozen=True)
@@ -174,6 +178,9 @@ def read_project(project_dir: str) -> dict:
         "test_cases": draft.tests,
         "judge_config": draft.judge,
         "global_criteria": draft.criteria,
+        # {} both when the file is absent and when it is empty: either way
+        # every frontier panel runs on the built-in defaults.
+        "group_clusters": draft.clusters,
         "system_prompts": prompts,
         "test_files": files,
         "errors": status.errors,
@@ -246,6 +253,23 @@ def _apply_delete(draft: pio.ProjectDraft, spec, errors: list[str]) -> None:
         setattr(draft, attribute,
                 [item for item in items if item.get(key_field) not in names])
 
+    names = spec.get("group_clusters")
+    if names is not None:
+        clusters = draft.clusters.get("clusters")
+        if not isinstance(names, list):
+            errors.append("delete.group_clusters must be a list of cluster names.")
+        elif not isinstance(clusters, list):
+            for name in names:
+                errors.append(f"delete.group_clusters: no cluster named '{name}'.")
+        else:
+            present = {c.get("name") for c in clusters if isinstance(c, dict)}
+            for name in names:
+                if name not in present:
+                    errors.append(f"delete.group_clusters: no cluster named '{name}'.")
+            draft.clusters["clusters"] = [
+                c for c in clusters if not (isinstance(c, dict) and c.get("name") in names)
+            ]
+
     for kind in pio.ASSET_KINDS:
         names = spec.get(kind)
         if names is None:
@@ -282,6 +306,70 @@ def _apply_order(draft: pio.ProjectDraft, spec, errors: list[str]) -> None:
             continue
         by_key = {item.get(key_field): item for item in items}
         setattr(draft, attribute, [by_key[name] for name in wanted])
+
+
+def _merge_dropping_nulls(target: dict, values: dict) -> None:
+    """Merge `values` into `target` in place; a null value removes the key.
+
+    In group_clusters.json an absent option means "inherit", so null is how a
+    patch takes an override back, rather than writing a literal null into
+    the file. Key order is kept: existing keys stay where they are.
+    """
+    for key, value in values.items():
+        if value is None:
+            target.pop(key, None)
+        else:
+            target[key] = value
+
+
+def _apply_group_clusters(draft: pio.ProjectDraft, values, errors: list[str]) -> None:
+    """Fold a patch into group_clusters.json.
+
+    `defaults` is merged key by key, `clusters` entries are matched by `name`
+    and merged the same way (a new name is appended), and any other key is
+    replaced whole. Everything the patch does not mention is left alone.
+    Whether the result is a valid file is validate()'s question, so a typo in
+    a key name is reported as the same error the editor would show.
+    """
+    if not isinstance(values, dict):
+        errors.append("'group_clusters' must be an object.")
+        return
+    clusters_doc = draft.clusters
+    for key, value in values.items():
+        if key == "defaults" and isinstance(value, dict) and isinstance(
+            clusters_doc.get("defaults", {}), dict
+        ):
+            merged = dict(clusters_doc.get("defaults", {}))
+            _merge_dropping_nulls(merged, value)
+            clusters_doc["defaults"] = merged
+        elif key == "clusters":
+            if not isinstance(value, list):
+                errors.append("group_clusters.clusters must be a list of objects.")
+                continue
+            current = clusters_doc.get("clusters", [])
+            if not isinstance(current, list):
+                errors.append(
+                    f"{pio.GROUP_CLUSTERS_FILE}: 'clusters' is not a list on disk; fix it first."
+                )
+                continue
+            current = list(current)
+            for index, entry in enumerate(value, start=1):
+                if not isinstance(entry, dict) or not entry.get("name"):
+                    errors.append(f"group_clusters.clusters[{index}] needs a 'name', which identifies it.")
+                    continue
+                existing = next(
+                    (c for c in current if isinstance(c, dict) and c.get("name") == entry["name"]),
+                    None,
+                )
+                if existing is None:
+                    existing = {}
+                    current.append(existing)
+                _merge_dropping_nulls(existing, entry)
+            clusters_doc["clusters"] = current
+        elif value is None:
+            clusters_doc.pop(key, None)
+        else:
+            clusters_doc[key] = value
 
 
 def _apply_assets(draft: pio.ProjectDraft, kind: str, spec, errors: list[str]) -> None:
@@ -335,6 +423,9 @@ def _apply_patch(draft: pio.ProjectDraft, patch: dict, errors: list[str]) -> Non
             draft.criteria = pio.merge_preserving_shape(
                 draft.criteria, values, GlobalCriteria
             )
+
+    if "group_clusters" in patch:
+        _apply_group_clusters(draft, patch["group_clusters"], errors)
 
     for kind in pio.ASSET_KINDS:
         if kind in patch:

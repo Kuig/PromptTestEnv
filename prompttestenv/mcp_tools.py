@@ -62,7 +62,8 @@ def register_tools(mcp: "FastMCP") -> None:
 
         Returns the four config files exactly as they sit on disk, unknown keys
         included, which is what a patch for prompttest_edit_project has to be
-        written against. System prompts come back with their text; attachments
+        written against, plus `group_clusters` (the optional
+        group_clusters.json, `{}` when absent). System prompts come back with their text; attachments
         come back as names and sizes only, since one can be a large binary.
 
         Also reports `errors` and `warnings` from the same validation the editor
@@ -104,12 +105,20 @@ def register_tools(mcp: "FastMCP") -> None:
               "judge_config":    {"repetitions": 3,
                                   "test_judge": {"model": "gemini-3-flash"}},
               "global_criteria": {"mode": "none"},
+              "group_clusters":  {"defaults": {"x_axis": "time"},
+                                  "clusters": [{"name": "Reasoning",
+                                                "groups": ["GPQA", "AIME"]}]},
               "system_prompts":  {"terse.txt": "Be terse."},
               "test_files":      {"notes.md": "text content"},
               "delete": {"candidates": ["Old"], "test_cases": ["t9"],
+                         "group_clusters": ["Reasoning"],
                          "system_prompts": ["old.txt"], "test_files": ["old.csv"]},
               "order":  {"candidates": ["Baseline", "Challenger"]}
             }
+
+        `group_clusters` edits the optional group_clusters.json, which configures
+        the report's efficiency frontiers: clusters are matched by `name`, and a
+        null value removes an option so it is inherited again.
 
         An unknown key is an error, not a no-op, so a typo is never silent.
         Attachments must be text here; a binary one has to be placed in
@@ -120,9 +129,10 @@ def register_tools(mcp: "FastMCP") -> None:
         next run would discard that finished work and start over. Read the
         message, then either accept it or pass force=True deliberately. Editing
         only `reasoning_analysis` or the `reasoning_judge` block never triggers
-        this. Editing system_prompts/ or test_files/ does not either, but for the
-        opposite reason: those are outside the hash, so a resumed run silently
-        mixes old and new responses.
+        this, and neither does `group_clusters`, which only changes how the
+        report reads the results. Editing system_prompts/ or test_files/ does
+        not either, but for the opposite reason: those are outside the hash, so
+        a resumed run silently mixes old and new responses.
 
         Args:
             project_dir: Path to an existing project directory.

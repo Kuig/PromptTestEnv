@@ -749,5 +749,67 @@ class TestAsLoaded(unittest.TestCase):
         self.assertIs(merged["json_output"], True)
 
 
+class TestGroupClustersFile(SharedLayerTestCase):
+    """group_clusters.json: edited like the others, never hashed, never created empty."""
+
+    def _path(self) -> Path:
+        return Path(self.project_dir) / pio.GROUP_CLUSTERS_FILE
+
+    def test_absent_file_stays_absent(self):
+        self.assertEqual(self.draft.clusters, {})
+        self.assertNotIn(pio.GROUP_CLUSTERS_FILE, pio.changed_files(self.draft))
+        self.assertEqual(pio.save_project(self.draft), [])
+        self.assertFalse(self._path().exists())
+
+    def test_a_new_file_is_written_and_reloads_as_a_no_op(self):
+        self.draft.clusters = {"clusters": [{"name": "C", "groups": ["Default group"]}]}
+        self.assertEqual(pio.save_project(self.draft), [pio.GROUP_CLUSTERS_FILE])
+        reloaded = pio.load_project(self.project_dir)
+        self.assertEqual(reloaded.clusters, self.draft.clusters)
+        self.assertEqual(pio.changed_files(reloaded), {})
+
+    def test_line_endings_are_preserved(self):
+        self._path().write_bytes(b'{\r\n    "clusters": []\r\n}\r\n')
+        draft = pio.load_project(self.project_dir)
+        self.assertEqual(pio.changed_files(draft), {})
+        draft.clusters["include_in_verdict"] = False
+        pio.save_project(draft)
+        self.assertIn(b"\r\n", self._path().read_bytes())
+
+    def test_editing_it_never_changes_the_hash(self):
+        stored = calculate_config_hash(self.project_dir)
+        append_event(self.project_dir, {"type": "meta", "config_hash": stored})
+        self.draft.clusters = {"defaults": {"x_axis": "think_tokens"}}
+        status = pio.save_status(self.draft)
+        self.assertEqual(status.changed, [pio.GROUP_CLUSTERS_FILE])
+        self.assertEqual(status.would_be_hash, stored)
+        self.assertFalse(status.invalidates)
+        self.assertEqual(status.reformat_only, [])
+
+    def test_structure_errors_block_and_unknown_names_warn(self):
+        self.draft.clusters = {"defaults": {"x_axis": "cost"}}
+        errors, _ = pio.validate(self.draft)
+        self.assertTrue(any("unknown x_axis 'cost'" in e for e in errors))
+
+        self.draft.clusters = {
+            "exclude_candidates": ["Ghost"],
+            "clusters": [{"name": "C", "groups": ["Nope"]}],
+        }
+        errors, warnings = pio.validate(self.draft)
+        self.assertEqual([e for e in errors if pio.GROUP_CLUSTERS_FILE in e], [])
+        self.assertTrue(any("'Nope'" in w for w in warnings))
+        self.assertTrue(any("'Ghost'" in w for w in warnings))
+
+    def test_an_unreadable_file_blocks_the_save_instead_of_being_emptied(self):
+        self._path().write_text("{broken", encoding="utf-8")
+        draft = pio.load_project(self.project_dir)
+        errors, _ = pio.validate(draft)
+        self.assertTrue(any("not a readable JSON object" in e for e in errors))
+
+    def test_external_modification_is_noticed(self):
+        self._path().write_text("{}\n", encoding="utf-8")
+        self.assertEqual(pio.externally_modified(self.draft), [pio.GROUP_CLUSTERS_FILE])
+
+
 if __name__ == "__main__":
     unittest.main()

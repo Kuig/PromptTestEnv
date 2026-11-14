@@ -288,9 +288,11 @@ Every key is optional. Send only what changes.
   "test_cases":      [{"id": "t1", "prompt": "...", "criteria": "...", "judge_type": "assert"}],
   "judge_config":    {"repetitions": 3, "test_judge": {"model": "gemini-3-flash"}},
   "global_criteria": {"mode": "none"},
+  "group_clusters":  {"defaults": {"x_axis": "time"},
+                      "clusters": [{"name": "Reasoning", "groups": ["GPQA", "AIME"]}]},
   "system_prompts":  {"terse.txt": "Answer in one sentence."},
   "test_files":      {"notes.md": "Q3 revenue was 150,000 euros."},
-  "delete": {"candidates": ["Old"], "test_cases": ["t9"],
+  "delete": {"candidates": ["Old"], "test_cases": ["t9"], "group_clusters": ["Reasoning"],
              "system_prompts": ["old.txt"], "test_files": ["old.csv"]},
   "order":  {"candidates": ["Baseline", "Challenger"]}
 }
@@ -309,6 +311,12 @@ Every key is optional. Send only what changes.
   `config.json`", the same as omitting the key.
 - **A test case's `file`** accepts a string, a list, or `null` to detach every
   attachment. Separators are normalised to `/`.
+- **`group_clusters`** edits the optional `group_clusters.json` (see
+  [Efficiency frontiers](#f-efficiency-frontiers-group_clustersjson)).
+  `defaults` merges key by key, a cluster is matched by `name` and merged the
+  same way, and any other key is replaced whole. `null` removes an option, so
+  it is inherited again. `delete.group_clusters` takes cluster names. A patch
+  that leaves the file empty never creates it.
 - **An unknown top level key is an error, not a no-op.** A patch is usually
   written by a machine, and a typo that silently does nothing is worse than one
   that says so.
@@ -337,10 +345,12 @@ with `--force` (CLI) or `force: true` (MCP and library) to say you meant it. Use
 `--dry-run` to ask what an edit would do without writing and without needing
 `--force`.
 
-Two edits never trip that gate:
+Three edits never trip that gate:
 
 - Changing only `reasoning_analysis` or the `reasoning_judge` block, because
   both are excluded from the hash (see [Resume Policy](README.md#resume-policy)).
+- Changing `group_clusters.json`, which is not hashed because it only decides
+  how the report reads the results, never what was measured.
 - Changing anything in `system_prompts/` or `test_files/`, because those are not
   hashed at all. This one is the dangerous direction rather than the safe one: a
   resumed run would mix responses produced under the old and the new prompt into
