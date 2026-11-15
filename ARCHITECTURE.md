@@ -178,9 +178,11 @@ HTML and the JSON, so the three cannot disagree about who is on a frontier.
 decides only how a report reads the results, so it is outside the resume hash,
 and nothing in it may stop a run: an invalid part is dropped with a warning,
 while the two editing paths refuse to save it. A candidate's `role` is the
-deliberate exception: it too affects only the frontiers, but it lives in
-`candidates.json` and is hashed like the rest of that file, so marking a
-baseline invalidates an existing run.
+deliberate exception: it too affects only the frontiers, where it groups the
+candidates into one frontier per role, but it lives in `candidates.json` and
+is hashed like the rest of that file, so setting one invalidates an existing
+run. A role never removes a candidate from a panel; only
+`exclude_candidates` does.
 
 **The measurement instrument is not per project.** The reasoning dimensions,
 their definitions and prompts, the sentence-splitting parameters, the

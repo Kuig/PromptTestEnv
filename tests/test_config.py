@@ -231,8 +231,8 @@ class TestAppConfig(LoggerResetTestCase):
         """A config.json predating this section must not turn UAC logging on."""
         self.assertEqual(config.AppConfig.load(self._write(self.tmp, {})).logging.level, "warning")
 
-    def test_shipped_config_sets_debug_logging(self):
-        self.assertEqual(config.AppConfig.load().logging.level, "debug")
+    def test_shipped_config_sets_warning_logging(self):
+        self.assertEqual(config.AppConfig.load().logging.level, "warning")
 
     def test_unknown_keys_are_ignored(self):
         path = self._write(self.tmp, {"unit_splitting": {"min_unit_chars": 9, "future_knob": 1}})

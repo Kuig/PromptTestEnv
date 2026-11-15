@@ -51,7 +51,7 @@
         "enabled": true
     },
     "logging": {
-        "level": "debug"
+        "level": "warning"
     },
     "local_providers": [
         "ollama",

@@ -25,7 +25,7 @@ This file defines the LLM configurations (the "candidates") you want to compare 
 - `disable_safety` *(boolean, optional)*: Disables safety filters if supported by the provider (default: `False`).
 - `thinking` *(boolean | string, optional)*: Controls the "Thinking" or reasoning mode. Can be `true`, `false`, or `"default"`.
 - `system_prompt_file` *(string, optional)*: A relative path to a text file inside the `system_prompts/` folder. This allows you to assign different personas to different candidates.
-- `role` *(string, optional)*: `"candidate"` (the default, and what an absent key means) or `"baseline"`. A baseline is generated, judged and reported exactly like any other candidate; only the [efficiency frontiers](#f-efficiency-frontiers-group_clustersjson) treat it differently, drawing it as a hollow reference point that is never on a frontier. Typical use: a known model re-run in several projects, so their results can be compared through it. The key is part of the resume hash like every other one in this file, so marking a baseline in a project that already has a `progress.jsonl` invalidates that run.
+- `role` *(string, optional)*: a free-text label that groups candidates in the [efficiency frontiers](#f-efficiency-frontiers-group_clustersjson), `"candidate"` when absent. Each role gets a frontier of its own, computed among its own candidates only, with its own marker shape and its own table; nothing else in the run reads it, so a candidate is generated, judged and reported the same whatever its role. Typical use: one known model marked `"baseline"` (re-run in several projects, so their results can be compared through it) and the rest left at the default; the baseline then sits on a one-point frontier of its own beside the others'. A project with a single role shows no roles at all. The key is part of the resume hash like every other one in this file, so setting a role in a project that already has a `progress.jsonl` invalidates that run.
 
 ### B. `test_cases.json`
 This file contains the actual prompts (the tasks) that the candidates will execute. It is a JSON array of objects.
@@ -204,6 +204,8 @@ Every report shows which candidates give the best score for what they cost. A pa
 
 The same panels reach the JSON export (`frontiers`) and the verdict judge, which gets each frontier as a table it does not have to work out for itself. Under each plot, a table lists the frontier candidates.
 
+Candidates are grouped by their `role` (see [`candidates.json`](#a-candidatesjson)): each role gets its own frontier, drawn with its own marker shape (circle, square, triangle, diamond, in the order the roles first appear in `candidates.json`) and its own dashed line, and its own table under the plot and section in the verdict payload. A point is only ever compared with the points of its own role. With a single role, which is every project that does not set one, all of this collapses to one frontier and no role is mentioned anywhere.
+
 `group_clusters.json` is **optional**, sits in the project directory beside the other config files, and is **not part of the resume hash**: it only decides how the results are read, never what was measured, so editing it never invalidates a run and `prompttestenv render` redraws everything at no cost. Without it, the group and "All tests" panels are still drawn, with the built-in settings. Write it by hand, in the **Group clusters** tab of `prompttestenv editor`, or through a patch ([section 5](#5-editing-a-project-without-a-file-editor)).
 
 ```json
@@ -225,7 +227,7 @@ Every key is optional.
   - `front`: `"upper"` (the default) keeps the candidates no one beats on a cheaper *and higher* score. `"lower"` keeps those no one beats on a cheaper *and lower* score, for a cluster where the low end is the interesting one.
   - `threshold` *(number or null)*: filters only the **listed** frontier, in the table and in the verdict payload: above it on an upper frontier, below it on a lower one. The plot always shows the whole frontier. `null` or absent lists everything.
 - `clusters` *(array)*: each entry has a unique `name`, the `groups` it covers (the `group` values of your test cases), and optionally its own `x_axis`, `front` and `threshold`. A cluster's options apply to its own panel only, never to the panels of the groups it contains.
-- `exclude_candidates` *(array of names)*: left out of every panel entirely. To keep a candidate visible as a reference instead, give it `"role": "baseline"` in `candidates.json`.
+- `exclude_candidates` *(array of names)*: left out of every panel entirely. This is the only way to remove a candidate from the frontiers: a role groups candidates, it never filters them.
 - `include_in_verdict` *(boolean, default `true`)*: `false` keeps the frontiers out of the verdict payload, and leaves the report as it is.
 
 How the figures are built:

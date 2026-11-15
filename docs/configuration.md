@@ -175,7 +175,7 @@ business, in `verdict_template`.
 | `score_scales` | Always. Both scores run 1 to 10, and `N/A` means not computed. |
 | `cost_per_point` | When any candidate has thinking tokens. |
 | `reasoning_profile` | When the reasoning profile table is actually rendered. |
-| `frontier` | When the payload carries an `EFFICIENCY FRONTIER` table: what a frontier is, that a baseline is never on one, and that it is not a ranking. |
+| `frontier` | When the payload carries an `EFFICIENCY FRONTIER` table: what a frontier is, that each candidate role has a frontier of its own, and that it is not a ranking. |
 | `judge_types_intro` | When any judge-type legend entry is emitted. |
 | `judge_llm` | When at least one test case uses `judge_type: "llm-judge"`. |
 | `judge_similarity` | When at least one test case uses `judge_type: "similarity"`. |
