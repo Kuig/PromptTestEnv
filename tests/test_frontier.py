@@ -8,7 +8,6 @@ from unittest.mock import patch
 
 from prompttestenv import frontier as fr
 from prompttestenv.models import (
-    CANDIDATE_ROLE_BASELINE,
     Candidate,
     CandidatePerformance,
     TestCaseResult,
@@ -83,7 +82,7 @@ class TestGroupPoint(unittest.TestCase):
 
 class TestBuildPanels(unittest.TestCase):
     def setUp(self):
-        self.cands = [_cand("A"), _cand("B"), _cand("Base", CANDIDATE_ROLE_BASELINE)]
+        self.cands = [_cand("A"), _cand("B"), _cand("Base", "baseline")]
         # Group G1 has two tests, G2 one: the cluster mean must weigh groups equally.
         self.rows = [
             _row("t1", "G1", {"A": _perf([10], [1.0]), "B": _perf([4], [9.0]), "Base": _perf([10], [0.5])}),
@@ -106,14 +105,43 @@ class TestBuildPanels(unittest.TestCase):
         self.assertEqual(a.x, 2.0)
         self.assertEqual(a.n, 2)
 
-    def test_baseline_is_drawn_but_never_on_the_frontier(self):
+    def test_each_role_has_its_own_frontier(self):
         panels = fr.build_panels(self.cands, self.rows)
+        self.assertEqual(panels.roles, ["candidate", "baseline"])
+        self.assertTrue(panels.multi_role)
         g1 = panels.group_panel("G1")
+        self.assertEqual(g1.present_roles, ["candidate", "baseline"])
+        # Base would dominate A in G1 (faster, same score), but roles never
+        # mix: A stays on its own frontier and Base is alone on its.
+        self.assertEqual(_names(g1.frontier_of("candidate")), ["A"])
+        self.assertEqual(_names(g1.frontier_of("baseline")), ["Base"])
         base = next(p for p in g1.points if p.candidate == "Base")
-        self.assertTrue(base.baseline)
-        self.assertFalse(base.on_front)
-        # Base would dominate A in G1 (faster, same score); A stays on it.
-        self.assertIn("A", _names(g1.frontier))
+        self.assertEqual(base.role, "baseline")
+        self.assertTrue(base.on_front)
+
+    def test_a_role_never_filters_anyone(self):
+        panels = fr.build_panels(self.cands, self.rows)
+        for panel in [panels.overall, *panels.groups]:
+            self.assertEqual(sorted(_names(panel.points)), ["A", "B", "Base"])
+
+    def test_one_role_is_the_plain_case(self):
+        cands = [_cand("A"), _cand("B")]
+        panels = fr.build_panels(cands, self.rows)
+        self.assertEqual(panels.roles, ["candidate"])
+        self.assertFalse(panels.multi_role)
+        self.assertEqual(panels.overall.present_roles, ["candidate"])
+
+    def test_an_excluded_candidates_role_is_not_a_role(self):
+        config = fr.GroupClusters(exclude_candidates=["Base"])
+        panels = fr.build_panels(self.cands, self.rows, config)
+        self.assertEqual(panels.roles, ["candidate"])
+
+    def test_role_order_follows_candidates_json_and_is_shared_by_every_panel(self):
+        cands = [_cand("A", "z-role"), _cand("B"), _cand("Base", "a-role")]
+        panels = fr.build_panels(cands, self.rows)
+        self.assertEqual(panels.roles, ["z-role", "candidate", "a-role"])
+        for panel in [panels.overall, *panels.groups]:
+            self.assertEqual(panel.roles, panels.roles)
 
     def test_excluded_candidate_disappears(self):
         config = fr.GroupClusters(exclude_candidates=["B"])
@@ -164,13 +192,13 @@ class TestThreshold(unittest.TestCase):
         return fr.Panel(fr.PANEL_CLUSTER, "C", ["G"], options, points)
 
     def test_upper_lists_above(self):
-        self.assertEqual(_names(self._panel(fr.FRONT_UPPER, 6).listed), ["hi"])
+        self.assertEqual(_names(self._panel(fr.FRONT_UPPER, 6).listed_of("candidate")), ["hi"])
 
     def test_lower_lists_below(self):
-        self.assertEqual(_names(self._panel(fr.FRONT_LOWER, 6).listed), ["lo"])
+        self.assertEqual(_names(self._panel(fr.FRONT_LOWER, 6).listed_of("candidate")), ["lo"])
 
     def test_no_threshold_lists_the_whole_frontier(self):
-        self.assertEqual(_names(self._panel(fr.FRONT_UPPER, None).listed), ["lo", "hi"])
+        self.assertEqual(_names(self._panel(fr.FRONT_UPPER, None).listed_of("candidate")), ["lo", "hi"])
 
 
 class TestResolve(unittest.TestCase):
@@ -265,16 +293,18 @@ class TestLoadAndCheck(unittest.TestCase):
 
 
 class TestCandidateRole(unittest.TestCase):
-    def test_default_and_baseline(self):
-        self.assertFalse(Candidate.from_dict({"name": "A"}).is_baseline)
-        self.assertTrue(Candidate.from_dict({"name": "A", "role": "baseline"}).is_baseline)
+    def test_default_and_free_text(self):
+        self.assertEqual(Candidate.from_dict({"name": "A"}).role, "candidate")
+        self.assertEqual(Candidate.from_dict({"name": "A", "role": "Frontier lab"}).role,
+                         "Frontier lab")
 
-    def test_unknown_role_degrades_with_a_warning(self):
+    def test_unusable_role_degrades_with_a_warning(self):
         from prompttestenv import models
-        with patch.object(models.logger, "log_warning") as warn:
-            cand = Candidate.from_dict({"name": "A", "role": "basline"})
-        self.assertEqual(cand.role, "candidate")
-        warn.assert_called_once()
+        for value in ("", "   ", 5, None):
+            with self.subTest(value=value), patch.object(models.logger, "log_warning") as warn:
+                cand = Candidate.from_dict({"name": "A", "role": value})
+                self.assertEqual(cand.role, "candidate")
+                warn.assert_called_once()
 
 
 if __name__ == "__main__":

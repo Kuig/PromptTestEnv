@@ -126,11 +126,12 @@ def _verdict_block(verdict_text: str) -> dict:
 
 
 def _panel_block(panel: Panel) -> dict:
-    """One frontier panel: its options, every point, and who is on the frontier.
+    """One frontier panel: its options, every point, and who is on each frontier.
 
-    The points are emitted in full (baselines included, flagged) so a consumer
-    can redraw the plot; `frontier` and `listed` are candidate names, cheapest
-    first, `listed` being the frontier after the panel's threshold.
+    The points are emitted in full, each with its role, so a consumer can redraw
+    the plot. `fronts` has one entry per role present: `frontier` and `listed`
+    are candidate names, cheapest first, `listed` being the frontier after the
+    panel's threshold.
     """
     return {
         "kind": panel.kind,
@@ -145,19 +146,28 @@ def _panel_block(panel: Panel) -> dict:
                 "x": p.x,
                 "y": p.y,
                 "n": p.n,
-                "baseline": p.baseline,
+                "role": p.role,
                 "on_front": p.on_front,
             }
             for p in panel.points
         ],
-        "frontier": [p.candidate for p in panel.frontier],
-        "listed": [p.candidate for p in panel.listed],
+        # One entry per role with points in this panel: each role has its own
+        # frontier, computed among that role's points only.
+        "fronts": [
+            {
+                "role": role,
+                "frontier": [p.candidate for p in panel.frontier_of(role)],
+                "listed": [p.candidate for p in panel.listed_of(role)],
+            }
+            for role in panel.present_roles
+        ],
     }
 
 
 def _frontiers_block(frontiers: FrontierPanels) -> dict:
     return {
         "include_in_verdict": frontiers.include_in_verdict,
+        "roles": list(frontiers.roles),
         "overall": _panel_block(frontiers.overall),
         "groups": [_panel_block(p) for p in frontiers.groups],
         "clusters": [_panel_block(p) for p in frontiers.clusters],

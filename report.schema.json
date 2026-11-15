@@ -131,8 +131,7 @@
               },
               "role": {
                 "type": "string",
-                "enum": ["candidate", "baseline"],
-                "description": "What the candidate is in the comparison. A \"baseline\" is measured like any other candidate; only the efficiency frontiers treat it differently, as a reference point that is never on a frontier."
+                "description": "Free-text label grouping candidates for the efficiency frontiers, \"candidate\" when candidates.json sets none. Each role gets a frontier of its own, computed among its own candidates; nothing else in the run reads it."
               }
             }
           }
@@ -368,12 +367,17 @@
     "frontiers": {
       "type": "object",
       "description": "The efficiency frontiers drawn in the HTML report: for each panel, which candidates no other candidate beats on both mean task score and mean cost. Configured by the project's optional group_clusters.json, which is not part of the run hash.",
-      "required": ["include_in_verdict", "overall", "groups", "clusters"],
+      "required": ["include_in_verdict", "roles", "overall", "groups", "clusters"],
       "additionalProperties": false,
       "properties": {
         "include_in_verdict": {
           "type": "boolean",
           "description": "Whether the frontiers were sent to the verdict judge (group_clusters.json's include_in_verdict)."
+        },
+        "roles": {
+          "type": "array",
+          "description": "Every role the panels can show, in candidates.json order (excluded candidates' roles left out). Its index is what fixes a role's marker shape in the HTML. A single entry means the project uses no roles, and every panel has one front.",
+          "items": { "type": "string" }
         },
         "overall": {
           "$ref": "#/$defs/frontierPanel",
@@ -396,7 +400,7 @@
   "$defs": {
     "frontierPanel": {
       "type": "object",
-      "required": ["kind", "name", "groups", "x_axis", "front", "threshold", "points", "frontier", "listed"],
+      "required": ["kind", "name", "groups", "x_axis", "front", "threshold", "points", "fronts"],
       "additionalProperties": false,
       "properties": {
         "kind": {
@@ -431,7 +435,7 @@
           "description": "One point per candidate with a usable measurement in at least one of the panel's groups. Candidates listed in group_clusters.json's exclude_candidates are absent.",
           "items": {
             "type": "object",
-            "required": ["candidate", "x", "y", "n", "baseline", "on_front"],
+            "required": ["candidate", "x", "y", "n", "role", "on_front"],
             "additionalProperties": false,
             "properties": {
               "candidate": { "type": "string" },
@@ -447,23 +451,38 @@
                 "type": "integer",
                 "description": "How many of the panel's groups this point averages over; below the length of `groups` when some had no usable measurement."
               },
-              "baseline": {
-                "type": "boolean",
-                "description": "A candidate with role \"baseline\": drawn as a reference, never on the frontier."
+              "role": {
+                "type": "string",
+                "description": "The candidate's role. A point is only ever compared with the points of its own role."
               },
-              "on_front": { "type": "boolean" }
+              "on_front": {
+                "type": "boolean",
+                "description": "On the frontier of its own role."
+              }
             }
           }
         },
-        "frontier": {
+        "fronts": {
           "type": "array",
-          "description": "Candidate names on the frontier, cheapest first.",
-          "items": { "type": "string" }
-        },
-        "listed": {
-          "type": "array",
-          "description": "`frontier` after the threshold.",
-          "items": { "type": "string" }
+          "description": "One frontier per role with at least one point in this panel, in the order of `roles`.",
+          "items": {
+            "type": "object",
+            "required": ["role", "frontier", "listed"],
+            "additionalProperties": false,
+            "properties": {
+              "role": { "type": "string" },
+              "frontier": {
+                "type": "array",
+                "description": "Candidate names on this role's frontier, cheapest first.",
+                "items": { "type": "string" }
+              },
+              "listed": {
+                "type": "array",
+                "description": "`frontier` after the threshold.",
+                "items": { "type": "string" }
+              }
+            }
+          }
         }
       }
     },

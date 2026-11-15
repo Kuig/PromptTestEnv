@@ -10,8 +10,11 @@ Two things differ from that script on purpose:
 
 - **A "0" band.** A thinking-token count of 0 is a real measurement, and a log
   axis cannot show it, so such points sit on a band left of the axis.
-- **Baselines are references.** They are drawn as hollow grey markers with an
-  italic label, and frontier.build_panels never puts them on the frontier.
+- **One frontier per role.** Candidates are grouped by their ``role``, each
+  role has its own dashed frontier line, and the role shows as the marker's
+  shape (circle, square, triangle, diamond, then round again), always the same
+  shape for the same role in every panel. With a single role, which is every
+  project that does not use roles, nothing about roles is drawn at all.
 
 Every name reaching the markup is author-written free text and goes through
 html.escape, since the result is inserted into the page unescaped.
@@ -49,7 +52,9 @@ GREEN = "#1baf7a"   # 8 <= score < 9
 YELLOW = "#e9bc08"  # 6 <= score < 8
 RED = "#d03b3b"     # score < 6
 MUTED = "#a5a49d"   # dominated
-BASELINE = "#7d7c76"
+
+# Marker shapes, by the role's index in the project's role order.
+SHAPES = ("circle", "square", "triangle", "diamond")
 
 _LEGEND = (
     (BLUE, "score &ge; 9"), (GREEN, "8 &le; score &lt; 9"), (YELLOW, "6 &le; score &lt; 8"),
@@ -173,9 +178,32 @@ def _place_labels(items, scale: _Scale) -> list[tuple[float, float, str]]:
     return result
 
 
-def _frontier_line(panel: Panel, scale: _Scale, id_prefix: str) -> list[str]:
-    """The dashed frontier, one gradient per segment, dash phase carried across."""
-    front = panel.frontier
+def shape_of(panel: Panel, role: str) -> str:
+    """The marker shape of `role`: fixed by its place in the project's role order."""
+    index = panel.roles.index(role) if role in panel.roles else 0
+    return SHAPES[index % len(SHAPES)]
+
+
+def _marker(shape: str, cx: float, cy: float, r: float, fill: str) -> str:
+    """One marker. The non-circular shapes are sized to read as heavy as a circle."""
+    common = f'fill="{fill}" stroke="{SURFACE}" stroke-width="2"'
+    if shape == "square":
+        side = r * 1.75
+        return (f'<rect x="{cx - side / 2:.1f}" y="{cy - side / 2:.1f}" '
+                f'width="{side:.1f}" height="{side:.1f}" {common}/>')
+    if shape == "triangle":
+        h = r * 1.15
+        pts = f"{cx:.1f},{cy - h * 1.15:.1f} {cx - h:.1f},{cy + h * 0.75:.1f} {cx + h:.1f},{cy + h * 0.75:.1f}"
+        return f'<polygon points="{pts}" {common}/>'
+    if shape == "diamond":
+        d = r * 1.3
+        pts = f"{cx:.1f},{cy - d:.1f} {cx + d:.1f},{cy:.1f} {cx:.1f},{cy + d:.1f} {cx - d:.1f},{cy:.1f}"
+        return f'<polygon points="{pts}" {common}/>'
+    return f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="{r:.1f}" {common}/>'
+
+
+def _frontier_line(front: list[PanelPoint], scale: _Scale, id_prefix: str) -> list[str]:
+    """One role's dashed frontier, one gradient per segment, dash phase carried across."""
     defs, lines, run = [], [], 0.0
     for index, (a, b) in enumerate(zip(front, front[1:])):
         ax, ay, bx, by = scale.x(a.x), scale.y(a.y), scale.x(b.x), scale.y(b.y)
@@ -259,37 +287,31 @@ def render_panel_svg(panel: Panel) -> str:
         "mean task score</text>"
     )
 
-    out.extend(_frontier_line(panel, scale, id_prefix))
+    for role in panel.present_roles:
+        role_prefix = f"{id_prefix}r{panel.roles.index(role)}"
+        out.extend(_frontier_line(panel.frontier_of(role), scale, role_prefix))
 
     n_groups = len(panel.groups)
-    # Dominated first, then baselines, then the frontier on top.
+    multi_role = len(panel.roles) > 1
+    # Dominated first, the frontiers on top.
     ordered = (
-        [p for p in panel.points if not p.on_front and not p.baseline]
-        + [p for p in panel.points if p.baseline]
-        + [p for p in panel.points if p.on_front]
+        [p for p in panel.points if not p.on_front] + [p for p in panel.points if p.on_front]
     )
     for point in ordered:
         px, py = scale.x(point.x), scale.y(point.y)
+        role_note = f" [{point.role}]" if multi_role else ""
         title = html.escape(
-            f"{point.candidate}{' (baseline)' if point.baseline else ''}: "
+            f"{point.candidate}{role_note}: "
             f"score {point.y:.2f}, {format_axis_value(point.x, x_axis)}, "
             f"groups {point.n}/{n_groups}"
         )
-        if point.baseline:
-            shape = (f'<circle cx="{px:.1f}" cy="{py:.1f}" r="5" fill="{SURFACE}" '
-                     f'stroke="{BASELINE}" stroke-width="2"/>')
-        elif point.on_front:
-            shape = (f'<circle cx="{px:.1f}" cy="{py:.1f}" r="6" fill="{score_color(point.y)}" '
-                     f'stroke="{SURFACE}" stroke-width="2"/>')
-        else:
-            shape = (f'<circle cx="{px:.1f}" cy="{py:.1f}" r="5" fill="{MUTED}" '
-                     f'stroke="{SURFACE}" stroke-width="2"/>')
+        fill = score_color(point.y) if point.on_front else MUTED
+        shape = _marker(shape_of(panel, point.role), px, py, 6 if point.on_front else 5, fill)
         out.append(f"<g>{shape}<title>{title}</title></g>")
 
     items = [(_label_text(p, n_groups), scale.x(p.x), scale.y(p.y), p.on_front) for p in ordered]
     for point, (text, *_), (tx, ty, anchor) in zip(ordered, items, _place_labels(items, scale)):
         style = ' font-weight="bold"' if point.on_front else ""
-        style += ' font-style="italic"' if point.baseline else ""
         color = INK if point.on_front else INK_2
         out.append(
             f'<text x="{tx:.1f}" y="{ty:.1f}" text-anchor="{anchor}" font-size="{_FONT}" '
@@ -310,39 +332,54 @@ def _caption(panel: Panel) -> str:
     return " &middot; ".join(parts)
 
 
-def _legend() -> str:
+def _legend(panel: Panel) -> str:
+    """Score colours, plus one entry per role (its shape) when there is more than one."""
     dots = "".join(
         f'<span><i style="background:{color};"></i>{label}</span>' for color, label in _LEGEND
     )
-    return (
-        f'<div class="frontier-legend">{dots}'
-        f'<span><i class="hollow" style="border-color:{BASELINE};"></i>baseline</span></div>'
-    )
+    shapes = ""
+    if len(panel.roles) > 1:
+        for role in panel.roles:
+            icon = _marker(shape_of(panel, role), 6, 6, 4, INK_2)
+            shapes += (
+                f'<span><svg class="frontier-shape" viewBox="0 0 12 12" width="12" height="12">'
+                f"{icon}</svg>{html.escape(role)}</span>"
+            )
+    return f'<div class="frontier-legend">{dots}{shapes}</div>'
 
 
-def _table(panel: Panel) -> str:
-    listed = panel.listed
+def _table(panel: Panel, role: str, titled: bool) -> str:
+    title = f'<div class="frontier-role">Role: {html.escape(role)}</div>' if titled else ""
+    listed = panel.listed_of(role)
     if not listed:
-        return '<div class="frontier-note">No frontier candidate passes the threshold.</div>'
+        return title + '<div class="frontier-note">No frontier candidate passes the threshold.</div>'
     rows = "".join(
         f"<tr><td>{html.escape(p.candidate)}</td><td>{p.y:.2f}</td>"
         f"<td>{format_axis_value(p.x, panel.options.x_axis)}</td>"
         f"<td>{p.n}/{len(panel.groups)}</td></tr>"
         for p in listed
     )
-    return (
+    return title + (
         '<table class="frontier-table"><thead><tr><th>Frontier candidate</th>'
         f"<th>Task score</th><th>{html.escape(AXIS_LABELS[panel.options.x_axis])}</th>"
         f"<th>Groups</th></tr></thead><tbody>{rows}</tbody></table>"
     )
 
 
+def _tables(panel: Panel) -> str:
+    """One table per role with points here; untitled when the project has one role."""
+    titled = len(panel.roles) > 1
+    return "".join(_table(panel, role, titled) for role in panel.present_roles) or (
+        '<div class="frontier-note">No frontier candidate passes the threshold.</div>'
+    )
+
+
 def render_panel_html(panel: Panel) -> str:
-    """One panel as a figure: caption, plot, legend and the listed frontier."""
+    """One panel as a figure: caption, plot, legend and each role's listed frontier."""
     return (
         '<figure class="frontier-figure">'
         f'<figcaption>{_caption(panel)}</figcaption>'
-        f"{render_panel_svg(panel)}{_legend()}{_table(panel)}</figure>"
+        f"{render_panel_svg(panel)}{_legend(panel)}{_tables(panel)}</figure>"
     )
 
 

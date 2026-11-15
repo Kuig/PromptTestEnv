@@ -413,7 +413,11 @@ def _build_overall_aggregate(
 
 
 def _format_frontier_section(panel: Panel) -> str:
-    """Render one frontier panel as a payload section, or "" when it has no points.
+    """Render one frontier panel as payload sections, or "" when it has no points.
+
+    One section per role with points in the panel, since each role has its own
+    frontier. A project with a single role (the usual case) gets exactly one
+    section, with no role in its heading.
 
     Only the listed frontier is sent, not every point: the OVERALL AGGREGATE
     table above already carries every candidate's figures, and what the judge
@@ -423,14 +427,24 @@ def _format_frontier_section(panel: Panel) -> str:
         panel: The panel, from frontier.build_panels.
 
     Returns:
-        A heading plus a table, with no trailing blank line.
+        The sections separated by a blank line, with no trailing blank line.
     """
     if not panel.points:
         return ""
+    multi_role = len(panel.roles) > 1
+    return "\n\n".join(
+        _format_role_frontier(panel, role, role_in_heading=multi_role)
+        for role in panel.present_roles
+    )
+
+
+def _format_role_frontier(panel: Panel, role: str, *, role_in_heading: bool) -> str:
+    """One role's frontier in one panel: a heading plus a table."""
     options = panel.options
     front = "lower front" if options.front == FRONT_LOWER else "upper front"
+    title = f"{panel.name}, role {role}" if role_in_heading else panel.name
     heading = (
-        f"# EFFICIENCY FRONTIER: {panel.name} "
+        f"# EFFICIENCY FRONTIER: {title} "
         f"({AXIS_LABELS[options.x_axis]} vs mean task score, {front}"
     )
     if options.threshold is not None:
@@ -438,7 +452,7 @@ def _format_frontier_section(panel: Panel) -> str:
         heading += f", listing scores {sign} {options.threshold:g}"
     heading += ")\n\n"
 
-    listed = panel.listed
+    listed = panel.listed_of(role)
     if not listed:
         return heading + "No frontier candidate passes the threshold."
     pooled = len(panel.groups) > 1

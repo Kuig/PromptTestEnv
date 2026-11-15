@@ -20,9 +20,10 @@ from prompttestenv.reporting import generate_html_report
 SVG_NS = "{http://www.w3.org/2000/svg}"
 
 
-def _panel(points, **options):
+def _panel(points, roles=None, **options):
     return fr.Panel(fr.PANEL_CLUSTER, "Cluster <A&B>", ["G1", "G2"],
-                    fr.ResolvedOptions(**options), points)
+                    fr.ResolvedOptions(**options), points,
+                    roles=roles or [fr.CANDIDATE_ROLE_CANDIDATE])
 
 
 def _parse(svg: str) -> ET.Element:
@@ -36,8 +37,10 @@ class TestRenderPanelSvg(unittest.TestCase):
             fr.PanelPoint("fast <bad>", 2.0, 5.0, 2, on_front=True),
             fr.PanelPoint("slow & good", 200.0, 9.5, 2, on_front=True),
             fr.PanelPoint("dominated", 100.0, 4.0, 1),
-            fr.PanelPoint("ref", 1.0, 9.0, 2, baseline=True),
         ]
+        # The same, plus a second role whose single point is its own frontier.
+        self.two_roles = [*self.points,
+                          fr.PanelPoint("ref", 1.0, 9.0, 2, role="baseline", on_front=True)]
 
     def test_is_well_formed_and_escapes_names(self):
         svg = fp.render_panel_svg(_panel(self.points))
@@ -53,11 +56,34 @@ class TestRenderPanelSvg(unittest.TestCase):
         dashed = [l for l in root.iter(f"{SVG_NS}line") if l.get("stroke-dasharray")]
         self.assertEqual(len(dashed), 1)
 
-    def test_baseline_is_hollow(self):
-        root = _parse(fp.render_panel_svg(_panel(self.points)))
-        hollow = [c for c in root.iter(f"{SVG_NS}circle") if c.get("stroke") == fp.BASELINE]
-        self.assertEqual(len(hollow), 1)
-        self.assertEqual(hollow[0].get("fill"), fp.SURFACE)
+    def test_a_second_role_gets_the_next_shape(self):
+        panel = _panel(self.two_roles, roles=["candidate", "baseline"])
+        root = _parse(fp.render_panel_svg(panel))
+        self.assertEqual(len(list(root.iter(f"{SVG_NS}circle"))), 3)
+        squares = list(root.iter(f"{SVG_NS}rect"))
+        # The background is a rect too, and the "ref" marker is the other one.
+        self.assertEqual(len([r for r in squares if r.get("width") != str(fp.WIDTH)]), 1)
+        self.assertEqual(fp.shape_of(panel, "baseline"), "square")
+
+    def test_shapes_cycle_after_four_roles(self):
+        roles = ["a", "b", "c", "d", "e"]
+        panel = _panel([], roles=roles)
+        self.assertEqual([fp.shape_of(panel, r) for r in roles],
+                         ["circle", "square", "triangle", "diamond", "circle"])
+
+    def test_one_dashed_line_per_role(self):
+        two = [*self.two_roles, fr.PanelPoint("ref2", 50.0, 9.9, 2, role="baseline", on_front=True)]
+        root = _parse(fp.render_panel_svg(_panel(two, roles=["candidate", "baseline"])))
+        dashed = [l for l in root.iter(f"{SVG_NS}line") if l.get("stroke-dasharray")]
+        self.assertEqual(len(dashed), 2)
+        ids = {g.get("id") for g in root.iter(f"{SVG_NS}linearGradient")}
+        self.assertEqual(len(ids), 2)
+
+    def test_the_role_reaches_the_tooltip_only_with_several_roles(self):
+        single = fp.render_panel_svg(_panel(self.points))
+        multi = fp.render_panel_svg(_panel(self.two_roles, roles=["candidate", "baseline"]))
+        self.assertNotIn("[candidate]", single)
+        self.assertIn("ref [baseline]", multi)
 
     def test_zero_band_for_zero_thinking(self):
         points = [fr.PanelPoint("none", 0.0, 6.0, 1, on_front=True),
@@ -86,6 +112,19 @@ class TestRenderPanelHtml(unittest.TestCase):
         self.assertIn("<td>hi</td>", table)
         self.assertNotIn("<td>lo</td>", table)
         self.assertIn("Cluster &lt;A&amp;B&gt;", html_text)
+
+    def test_one_table_per_role_titled_only_with_several_roles(self):
+        points = [fr.PanelPoint("a", 1.0, 8.0, 2, on_front=True),
+                  fr.PanelPoint("b", 2.0, 9.0, 2, role="baseline", on_front=True)]
+        single = fp.render_panel_html(_panel(points[:1]))
+        multi = fp.render_panel_html(_panel(points, roles=["candidate", "baseline"]))
+        self.assertEqual(single.count('class="frontier-table"'), 1)
+        self.assertNotIn("Role:", single)
+        self.assertNotIn("frontier-shape", single)
+        self.assertEqual(multi.count('class="frontier-table"'), 2)
+        self.assertIn("Role: candidate", multi)
+        self.assertIn("Role: baseline", multi)
+        self.assertEqual(multi.count('class="frontier-shape"'), 2)
 
     def test_nothing_passes_the_threshold(self):
         points = [fr.PanelPoint("lo", 1.0, 4.0, 2, on_front=True)]
@@ -128,6 +167,8 @@ class TestHtmlReportSections(unittest.TestCase):
         self.assertIn(fr.OVERALL_PANEL_NAME, page)
         self.assertNotIn("Efficiency frontiers by cluster", page)
         self.assertIn('class="role-badge">baseline', page)
+        # Two roles: each panel gets a table per role.
+        self.assertIn("Role: baseline", page)
 
     def test_plain_verdict_folds_the_group_panels(self):
         page = self._render("plain")

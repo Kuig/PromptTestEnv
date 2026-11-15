@@ -35,14 +35,11 @@ REASONING_SCOPES = (REASONING_SCOPE_NONE, REASONING_SCOPE_BEST, REASONING_SCOPE_
 # the startup of every subcommand.
 OUTPUT_MODES = ("html", "md", "json", "winner_only")
 
-# What a candidate is in the comparison. A "baseline" is measured and scored
-# exactly like any other candidate, and nothing in the run treats it
-# differently; only the efficiency-frontier panels do, drawing it as a reference
-# point that is never itself on the frontier (see frontier.py). Hashed like
-# every other candidates.json key, so marking one invalidates an existing run.
+# The default value of a candidate's `role`, a free-text label that groups
+# candidates for the efficiency frontiers: each role gets a frontier of its own
+# (see frontier.py), and nothing else in the run reads it. Hashed like every
+# other candidates.json key, so changing one invalidates an existing run.
 CANDIDATE_ROLE_CANDIDATE = "candidate"
-CANDIDATE_ROLE_BASELINE = "baseline"
-CANDIDATE_ROLES = (CANDIDATE_ROLE_CANDIDATE, CANDIDATE_ROLE_BASELINE)
 
 # Axes of the reasoning profile. Mirrored as fields on ReasoningUnit and
 # ReasoningStats as real fields rather than a dict, so changing this
@@ -532,10 +529,6 @@ class Candidate:
     role: str = CANDIDATE_ROLE_CANDIDATE
     resolved_system_instruction: str | None = None
 
-    @property
-    def is_baseline(self) -> bool:
-        return self.role == CANDIDATE_ROLE_BASELINE
-
     @classmethod
     def load_all(cls, project_dir: str | Path) -> list[Candidate]:
         """Load and resolve all candidate configurations from a project directory.
@@ -995,25 +988,26 @@ def _settings_from_dict(cls: type, data: dict):
 
 
 def _parse_candidate_role(value, name) -> str:
-    """Read a candidate's role, degrading an unknown value to a plain candidate.
+    """Read a candidate's role: any non-empty text, kept exactly as written.
 
-    Same posture as _parse_reasoning_scope: an unknown value is announced rather
-    than passed through. Degrading to "candidate" rather than raising is safe
-    because the role only changes how the frontier panels draw a point; the
-    editor and projectio.validate reject the typo before it reaches a run.
+    The role is a free label, so there is no vocabulary to check against. What
+    is announced rather than passed through is a value that cannot be a label
+    at all (not a string, or blank), which degrades to the default. That is
+    safe because the role only decides which frontier a point joins; the editor
+    and projectio.validate reject the same values before they reach a run.
 
     Args:
         value: Raw value from candidates.json.
         name: The candidate's name, for the warning.
 
     Returns:
-        One of CANDIDATE_ROLES.
+        The role, or CANDIDATE_ROLE_CANDIDATE.
     """
-    if isinstance(value, str) and value.lower() in CANDIDATE_ROLES:
-        return value.lower()
+    if isinstance(value, str) and value.strip():
+        return value
     logger.log_warning(
-        f"candidates.json: candidate '{name}' has unknown role '{value}'. "
-        f"Expected one of {', '.join(CANDIDATE_ROLES)}. Treating it as '{CANDIDATE_ROLE_CANDIDATE}'."
+        f"candidates.json: candidate '{name}' has an invalid role {value!r}: it must be "
+        f"non-empty text. Treating it as '{CANDIDATE_ROLE_CANDIDATE}'."
     )
     return CANDIDATE_ROLE_CANDIDATE
 

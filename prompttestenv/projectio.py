@@ -57,7 +57,6 @@ from pathlib import Path
 
 from prompttestenv.models import (
     CANDIDATE_ROLE_CANDIDATE,
-    CANDIDATE_ROLES,
     DEFAULT_GROUP,
     Candidate,
     GlobalCriteria,
@@ -758,14 +757,11 @@ def validate(draft: ProjectDraft) -> tuple[list[str], list[str]]:
             warnings.append(
                 f"Candidate '{label}' has a non-standard thinking value '{thinking}'."
             )
-        # An error, not a warning, although the loader degrades it: a mistyped
-        # "baseline" would quietly put the reference point on the frontier.
+        # An error, not a warning, although the loader degrades it to the
+        # default: the candidate would quietly join another role's frontier.
         role = cand.get("role", CANDIDATE_ROLE_CANDIDATE)
-        if role not in CANDIDATE_ROLES:
-            errors.append(
-                f"Candidate '{label}' has unknown role '{role}'. "
-                f"Expected one of {', '.join(CANDIDATE_ROLES)}."
-            )
+        if not isinstance(role, str) or not role.strip():
+            errors.append(f"Candidate '{label}' has an invalid role {role!r}: it must be non-empty text.")
 
     # Test cases: id keys the same events.
     for index, test in enumerate(draft.tests, start=1):

@@ -781,18 +781,30 @@ class TestFrontierInVerdict(unittest.TestCase):
                              self._judge_config(grouped), frontiers)
         return mock_llm.call_args_list
 
-    def test_ungrouped_payload_carries_the_all_tests_frontier(self):
+    def test_ungrouped_payload_carries_one_all_tests_section_per_role(self):
         call = self._run(grouped=False)[0].kwargs
         prompt = call["user_prompt"]
-        self.assertIn("# EFFICIENCY FRONTIER: All tests (mean time (s) vs mean task score, upper front)", prompt)
-        section = prompt[prompt.index("# EFFICIENCY FRONTIER"):prompt.index("# TEST RESULTS")]
-        self.assertIn("Fast", section)
-        self.assertIn("Slow", section)
-        # A baseline is never on a frontier, even one it would dominate.
-        self.assertNotIn("Ref", section)
-        self.assertIn("2/2", section)
+        head = "# EFFICIENCY FRONTIER: All tests, role {} (mean time (s) vs mean task score, upper front)"
+        self.assertIn(head.format("candidate"), prompt)
+        self.assertIn(head.format("baseline"), prompt)
+        candidate = prompt[prompt.index(head.format("candidate")):prompt.index(head.format("baseline"))]
+        baseline = prompt[prompt.index(head.format("baseline")):prompt.index("# TEST RESULTS")]
+        # Roles never mix: Ref would dominate both, yet each role keeps its own.
+        self.assertIn("Fast", candidate)
+        self.assertIn("Slow", candidate)
+        self.assertNotIn("Ref", candidate)
+        self.assertIn("Ref", baseline)
+        self.assertIn("2/2", candidate)
         self.assertLess(prompt.index("# OVERALL AGGREGATE"), prompt.index("# EFFICIENCY FRONTIER"))
-        self.assertIn("EFFICIENCY FRONTIER tables are computed", call["system_instruction"])
+        self.assertIn("each role has its own frontier", call["system_instruction"])
+
+    def test_a_single_role_payload_names_no_role(self):
+        self.candidates[2] = Candidate(name="Ref", provider="ollama", model="m")
+        prompt = self._run(grouped=False)[0].kwargs["user_prompt"]
+        self.assertIn("# EFFICIENCY FRONTIER: All tests (mean time (s) vs mean task score, upper front)",
+                      prompt)
+        self.assertNotIn(", role ", prompt)
+        self.assertEqual(prompt.count("# EFFICIENCY FRONTIER"), 1)
 
     def test_group_payloads_carry_their_own_panel_and_the_global_call_the_cross_group_ones(self):
         from prompttestenv.frontier import ClusterSpec, GroupClusters, PanelOptions, build_panels
@@ -800,14 +812,15 @@ class TestFrontierInVerdict(unittest.TestCase):
             clusters=[ClusterSpec("Both", ["G1", "G2"], PanelOptions(threshold=6))],
         ))
         calls = self._run(grouped=True, frontiers=frontiers)
-        self.assertIn("# EFFICIENCY FRONTIER: G1 ", calls[0].kwargs["user_prompt"])
-        self.assertIn("# EFFICIENCY FRONTIER: G2 ", calls[1].kwargs["user_prompt"])
+        self.assertIn("# EFFICIENCY FRONTIER: G1, role candidate ", calls[0].kwargs["user_prompt"])
+        self.assertIn("# EFFICIENCY FRONTIER: G1, role baseline ", calls[0].kwargs["user_prompt"])
+        self.assertIn("# EFFICIENCY FRONTIER: G2, role candidate ", calls[1].kwargs["user_prompt"])
         # A single-group panel has no Groups column to speak of.
         self.assertNotIn("Groups", calls[0].kwargs["user_prompt"].split("# TEST RESULTS")[0])
 
         glob = calls[2].kwargs
         self.assertIn("# EFFICIENCY FRONTIER: All tests", glob["user_prompt"])
-        both = glob["user_prompt"][glob["user_prompt"].index("# EFFICIENCY FRONTIER: Both"):]
+        both = glob["user_prompt"][glob["user_prompt"].index("# EFFICIENCY FRONTIER: Both, role candidate"):]
         self.assertIn("listing scores > 6", both)
         self.assertNotIn("Fast", both.split("---")[0])
         self.assertLess(glob["user_prompt"].index("# GROUP VERDICTS"),

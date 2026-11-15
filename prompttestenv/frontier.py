@@ -14,6 +14,12 @@ group weighs the same however many test cases it holds. That is the reading a
 cluster of benchmarks asks for, and it differs from pooling every test case the
 moment two groups differ in size.
 
+Candidates are grouped by their ``role`` (free text, ``"candidate"`` when
+absent), and every role gets its own frontier, computed among that role's
+points only: a typical project marks one "baseline" and leaves the rest at the
+default, and the baseline then sits on a one-point frontier of its own beside
+the others'. A role never removes anyone; that is ``exclude_candidates``'s job.
+
 ``group_clusters.json`` is optional and deliberately not part of the run hash
 (progress.HASHED_FILENAMES): it changes how results are read, never what was
 measured, so editing it costs nothing and ``render`` picks it up for free. For
@@ -33,6 +39,7 @@ from pathlib import Path
 
 import prompttestenv.logger as logger
 from prompttestenv.models import (
+    CANDIDATE_ROLE_CANDIDATE,
     DEFAULT_GROUP,
     Candidate,
     CandidatePerformance,
@@ -382,7 +389,9 @@ class PanelPoint:
     # Groups this point averages over; below the panel's group count when the
     # candidate has no usable measurement in some of them.
     n: int
-    baseline: bool = False
+    role: str = CANDIDATE_ROLE_CANDIDATE
+    # On the frontier of its OWN role: a point is only ever compared with the
+    # other candidates sharing its role.
     on_front: bool = False
 
 
@@ -393,25 +402,34 @@ class Panel:
     groups: list[str]
     options: ResolvedOptions
     points: list[PanelPoint] = field(default_factory=list)
+    # Every role of the project, in candidates.json order, whether or not this
+    # panel has a point for it: the index is what keeps a role's marker shape
+    # the same in every panel.
+    roles: list[str] = field(default_factory=lambda: [CANDIDATE_ROLE_CANDIDATE])
 
     @property
-    def frontier(self) -> list[PanelPoint]:
-        """The frontier, cheapest first."""
-        return sorted((p for p in self.points if p.on_front), key=lambda p: p.x)
+    def present_roles(self) -> list[str]:
+        """The roles with at least one point here, in project order."""
+        present = {p.role for p in self.points}
+        return [r for r in self.roles if r in present]
 
-    @property
-    def listed(self) -> list[PanelPoint]:
-        """The frontier after the threshold, which only filters what is listed.
+    def frontier_of(self, role: str) -> list[PanelPoint]:
+        """One role's frontier, cheapest first."""
+        return sorted((p for p in self.points if p.on_front and p.role == role), key=lambda p: p.x)
+
+    def listed_of(self, role: str) -> list[PanelPoint]:
+        """One role's frontier after the threshold, which only filters what is listed.
 
         Upper front keeps scores above the threshold, lower front keeps those
         below: the end of the frontier worth naming, in either orientation.
         """
+        frontier = self.frontier_of(role)
         threshold = self.options.threshold
         if threshold is None:
-            return self.frontier
+            return frontier
         if self.options.front == FRONT_LOWER:
-            return [p for p in self.frontier if p.y < threshold]
-        return [p for p in self.frontier if p.y > threshold]
+            return [p for p in frontier if p.y < threshold]
+        return [p for p in frontier if p.y > threshold]
 
 
 @dataclass
@@ -421,6 +439,14 @@ class FrontierPanels:
     clusters: list[Panel] = field(default_factory=list)
     include_in_verdict: bool = True
     warnings: list[str] = field(default_factory=list)
+    # Every role of the project, in candidates.json order. A single role is
+    # the common case, and every surface then reads exactly as if roles did
+    # not exist: no role labels, one table, one payload section per panel.
+    roles: list[str] = field(default_factory=lambda: [CANDIDATE_ROLE_CANDIDATE])
+
+    @property
+    def multi_role(self) -> bool:
+        return len(self.roles) > 1
 
     def group_panel(self, name: str) -> Panel | None:
         return next((p for p in self.groups if p.name == name), None)
@@ -452,7 +478,7 @@ def pareto_front(points: list[PanelPoint], front: str = FRONT_UPPER) -> list[Pan
     score seen so far. A tie on both axes keeps only the first point.
 
     Args:
-        points: Candidate points; baselines must already be filtered out.
+        points: The points to compare: one role's, since roles never mix.
         front: FRONT_UPPER (higher is better) or FRONT_LOWER.
 
     Returns:
@@ -476,6 +502,7 @@ def _panel(
     candidates: list[Candidate],
     pooled_by_group: dict[str, dict[str, CandidatePerformance]],
     excluded: set[str],
+    roles: list[str],
 ) -> Panel:
     points = []
     for cand in candidates:
@@ -493,11 +520,15 @@ def _panel(
             x=sum(x for x, _ in per_group) / len(per_group),
             y=sum(y for _, y in per_group) / len(per_group),
             n=len(per_group),
-            baseline=cand.is_baseline,
+            role=cand.role,
         ))
-    for point in pareto_front([p for p in points if not p.baseline], options.front):
-        point.on_front = True
-    return Panel(kind=kind, name=name, groups=list(groups), options=options, points=points)
+    # One frontier per role, each over that role's own points only: a role is a
+    # group being compared, never a filter.
+    for role in roles:
+        for point in pareto_front([p for p in points if p.role == role], options.front):
+            point.on_front = True
+    return Panel(kind=kind, name=name, groups=list(groups), options=options,
+                 points=points, roles=list(roles))
 
 
 def build_panels(
@@ -526,9 +557,15 @@ def build_panels(
     }
     excluded = set(config.exclude_candidates)
     defaults = config.resolve_defaults()
+    # The roles the panels can show: an excluded candidate's role would only
+    # claim a marker shape (and turn a single-role project multi-role) for
+    # points that never appear.
+    roles = list(dict.fromkeys(
+        c.role for c in candidates if c.name not in excluded
+    )) or [CANDIDATE_ROLE_CANDIDATE]
 
     def panel(kind, name, groups, options):
-        return _panel(kind, name, groups, options, candidates, pooled_by_group, excluded)
+        return _panel(kind, name, groups, options, candidates, pooled_by_group, excluded, roles)
 
     clusters = []
     for cluster in config.clusters:
@@ -542,4 +579,5 @@ def build_panels(
         clusters=clusters,
         include_in_verdict=config.include_in_verdict,
         warnings=reference_warnings(config, group_names, [c.name for c in candidates]),
+        roles=roles,
     )

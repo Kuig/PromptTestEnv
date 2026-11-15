@@ -39,7 +39,7 @@ from prompttestenv.config import get_app_config
 from prompttestenv.frontier import FRONTS, X_AXES
 from prompttestenv.gui.common import browse_button
 from prompttestenv.models import (
-    CANDIDATE_ROLES,
+    CANDIDATE_ROLE_CANDIDATE,
     DEFAULT_GROUP,
     REASONING_SCOPES,
     Candidate,
@@ -870,6 +870,10 @@ with tab_cand:
         )
 
     prompt_names = draft.system_prompt_names()
+    used_roles = [
+        c["data"]["role"] for c in ed["candidates"]
+        if isinstance(c["data"].get("role"), str) and c["data"]["role"].strip()
+    ]
 
     for index, row in enumerate(ed["candidates"]):
         data = row["data"]
@@ -916,17 +920,19 @@ with tab_cand:
                 key=f"{_wkey('cand', row['uid'], 'system_prompt_file')}:pick",
                 help="A bare filename, resolved under system_prompts/.",
             )
-            # An out-of-vocabulary role stays listed, so it is shown rather than
-            # silently rewritten; validate() reports it as an error.
-            current_role = data.get("role", "candidate")
-            role_options = list(dict.fromkeys([*CANDIDATE_ROLES, current_role]))
-            role_col.selectbox(
-                "Role", role_options, index=role_options.index(current_role),
-                key=_wkey("cand", row["uid"], "role"),
-                help="A baseline is measured like any candidate, but the report's "
-                     "efficiency frontiers draw it as a reference point and never "
-                     "put it on a frontier. Part of the run hash.",
-            )
+            # Free text: the menu offers the default, "baseline" and every role
+            # another candidate already uses, and accepts a new one. A value
+            # that is not usable text is still shown, never rewritten, and
+            # validate() reports it as an error.
+            with role_col:
+                _open_choice(
+                    "Role", [CANDIDATE_ROLE_CANDIDATE, "baseline", *used_roles],
+                    data.get("role", CANDIDATE_ROLE_CANDIDATE),
+                    _wkey("cand", row["uid"], "role"),
+                    help_text="Groups candidates in the report's efficiency frontiers: "
+                              "each role gets a frontier and a table of its own, and its "
+                              "own marker shape. Part of the run hash.",
+                )
 
             extras = [k for k in data if k not in _CANDIDATE_FIELDS]
             if extras:

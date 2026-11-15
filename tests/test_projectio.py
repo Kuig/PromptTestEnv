@@ -331,13 +331,17 @@ class TestValidation(unittest.TestCase):
         draft = self._draft(candidates=[{"name": "A"}])
         self.assertTrue(any("has no model" in e for e in self._errors(draft)))
 
-    def test_unknown_role_is_an_error(self):
-        draft = self._draft(candidates=[{"name": "A", "model": "m", "role": "basline"}])
-        self.assertTrue(any("unknown role 'basline'" in e for e in self._errors(draft)))
+    def test_unusable_role_is_an_error(self):
+        for value in ("", "  ", 5, None):
+            with self.subTest(value=value):
+                draft = self._draft(candidates=[{"name": "A", "model": "m", "role": value}])
+                self.assertTrue(any("invalid role" in e for e in self._errors(draft)))
 
-    def test_baseline_role_is_valid(self):
-        draft = self._draft(candidates=[{"name": "A", "model": "m", "role": "baseline"}])
-        self.assertEqual([e for e in self._errors(draft) if "role" in e], [])
+    def test_any_text_is_a_valid_role(self):
+        for value in ("baseline", "Frontier lab", "candidate"):
+            with self.subTest(value=value):
+                draft = self._draft(candidates=[{"name": "A", "model": "m", "role": value}])
+                self.assertEqual([e for e in self._errors(draft) if "role" in e], [])
 
     def test_default_role_is_not_written(self):
         merged = pio.merge_preserving_shape(

@@ -47,7 +47,8 @@
         .frontier-svg { display: block; width: 100%; height: auto; }
         .frontier-legend { display: flex; flex-wrap: wrap; gap: 10px; font-size: 0.72em; color: #5a5955; margin: 6px 0; }
         .frontier-legend i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
-        .frontier-legend i.hollow { background: #fff; border: 2px solid; width: 6px; height: 6px; }
+        .frontier-legend .frontier-shape { margin-right: 4px; vertical-align: middle; }
+        .frontier-role { font-size: 0.8em; font-weight: bold; color: #333; margin: 8px 0 2px; }
         .frontier-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 460px), 1fr)); gap: 14px; }
         .frontier-grid .frontier-figure { margin: 0; max-width: none; }
         table.frontier-table { table-layout: auto; width: auto; margin: 4px 0 0; box-shadow: none; font-size: 0.8em; }
@@ -261,7 +262,7 @@
             {% set safe_str = "🔴 Disabled" if cand.disable_safety else "🟢 Default" %}
             {% set c_thinking = format_thinking_value(cand.thinking) %}
             <div class="cand-card">
-                <span class="cand-name">{{ cand.name }}</span>{% if cand.is_baseline %}<span class="role-badge">baseline</span>{% endif %} |
+                <span class="cand-name">{{ cand.name }}</span>{% if cand.role != "candidate" %}<span class="role-badge">{{ cand.role }}</span>{% endif %} |
                 <b>Model:</b> {{ cand.model }} | 
                 <b>Temp:</b> {{ format_temperature(cand.temperature) }} | 
                 <b>Safety:</b> {{ safe_str }} |

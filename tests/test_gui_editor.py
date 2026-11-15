@@ -689,6 +689,27 @@ class TestCandidateRole(EditorTestCase):
         self.assertTrue(all(box.value == "candidate" for box in self._role_boxes(at)))
         self.assertTrue(any("No unsaved changes" in s.value for s in at.success))
 
+    def test_a_role_in_use_is_offered_to_every_candidate(self):
+        """Roles are free text; the menu offers the ones already used.
+
+        AppTest cannot type a new option, so the free-text path is covered by
+        a role written into the file, then picked for another candidate.
+        """
+        path = Path(self.project_dir) / "candidates.json"
+        cands = json.loads(path.read_text("utf-8"))
+        cands[0]["role"] = "Frontier lab"
+        path.write_text(json.dumps(cands, indent=4, ensure_ascii=False) + "\n", encoding="utf-8")
+        at = self._app()
+        boxes = self._role_boxes(at)
+        self.assertEqual(boxes[0].value, "Frontier lab")
+        self.assertIn("Frontier lab", boxes[1].options)
+        boxes[1].set_value("Frontier lab")
+        at.run()
+        self._click(at, "💾 Save")
+        at.run()
+        saved = json.loads(path.read_text("utf-8"))
+        self.assertEqual([c.get("role") for c in saved], ["Frontier lab", "Frontier lab"])
+
     def test_marking_a_baseline_writes_only_that_key(self):
         before = json.loads((Path(self.project_dir) / "candidates.json").read_text("utf-8"))
         at = self._app()
